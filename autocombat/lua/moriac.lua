@@ -261,7 +261,7 @@ local function sanitizeModeConfig(c)
     if c.show_nmsloot == nil then c.show_nmsloot = false end
     if c.show_gm_commands == nil then c.show_gm_commands = false end
     if type(c.ui_page) ~= 'string' then c.ui_page = 'overview' end
-    if type(c.overview_open) ~= 'table' then c.overview_open = {} end
+    if type(c.ui_sections) ~= 'table' then c.ui_sections = {} end
     if c.cooldown_alpha == nil then c.cooldown_alpha = 0.90 end
     if c.cooldown_locked == nil then c.cooldown_locked = false end
     if c.cooldown_view_mode == nil then c.cooldown_view_mode = 'table' end
@@ -519,7 +519,7 @@ local function defaultCtrl()
         burn                     = false,
         compact                  = false,
         ui_page                  = 'overview', -- main window sidebar page (UI.PAGES id)
-        overview_open            = {},         -- Overview collapsible sections: key -> open
+        ui_sections              = {},         -- collapsible page sections (UI.pageSection): key -> open
         ui_scale                 = 1.0,
         window_scale             = {},
         mini_lock                = false,
@@ -10785,19 +10785,19 @@ function UI.hpRgb(pct)
     return 0.25, 0.80, 0.35
 end
 
--- Collapsible Overview section; open state persists in ctrl.overview_open.
-function UI.overviewSection(key, label, defaultOpen)
-    if type(ctrl.overview_open) ~= 'table' then ctrl.overview_open = {} end
-    local stored = ctrl.overview_open[key]
+-- Collapsible page section; open state persists in ctrl.ui_sections.
+function UI.pageSection(key, label, defaultOpen)
+    if type(ctrl.ui_sections) ~= 'table' then ctrl.ui_sections = {} end
+    local stored = ctrl.ui_sections[key]
     if stored == nil then stored = defaultOpen and true or false end
     runtime.overviewInit = runtime.overviewInit or {}
     if not runtime.overviewInit[key] then
         runtime.overviewInit[key] = true
         if ImGui.SetNextItemOpen then pcall(ImGui.SetNextItemOpen, stored) end
     end
-    local isOpen = ImGui.CollapsingHeader(label .. '###ov_' .. key, stored and ImGuiTreeNodeFlags.DefaultOpen or 0)
+    local isOpen = ImGui.CollapsingHeader(label .. '###sec_' .. key, stored and ImGuiTreeNodeFlags.DefaultOpen or 0)
     if (isOpen and true or false) ~= stored then
-        ctrl.overview_open[key] = isOpen and true or false
+        ctrl.ui_sections[key] = isOpen and true or false
         runtime.saveLoadout(true)
     end
     return isOpen
@@ -11192,8 +11192,8 @@ function UI.drawStatusTab()
     ImGui.Separator()
     UI.ovSession()
     ImGui.Spacing()
-    if UI.overviewSection('mode', 'Mode details', true) then UI.ovModeDetails() end
-    if UI.overviewSection('nav', 'Navigation diagnostics', false) then UI.ovNavDiagnostics() end
+    if UI.pageSection('ovMode', 'Mode details', true) then UI.ovModeDetails() end
+    if UI.pageSection('ovNav', 'Navigation diagnostics', false) then UI.ovNavDiagnostics() end
 end
 
 -- Called from several UI panels every frame; each call does Spawn / Target
@@ -11496,44 +11496,68 @@ function runtime.removeCustomAssist(targetNameOrId)
 end
 
 -- UI: control tab
-function UI.drawControlTab()
-    accent(GOLD, 'Combat Mode')
-    UI.drawModeCombos('CtrlTab', 160, 140)
+-- Label-left form row for the settings pages: the label sits in a fixed
+-- column so controls line up, and the control gets a uniform width.
+UI.FORM_LABEL_W, UI.FORM_CTRL_W = 190, 240
+function UI.formLabel(label, ctrlW)
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextDisabled(label)
+    ImGui.SameLine(UI.px(UI.FORM_LABEL_W))
+    ImGui.SetNextItemWidth(UI.px(ctrlW or UI.FORM_CTRL_W))
+end
 
+-- Min / max level pair on one form row. Returns the new min, max.
+function UI.levelRange(label, id, lo, hi)
+    UI.formLabel(label, 110)
+    local nlo = ImGui.SliderInt('##' .. id .. 'Min', lo, 1, 100, 'min %d')
+    ImGui.SameLine()
+    ImGui.SetNextItemWidth(UI.px(110))
+    local nhi = ImGui.SliderInt('##' .. id .. 'Max', hi, 1, 100, 'max %d')
+    if nlo > nhi then nlo = nhi end
+    return nlo, nhi
+end
+
+-- Camp anchor row shared by Manual, Puller (Camp) and Assist (Camp).
+function UI.campRow(idPrefix, emptyText, setTip, onClear)
+    if ctrl.camp_loc then
+        ImGui.AlignTextToFramePadding()
+        ImGui.Text(string.format('Camp at %.0f, %.0f, %.0f', ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z))
+        ImGui.SameLine()
+    else
+        accent(MUTED, emptyText)
+    end
+    if ImGui.Button((ctrl.camp_loc and 'Move here' or 'Set camp here') .. '##' .. idPrefix .. 'CampSet') then
+        local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
+        if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('%s', setTip) end
+    if ctrl.camp_loc then
+        ImGui.SameLine()
+        if ImGui.Button('Clear##' .. idPrefix .. 'CampClear') then
+            ctrl.camp_loc = nil
+            if onClear then onClear() end
+        end
+        if ImGui.IsItemHovered() then UI.setTooltip('Forget the camp location.') end
+    end
+end
+
+function UI.drawControlTab()
+    UI.formLabel('Mode', 150)
+    UI.drawModeCombos('CtrlTab', UI.px(150), UI.px(130))
     local descKey = ctrl.mode
     if MODES.SUBMODES[ctrl.mode] then
         descKey = string.format('%s:%s', ctrl.mode, ctrl.submode)
     end
-    accent(MUTED, MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
+    ImGui.TextDisabled(MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
+    ImGui.Spacing()
 
     -- Manual Mode Contextual Controls
-    if ctrl.mode == 'Manual' then
-        accent(GOLD, 'Camp Location (optional)')
+    if ctrl.mode == 'Manual' and UI.pageSection('manCamp', 'Camp (optional)', true) then
+        UI.campRow('manual', 'No camp: you stay wherever a fight ends.',
+            'Remember this spot; you walk back here after fights.')
         if ctrl.camp_loc then
-            ImGui.Text(string.format('Camp set at: %.1f, %.1f, %.1f',
-                ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z))
-        else
-            accent(MUTED, 'No camp set -- toon stays put wherever fights end.')
-        end
-
-        if ImGui.Button('Set Here##manualCampSet') then
-            local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-            if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
-        end
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Set the current location as the Camp anchor point. Character will return here when idle.')
-        end
-        ImGui.SameLine()
-        if ImGui.Button('Clear Camp##manualCampClear') then
-            ctrl.camp_loc = nil
-        end
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Clears camp location. Player will not auto-return after combat.')
-        end
-
-        if ctrl.camp_loc then
-            ImGui.SetNextItemWidth(UI.px(180))
-            local manualCampR, manualCampRChanged = ImGui.SliderInt('Camp Radius##manualRadius', ctrl.camp_radius or 100, 10, 500)
+            UI.formLabel('Camp radius')
+            local manualCampR, manualCampRChanged = ImGui.SliderInt('##manualRadius', ctrl.camp_radius or 100, 10, 500)
             if manualCampRChanged then
                 ctrl.camp_radius = manualCampR
                 runtime.saveLoadout(true)
@@ -11542,7 +11566,8 @@ function UI.drawControlTab()
                 ImGui.SetTooltip('Maximum distance in units from camp center to engage enemies.')
             end
         end
-
+    end
+    if ctrl.mode == 'Manual' and UI.pageSection('manTargeting', 'Targeting & movement', true) then
         ctrl.manual_auto_xtarget = ImGui.Checkbox('Auto-Target Hostiles on XTarget##manualAutoXtar',
             ctrl.manual_auto_xtarget ~= false)
         if ImGui.IsItemHovered() then
@@ -11554,9 +11579,8 @@ function UI.drawControlTab()
                 'Unchecked: Only fights targets you manually select (and anything that is hitting you).')
         end
         if ctrl.manual_auto_xtarget ~= false then
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##manualXtarDist', ctrl.xtar_nav_dist or 150, 25,
-                300)
+            UI.formLabel('XTarget chase range')
+            ctrl.xtar_nav_dist = ImGui.SliderInt('##manualXtarDist', ctrl.xtar_nav_dist or 150, 25, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
@@ -11588,15 +11612,15 @@ function UI.drawControlTab()
     end
 
     -- Puller Mode Contextual Controls
-    if ctrl.mode == 'Puller' then
-        ImGui.SetNextItemWidth(UI.px(160))
+    if ctrl.mode == 'Puller' and UI.pageSection('pullMethod', 'Pulling', true) then
+        UI.formLabel('Pull with', 150)
         local curPullStyleIdx = 1
         for idx, ps in ipairs(MODES.PULL_STYLES) do
             if ps == (ctrl.pull_style or 'Melee') then
                 curPullStyleIdx = idx; break
             end
         end
-        local newPullStyleIdx = ImGui.Combo('Pull Method##pullStyle', curPullStyleIdx, MODES.PULL_STYLES)
+        local newPullStyleIdx = ImGui.Combo('##pullStyle', curPullStyleIdx, MODES.PULL_STYLES)
         ctrl.pull_style = MODES.PULL_STYLES[newPullStyleIdx]
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip(
@@ -11608,8 +11632,7 @@ function UI.drawControlTab()
         end
 
         if ctrl.pull_style == 'Spell' then
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(UI.px(200))
+            UI.formLabel('Pull spell')
 
             -- Gem names are polled 2x/s, not per frame (2x12 TLO calls +
             -- string.format per gem every frame before).
@@ -11660,7 +11683,7 @@ function UI.drawControlTab()
             end
             curIdx = curIdx or 1
 
-            local newIdx = ImGui.Combo('Pull Spell##pullSpellCombo', curIdx, pg.labels)
+            local newIdx = ImGui.Combo('##pullSpellCombo', curIdx, pg.labels)
             if newIdx ~= curIdx then
                 ctrl.pull_spell_gem = pg.slots[newIdx] or 1
                 ctrl.pull_spell = pg.names[newIdx] or ''
@@ -11674,16 +11697,15 @@ function UI.drawControlTab()
         end
 
         if (ctrl.pull_style or 'Melee') ~= 'Melee' then
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.pull_engage_dist = ImGui.SliderInt('Engagement Distance##pullEngageDist', ctrl.pull_engage_dist or 100,
-                15, 250)
+            UI.formLabel('Engage from')
+            ctrl.pull_engage_dist = ImGui.SliderInt('##pullEngageDist', ctrl.pull_engage_dist or 100, 15, 250, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Distance (units) to stop at before sending in pets, casting the pull spell, or firing the bow.\n'
                     .. 'Automatically shortened to the pull spell\'s range or the bow + ammo range when that is less.')
             end
 
-            ctrl.pull_stand_back = ImGui.Checkbox('Stand Back (Let Pet Tank / Stay Ranged)##pullStandBack',
+            ctrl.pull_stand_back = ImGui.Checkbox('Stand back (let the pet tank / stay at range)##pullStandBack',
                 ctrl.pull_stand_back == true)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
@@ -11691,8 +11713,8 @@ function UI.drawControlTab()
             end
         end
 
-        ImGui.SetNextItemWidth(UI.px(180))
-        local pullMinHpVal = ImGui.SliderInt('Min Pull HP %##pullMinHpCtrl', ctrl.pull_min_hp_pct or 0, 0, 95, '%d%%')
+        UI.formLabel('Rest below HP')
+        local pullMinHpVal = ImGui.SliderInt('##pullMinHpCtrl', ctrl.pull_min_hp_pct or 0, 0, 95, (ctrl.pull_min_hp_pct or 0) == 0 and 'never' or '%d%%')
         ctrl.pull_min_hp_pct = pullMinHpVal
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('%s',
@@ -11702,51 +11724,48 @@ function UI.drawControlTab()
         end
 
 
-        if ctrl.submode == 'Hunt' then
-            accent(ARC, 'Puller (Hunt)')
-            ImGui.SetNextItemWidth(UI.px(180))
-            local huntR, huntRChanged = ImGui.SliderInt('Search Radius', ctrl.hunter_radius or 1500, 50, 2000)
+    end
+    if ctrl.mode == 'Puller' and ctrl.submode == 'Hunt' and UI.pageSection('pullHunt', 'Hunting area', true) then
+        do
+            UI.formLabel('Search radius')
+            local huntR, huntRChanged = ImGui.SliderInt('##huntRadius', ctrl.hunter_radius or 1500, 50, 2000, '%d ft')
             if huntRChanged then
                 ctrl.hunter_radius = huntR
                 runtime.saveLoadout(true)
             end
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
+            UI.formLabel('Same-floor height')
+            ctrl.hunter_z_plane = ImGui.SliderInt('##huntZPlane', ctrl.hunter_z_plane or 15, 5, 50, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Tier 1 vertical search threshold. MoriAC prioritizes NPCs on the same floor or Z plane\nwithin this height difference before searching other floors.')
             end
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.hunter_z = ImGui.SliderInt('Max Height Diff (Z)', ctrl.hunter_z or 75, 10, 300)
+            UI.formLabel('Max height difference')
+            ctrl.hunter_z = ImGui.SliderInt('##huntZ', ctrl.hunter_z or 75, 10, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Tier 2 vertical search limit. If no valid NPCs are found on your immediate floor,\nTriune expands search up to this maximum height difference across floors and ledges.')
             end
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.hunter_min_level = ImGui.SliderInt('Min NPC Level', ctrl.hunter_min_level or 1, 1, 100)
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.hunter_max_level = ImGui.SliderInt('Max NPC Level', ctrl.hunter_max_level or 100, 1, 100)
-            if ctrl.hunter_min_level > ctrl.hunter_max_level then ctrl.hunter_min_level = ctrl.hunter_max_level end
+            ctrl.hunter_min_level, ctrl.hunter_max_level = UI.levelRange('NPC levels', 'huntLvl',
+                ctrl.hunter_min_level or 1, ctrl.hunter_max_level or 100)
 
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25,
-                300)
+            UI.formLabel('XTarget chase range')
+            ctrl.xtar_nav_dist = ImGui.SliderInt('##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
             end
 
-            ctrl.ignore_distant_xtargets = ImGui.Checkbox('Ignore Distant XTargets When Pulling##pullerHuntXtarIgnore',
+            ctrl.ignore_distant_xtargets = ImGui.Checkbox('Skip XTarget mobs beyond chase range##pullerHuntXtarIgnore',
                 ctrl.ignore_distant_xtargets == true)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'When checked, an XTarget enemy farther than Max XTarget Chase Range is skipped entirely\ninstead of being chased -- Puller looks for a new mob to pull instead.')
             end
 
-            ImGui.Dummy(0, UI.px(2))
-
-            accent(GOLD, 'Combat Radius Anchor (optional)')
+        end
+    end
+    if ctrl.mode == 'Puller' and ctrl.submode == 'Hunt' and UI.pageSection('pullAnchor', 'Combat anchor (optional)', false) then
+        do
             local anchorPatrol = runtime.wpAnchorActive()
             if anchorPatrol then ImGui.TextDisabled('Combat Anchor Patrol is active. The single combat anchor is not used.') end
             ImGui.BeginDisabled(anchorPatrol)
@@ -11792,10 +11811,10 @@ function UI.drawControlTab()
                 ImGui.SetTooltip('Forget the anchor for this zone -- the Puller roams anywhere within Search Radius again.')
             end
 
-            ImGui.SetNextItemWidth(UI.px(220))
+            UI.formLabel('Combat radius')
             local curRadius = (ctrl.hunter_combat_radius and ctrl.hunter_combat_radius > 0) and ctrl
                 .hunter_combat_radius or 250
-            local newRadius, changed = ImGui.SliderInt('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)
+            local newRadius, changed = ImGui.SliderInt('##pullerAnchorRadius', curRadius, 1, 2000, '%d ft')
             if changed then
                 ctrl.hunter_combat_radius = newRadius
                 if ctrl.hunter_combat_loc then runtime.saveZoneAnchor() else runtime.saveLoadout(true) end
@@ -11806,7 +11825,7 @@ function UI.drawControlTab()
                     .. 'still only takes mobs within 500 of the anchor and never walks past that line.')
             end
 
-            local roamOn, roamChanged = ImGui.Checkbox('Roam Inside the Circle While Idle##pullerAnchorRoam',
+            local roamOn, roamChanged = ImGui.Checkbox('Roam inside the circle while idle##pullerAnchorRoam',
                 ctrl.hunter_anchor_roam ~= false)
             if roamChanged then
                 ctrl.hunter_anchor_roam = roamOn
@@ -11819,32 +11838,16 @@ function UI.drawControlTab()
                     .. 'Unchecked: wait where you stand (still walks back in if outside).')
             end
             ImGui.EndDisabled()
-        elseif ctrl.submode == 'Camp' then
-            accent(GOLD, 'Puller Camp Location')
-            if ctrl.camp_loc then
-                ImGui.Text(string.format('Camp set at: %.1f, %.1f, %.1f',
-                    ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z))
-            else
-                accent(WARN, 'No camp location set -- puller requires a camp position.')
-            end
+        end
+    end
+    if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and UI.pageSection('pullCamp', 'Camp & pull area', true) then
+        do
+            if not ctrl.camp_loc then accent(WARN, 'Set a camp: the puller brings mobs back to it.') end
+            UI.campRow('puller', 'No camp set.', 'Make this spot the camp; pulls are brought back here.',
+                function() runtime.pullState = 'IDLE'; runtime.pullTargetId = 0 end)
 
-            if ImGui.Button('Set Here##pullerCampSet') then
-                local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-                if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Set the current location as the Puller Camp anchor point. Puller returns here after pulling.')
-            end
-            ImGui.SameLine()
-            if ImGui.Button('Clear Camp##pullerCampClear') then
-                ctrl.camp_loc = nil; runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Clear the Puller Camp anchor point.')
-            end
-
-            ImGui.SetNextItemWidth(UI.px(180))
-            local pullRad, pullRadChanged = ImGui.SliderInt('Pull Radius', ctrl.camp_radius or 100, 10, 500)
+            UI.formLabel('Pull radius')
+            local pullRad, pullRadChanged = ImGui.SliderInt('##pullRadius', ctrl.camp_radius or 100, 10, 500, '%d ft')
             if pullRadChanged then
                 ctrl.camp_radius = pullRad
                 runtime.saveLoadout(true)
@@ -11852,36 +11855,25 @@ function UI.drawControlTab()
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Maximum horizontal distance in units from camp to search for pullable NPCs.')
             end
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.camp_z = ImGui.SliderInt('Pull Height Diff (Z)', ctrl.camp_z or 75, 10, 300)
+            UI.formLabel('Max height difference')
+            ctrl.camp_z = ImGui.SliderInt('##pullCampZ', ctrl.camp_z or 75, 10, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Maximum vertical height difference (Z) in units above or below camp to search for pullable NPCs.')
             end
 
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.pull_min_level = ImGui.SliderInt('Min NPC Level', ctrl.pull_min_level or 1, 1, 100)
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Minimum NPC level required to consider a mob eligible for pulling.')
-            end
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.pull_max_level = ImGui.SliderInt('Max NPC Level', ctrl.pull_max_level or 100, 1, 100)
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Maximum NPC level allowed to consider a mob eligible for pulling.')
-            end
-            if ctrl.pull_min_level > ctrl.pull_max_level then ctrl.pull_min_level = ctrl.pull_max_level end
+            ctrl.pull_min_level, ctrl.pull_max_level = UI.levelRange('NPC levels', 'pullLvl',
+                ctrl.pull_min_level or 1, ctrl.pull_max_level or 100)
 
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerCampXtar', ctrl.xtar_nav_dist or 150, 25,
-                300)
+            UI.formLabel('XTarget chase range')
+            ctrl.xtar_nav_dist = ImGui.SliderInt('##pullerCampXtar', ctrl.xtar_nav_dist or 150, 25, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
             end
         end
-
+    end
+    if ctrl.mode == 'Puller' and UI.pageSection('pullWaypoints', 'Waypoint patrol', ctrl.use_waypoints == true) then
         -- Puller Waypoint Patrol Section
-        accent(GOLD, 'Puller Waypoint Patrol')
         if runtime.wpAnchorActive() then
             local st = runtime.wpPatrol
             local wp = runtime.wpNode()
@@ -11895,7 +11887,7 @@ function UI.drawControlTab()
                 end
             end
         end
-        local useWp = ImGui.Checkbox('Enable Waypoint Patrol##useWaypoints', ctrl.use_waypoints == true)
+        local useWp = ImGui.Checkbox('Patrol a waypoint route##useWaypoints', ctrl.use_waypoints == true)
         if useWp ~= ctrl.use_waypoints then
             ctrl.use_waypoints = useWp
             if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
@@ -11911,9 +11903,8 @@ function UI.drawControlTab()
         if ctrl.submode == 'Hunt' then UI.drawAnchorPatrolSettings() end
 
         if ctrl.use_waypoints then
-            if ctrl.submode ~= 'Hunt' then ImGui.SameLine() end
-            ImGui.SetNextItemWidth(UI.px(120))
-            local newRad, changedRad = ImGui.SliderInt('Arrival Radius##wpRadius', ctrl.waypoint_radius or 20, 5, 100)
+            UI.formLabel('Arrival radius')
+            local newRad, changedRad = ImGui.SliderInt('##wpRadius', ctrl.waypoint_radius or 20, 5, 100, '%d ft')
             if changedRad then
                 ctrl.waypoint_radius = newRad
                 runtime.saveLoadout(true)
@@ -11922,10 +11913,8 @@ function UI.drawControlTab()
                 ImGui.SetTooltip('Distance in units to reach a waypoint before advancing to the next one in the loop.')
             end
 
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(UI.px(130))
-            local newScan, changedScan = ImGui.SliderInt('Scan Radius##wpScanRadius', ctrl.waypoint_scan_radius or 100,
-                20, 500)
+            UI.formLabel('Scan radius')
+            local newScan, changedScan = ImGui.SliderInt('##wpScanRadius', ctrl.waypoint_scan_radius or 100, 20, 500, '%d ft')
             if changedScan then
                 ctrl.waypoint_scan_radius = newScan
                 runtime.saveLoadout(true)
@@ -11935,7 +11924,7 @@ function UI.drawControlTab()
                 'NPC search radius in units around your character to look for mobs while patrolling waypoints.')
             end
 
-            local newLoop = ImGui.Checkbox('Loop##wpLoop', ctrl.waypoint_loop == true)
+            local newLoop = ImGui.Checkbox('Loop (otherwise walk back and forth)##wpLoop', ctrl.waypoint_loop == true)
             if newLoop ~= ctrl.waypoint_loop then
                 ctrl.waypoint_loop = newLoop
                 if ctrl.waypoint_loop then ctrl.waypoint_direction = 1 end
@@ -11963,7 +11952,7 @@ function UI.drawControlTab()
                     end
                     if curIdx == 1 then runtime.wpSelectedPreset = nil end -- selection no longer exists (e.g. deleted)
                 end
-                ImGui.SetNextItemWidth(UI.px(220))
+                UI.formLabel('Saved routes', 220)
                 local newIdx = ImGui.Combo('##wpPresetCombo', curIdx, options)
                 if newIdx ~= curIdx then
                     runtime.wpSelectedPreset = (newIdx > 1) and presets[newIdx - 1].name or nil
@@ -12228,12 +12217,10 @@ function UI.drawControlTab()
             end
         end
 
-        -- Puller Mob Filtering: Faction Considerations, Pull List & Ignore List
-        ImGui.Separator()
-        accent(GOLD, 'Puller Target Filters')
-
-        accent(GOLD, 'Target Faction Considerations')
-        accent(MUTED, 'Select which NPC faction considerations Puller is allowed to auto-target.')
+    end
+    -- Puller Mob Filtering: Faction Considerations, Pull List & Ignore List
+    if ctrl.mode == 'Puller' and UI.pageSection('pullFaction', 'Faction filter', false) then
+        ImGui.TextDisabled('Which faction standings the puller may target.')
 
         ctrl.pull_con_filter = ctrl.pull_con_filter or {
             ['Scowling'] = true,
@@ -12291,6 +12278,8 @@ function UI.drawControlTab()
         end
 
 
+    end
+    if ctrl.mode == 'Puller' and UI.pageSection('pullLists', 'Pull & ignore lists', true) then
         local curZoneShortName = runtime.curZoneShort() -- refreshes the cache below
         local curZoneName = runtime.zoneNameCached or curZoneShortName or '?'
 
@@ -12409,8 +12398,7 @@ function UI.drawControlTab()
     end
 
     -- Assist Mode Contextual Controls
-    if ctrl.mode == 'Assist' then
-        accent(GOLD, 'Main Assist Selection (by Player ID)')
+    if ctrl.mode == 'Assist' and UI.pageSection('assistMa', 'Main Assist', true) then
         -- getAssistCandidates does Group.Member reads plus a Spawn('pc =')
         -- search per custom entry; refresh it once a second, not per frame.
         local nowAc = os.clock()
@@ -12441,7 +12429,7 @@ function UI.drawControlTab()
             end
         end
 
-        ImGui.SetNextItemWidth(UI.px(260))
+        UI.formLabel('Main Assist', 220)
         local newIdx = ImGui.Combo('##maSelectCombo', curIdx, comboLabels)
         if newIdx ~= curIdx then
             local chosen = candidates[newIdx]
@@ -12513,31 +12501,32 @@ function UI.drawControlTab()
         if runtime.maStatusMsg and os.clock() < (runtime.maStatusTimer or 0) then
             accent(WARN, runtime.maStatusMsg)
         end
-
-        ImGui.SetNextItemWidth(UI.px(160))
-        ctrl.assist_at = ImGui.SliderInt('Assist At %', ctrl.assist_at or 98, 1, 100, '%d%%')
+    end
+    if ctrl.mode == 'Assist' and UI.pageSection('assistBehaviour', 'Assisting', true) then
+        UI.formLabel('Engage at target HP')
+        ctrl.assist_at = ImGui.SliderInt('##assistAt', ctrl.assist_at or 98, 1, 100, '%d%%')
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('Target HP percentage at or below which this character will engage and attack the Main Assist\'s target.')
         end
 
-        ImGui.SetNextItemWidth(UI.px(180))
-        ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##assistXtarDist', ctrl.xtar_nav_dist or 150, 25, 300)
+        UI.formLabel('XTarget chase range')
+        ctrl.xtar_nav_dist = ImGui.SliderInt('##assistXtarDist', ctrl.xtar_nav_dist or 150, 25, 300, '%d ft')
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget) or Main Assist target.')
         end
 
-        ImGui.SetNextItemWidth(UI.px(180))
-        ctrl.chase_dist = ImGui.SliderInt('Chase Distance (Follow MA)##assistChaseDist', ctrl.chase_dist or 15, 5, 100, '%d ft')
+        UI.formLabel('Follow distance')
+        ctrl.chase_dist = ImGui.SliderInt('##assistChaseDist', ctrl.chase_dist or 15, 5, 100, '%d ft')
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('How far to stay back from the Main Assist when following (feet/units).\nWhen moving with the MA, the character will follow and hold position at this distance.')
         end
 
-        ctrl.assist_self_defense = ImGui.Checkbox('Self-Defense When Attacked##assistSelfDefense', ctrl.assist_self_defense ~= false)
+        ctrl.assist_self_defense = ImGui.Checkbox('Defend myself when attacked##assistSelfDefense', ctrl.assist_self_defense ~= false)
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('When enabled, if the Main Assist has no active engaged target and an enemy attacks you, defend yourself.\nWhen the MA engages a target, the assistant will strictly focus on the MA target only.')
         end
 
-        local behindVal = ImGui.Checkbox('Position Behind NPC##assistBehind', ctrl.assist_behind ~= false)
+        local behindVal = ImGui.Checkbox('Fight from behind the mob##assistBehind', ctrl.assist_behind ~= false)
         if behindVal ~= (ctrl.assist_behind ~= false) then
             ctrl.assist_behind = behindVal
             runtime.saveLoadout(true)
@@ -12547,35 +12536,16 @@ function UI.drawControlTab()
         end
 
         if ctrl.submode == 'Chase' then
-            ctrl.chase = ImGui.Checkbox('Chase MA (Auto-Follow)', ctrl.chase)
+            ctrl.chase = ImGui.Checkbox('Follow the Main Assist##assistChase', ctrl.chase)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Automatically follow and stay within Chase Distance of the Main Assist when not engaging an active target.')
             end
         elseif ctrl.submode == 'Camp' then
-            accent(GOLD, 'Assist Camp Location')
-            if ctrl.camp_loc then
-                ImGui.Text(string.format('Camp set at: %.1f, %.1f, %.1f',
-                    ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z))
-            else
-                accent(WARN, 'No camp location set -- character will stay at current spot.')
-            end
-
-            if ImGui.Button('Set Here##assistCampSet') then
-                local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-                if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Set the current location as the Assist Camp anchor point. Character will return here when idle.')
-            end
-            ImGui.SameLine()
-            if ImGui.Button('Clear Camp##assistCampClear') then
-                ctrl.camp_loc = nil
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Clear the Assist Camp anchor point. Character will hold wherever the previous fight ended.')
-            end
+            ImGui.Spacing()
+            UI.campRow('assist', 'No camp: you hold wherever the last fight ended.',
+                'Make this spot the camp; you return here when idle.')
         elseif ctrl.submode == 'Backline' then
-            ctrl.chase = ImGui.Checkbox('Follow MA in Backline##backlineChase', ctrl.chase)
+            ctrl.chase = ImGui.Checkbox('Follow the Main Assist out of combat##backlineChase', ctrl.chase)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('When checked, follows the Main Assist at the configured Chase Distance when out of combat.\nWhen combat begins, holds backline position and assists with spells and ranged attacks without running into melee.')
             end

@@ -4,6 +4,24 @@
 
 ## 2026-10-24
 
+- **Mode & Pulling page reorganised (`lua/moriac.lua`).** Phase P5. Same settings and behaviour, now laid out to read and scan.
+  - **Collapsible sections per mode, remembered between sessions:**
+    - Manual: *Camp*, *Targeting & movement*.
+    - Puller: *Pulling*, *Hunting area* or *Camp & pull area*, *Combat anchor*, *Waypoint patrol* (open when patrolling is on), *Faction filter*, *Pull & ignore lists*.
+    - Assist: *Main Assist*, *Assisting*.
+  - **Label-left form rows** (`UI.formLabel`): every slider and combo has its label in one column and a uniform width. Before, ImGui's label-on-the-right gave ragged widths (120-260px). Distances show units ("150 ft"), and "Rest below HP" shows "never" at 0.
+  - Min/max NPC level is one row (`UI.levelRange`), and so are the waypoint radii. Before, these were side-by-side widgets that wrapped unpredictably.
+  - The three copies of the camp Set/Clear block are one `UI.campRow`. It says "Set camp here" or "Move here", and Clear only appears when a camp exists.
+  - Plain-language labels, e.g. "Patrol a waypoint route", "Fight from behind the mob", "Defend myself when attacked", "Engage at target HP".
+  - Collapsible state for the Overview and this page shares `ctrl.ui_sections` (`UI.pageSection`).
+- **Tests:** the smoke test adds a pass with every section collapsed, since sections now gate whole blocks. 290 frames over 4 passes.
+
+### In-game checklist (Mode & Pulling)
+- [ ] Each mode shows its sections; collapsing one is remembered after `/ac restart`.
+- [ ] Puller Spell pull: the Pull spell combo follows the spell if you re-mem it to another gem.
+- [ ] Waypoint presets: save / load / rename / export / import still work.
+- [ ] Pull & ignore lists: Universal / zone toggle, Pick... popup, add and remove.
+
 - **Overview page rebuilt (`lua/moriac.lua`).** Phase P4. It replaces the Status tab's stack of bullet-text tables (`• ENGINE: RUNNING`, `• Nav Stalls: 0 | Frame Counter: 12`, ...) with cards:
   - **Target | You** side by side.
     - Target: name in con colour, level and class, HP bar, one status line (distance, melee range, line of sight, who has aggro), quick actions (Face, Attack, Clear, +/- Pull list, +/- Ignore), and the Main Assist's target with a Target button.
