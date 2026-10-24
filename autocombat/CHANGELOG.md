@@ -4,6 +4,19 @@
 
 ## 2026-10-24
 
+- **Settings page reorganised (`lua/moriac.lua`).** Phase P6.
+  - **"Find a setting..." box.** Type e.g. *mana*, *door*, *log* or *fov* and only the matching sections are shown, expanded. It matches section titles plus keyword lists. A message appears when nothing matches.
+  - **Remembered collapsible sections:** Classes, Combat style & positioning (both open by default), Navigation, Retargeting while moving, Resting & med breaks, Pets, Interface & diagnostics (closed by default, so the page is no longer one long scroll).
+  - Sliders use the label-left rows with plain labels ("Retries before lockout", "Forget hazards after", "Pet engages at mob HP", "Field of view").
+  - Classes: smaller pickers for the four slots, a Re-detect tooltip, and a "settings save automatically" line with a small *Save now* button in place of the big Save Loadout button.
+- **Pins instead of header buttons.** The Plugins page's "Hdr" column and the plugin dialog's "Header Button" are now **Pin**, which lists the window in the sidebar. **Pinned standalone scripts** now appear in the sidebar too (checked = running); in the first shell they were only in the Windows menu.
+- Help: the "twist while fighting" entry names the editor's *Keep singing (twist)* box.
+- Tests: the smoke test runs the Settings search with a matching and a non-matching query and checks the match count.
+
+### In-game checklist (Settings)
+- [ ] "Find a setting" with *med* shows only Resting & med breaks, expanded; clearing it restores your open/closed sections.
+- [ ] Pinning a plugin or script on the Plugins page adds it to the sidebar.
+
 - **Mode & Pulling page reorganised (`lua/moriac.lua`).** Phase P5. Same settings and behaviour, now laid out to read and scan.
   - **Collapsible sections per mode, remembered between sessions:**
     - Manual: *Camp*, *Targeting & movement*.

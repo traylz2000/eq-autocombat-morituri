@@ -8405,7 +8405,7 @@ function UI.drawPluginsTab()
         if openScripts and ImGui.BeginTable('TriuneScriptsTable', 5, tblFlags) then
             ImGui.TableSetupColumn('Script', ImGuiTableColumnFlags.WidthFixed, UI.px(150))
             ImGui.TableSetupColumn('Status', ImGuiTableColumnFlags.WidthFixed, UI.px(64))
-            ImGui.TableSetupColumn('Hdr', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
+            ImGui.TableSetupColumn('Pin', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
             ImGui.TableSetupColumn('Button Name', ImGuiTableColumnFlags.WidthStretch, 0)
             ImGui.TableSetupColumn('Actions', ImGuiTableColumnFlags.WidthFixed, UI.px(120))
             ImGui.TableHeadersRow()
@@ -8434,8 +8434,8 @@ function UI.drawPluginsTab()
                     pm.setScriptHeaderButton(entry, newHdr)
                 end
                 if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('%s', string.format('%s a "%s" button on the main window header that runs / stops this script.',
-                        hdrOn and 'Showing' or 'Check to show', pm.scriptButtonLabel(entry)))
+                    ImGui.SetTooltip('%s', string.format('%s "%s" in the main window sidebar (tick to run, untick to stop).',
+                        hdrOn and 'Pinned:' or 'Tick to pin', pm.scriptButtonLabel(entry)))
                 end
 
                 -- Button name: saved when the field loses focus, not per keystroke
@@ -8487,7 +8487,7 @@ function UI.drawPluginsTab()
     if ImGui.BeginTable('TriunePluginsTable', 8, tblFlags) then
         ImGui.TableSetupColumn('On', ImGuiTableColumnFlags.WidthFixed, UI.px(26))
         ImGui.TableSetupColumn('Cbt', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
-        ImGui.TableSetupColumn('Hdr', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
+        ImGui.TableSetupColumn('Pin', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
         ImGui.TableSetupColumn('Plugin', ImGuiTableColumnFlags.WidthFixed, UI.px(165))
         ImGui.TableSetupColumn('Uses', ImGuiTableColumnFlags.WidthFixed, UI.px(105))
         ImGui.TableSetupColumn('ms', ImGuiTableColumnFlags.WidthFixed, UI.px(44))
@@ -8555,8 +8555,8 @@ function UI.drawPluginsTab()
                         pm.setHeaderButton(id, newHdr)
                     end
                     if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip('%s', string.format('%s a "%s" button on the main window header that opens / closes this plugin\'s window.',
-                            hdrOn and 'Showing' or 'Check to show', tostring(w.label or id)))
+                        ImGui.SetTooltip('%s', string.format('%s "%s" in the main window sidebar for one-click open / close. Every window is also in the Windows menu.',
+                            hdrOn and 'Pinned:' or 'Tick to pin', tostring(w.label or id)))
                     end
                 else
                     ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], '—')
@@ -8739,12 +8739,12 @@ function UI.drawPluginsTab()
             if pm.getWindow(pm.activeConfigPluginId) then
                 ImGui.SameLine()
                 local hdrOn = pm.headerButtonEnabled(pm.activeConfigPluginId)
-                local newHdr = ImGui.Checkbox('Header Button##modalHdr', hdrOn)
+                local newHdr = ImGui.Checkbox('Pin to sidebar##modalHdr', hdrOn)
                 if newHdr ~= hdrOn then
                     pm.setHeaderButton(pm.activeConfigPluginId, newHdr)
                 end
                 if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('%s', 'Show a button on the main window header that opens / closes this plugin\'s window.')
+                    ImGui.SetTooltip('%s', 'List this window in the main window sidebar for one-click open / close.')
                 end
             end
             ImGui.SameLine()
@@ -8862,10 +8862,10 @@ end
 function UI.drawClassPicker()
     local CLASS_PICKER_OPTIONS = { '-- None --', 'War', 'Clr', 'Pal', 'Rng', 'SK', 'Dru', 'Mnk', 'Brd', 'Rog', 'Shm', 'Nec',
         'Wiz', 'Mag', 'Enc', 'Bst', 'Ber' }
-    if ImGui.CollapsingHeader('Character Classes & Loadout', ImGuiTreeNodeFlags.DefaultOpen) then
-        ImGui.TextDisabled('Auto-detected from Inventory Window on login; adjust manually if needed:')
+    if UI.settingsSection('setClasses', 'Classes', 'class detect redetect quartet loadout save', true) then
+        ImGui.TextDisabled('Detected from your Inventory window at login. Change them here if they are wrong.')
         for i = 1, CLASS_SLOTS do
-            ImGui.SetNextItemWidth(UI.px(95))
+            ImGui.SetNextItemWidth(UI.px(80))
             local currentVal = myClasses[i]
             local currentIdx = 1
             if currentVal then
@@ -8891,9 +8891,10 @@ function UI.drawClassPicker()
             ImGui.SameLine()
         end
         if ImGui.Button('Re-detect') then reDetectRequested = true end
-        if ImGui.Button('Save Loadout', UI.px(140), UI.px(24)) then runtime.saveLoadout() end
-        ImGui.SameLine(); ImGui.TextDisabled('-> moriac_loadout_<server>_<char>.lua (auto-saves on changes)')
-        accent(MUTED, 'Detected from your in-game Inventory Window.')
+        if ImGui.IsItemHovered() then UI.setTooltip('Read the classes from the Inventory window again.') end
+        ImGui.TextDisabled('Settings save automatically to config/moriac_loadout_<server>_<char>.lua.')
+        ImGui.SameLine()
+        if ImGui.SmallButton('Save now') then runtime.saveLoadout() end
     end
 end
 
@@ -8969,7 +8970,7 @@ UI.HELP_TARGETS = {
 UI.HELP_CONDITIONS = {
         { when = 'always',               desc = 'Casts whenever the spell gem or ability is ready and off cooldown (respects mana and reagent requirements).' },
         { when = 'in combat',            desc = 'Casts whenever your character or group is actively engaged in combat.' },
-        { when = 'twist while fighting', desc = 'Continuously sings the song while in combat without waiting for buff duration to expire (Bard songs). Same as "in combat" with the Twist box checked.' },
+        { when = 'twist while fighting', desc = 'Continuously sings the song while in combat without waiting for buff duration to expire (Bard songs). Same as "in combat" with Keep singing (twist) ticked.' },
         { when = 'target HP <=',         desc = 'Casts when the target\'s HP percentage drops to or below the configured slider threshold.' },
         { when = 'target HP between',    desc = 'Casts only when target HP is between the configured minimum HP and percentage threshold (e.g. DoTs between 20% and 90%).' },
         { when = 'my HP <=',             desc = 'Casts when your own character\'s HP percentage drops to or below threshold (heals, defensives, Feign Death, Mend).' },
@@ -10801,6 +10802,20 @@ function UI.pageSection(key, label, defaultOpen)
         runtime.saveLoadout(true)
     end
     return isOpen
+end
+
+-- Settings page section: a remembered collapsible section, or -- while the
+-- "Find a setting" box has text -- shown open only when its label or
+-- keywords match.
+function UI.settingsSection(key, label, keywords, defaultOpen)
+    local q = (runtime.settingsQuery or ''):lower()
+    if q ~= '' then
+        if not (label .. ' ' .. (keywords or '')):lower():find(q, 1, true) then return false end
+        runtime.settingsMatches = (runtime.settingsMatches or 0) + 1
+        if ImGui.SetNextItemOpen then pcall(ImGui.SetNextItemOpen, true) end
+        return ImGui.CollapsingHeader(label .. '###sec_' .. key)
+    end
+    return UI.pageSection(key, label, defaultOpen)
 end
 
 function UI.cardTitle(text)
@@ -13889,11 +13904,21 @@ function UI.clampMedBreak(kind, startMoved)
 end
 
 function UI.drawSettingsTab()
+    ImGui.SetNextItemWidth(UI.px(260))
+    local q = ImGui.InputTextWithHint('##settingsFind', 'Find a setting...', runtime.settingsQuery or '')
+    if type(q) == 'string' then runtime.settingsQuery = q end
+    if runtime.settingsQuery ~= '' then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Clear##settingsFindClear') then runtime.settingsQuery = '' end
+    end
+    runtime.settingsMatches = 0
+    ImGui.Spacing()
+
     -- 1. Character Classes & Profile
     UI.drawClassPicker()
 
     -- 2. Combat Style & Positioning
-    if ImGui.CollapsingHeader('Combat Style & Positioning', ImGuiTreeNodeFlags.DefaultOpen) then
+    if UI.settingsSection('setStyle', 'Combat style & positioning', 'melee ranged bow spell distance line of sight los retries lockout resist fail', true) then
         accent(GOLD, 'Engagement Style:')
         if ImGui.RadioButton('Melee', ctrl.combat_style == 'Melee') then
             runtime.setCombatStyle('Melee')
@@ -13923,8 +13948,8 @@ function UI.drawSettingsTab()
         end
 
         if ctrl.combat_style == 'Melee' then
-            ImGui.SetNextItemWidth(UI.px(200))
-            local newDist, changed = ImGui.SliderInt('Melee Distance##meleeRangeSlider', ctrl.melee_dist or 14, 5, 50)
+            UI.formLabel('Melee distance')
+            local newDist, changed = ImGui.SliderInt('##meleeRangeSlider', ctrl.melee_dist or 14, 5, 50)
             if changed or (newDist and newDist ~= ctrl.melee_dist) then
                 ctrl.melee_dist = newDist
                 runtime.saveLoadout(true)
@@ -13935,8 +13960,8 @@ function UI.drawSettingsTab()
                     .. 'Adjust to stick tighter (e.g. 8-10) or fight from further away (e.g. 15-25).')
             end
         else
-            ImGui.SetNextItemWidth(UI.px(200))
-            local newDist, changed = ImGui.SliderInt('Combat Distance##rangedRangeSlider', ctrl.ranged_dist or 40, 5, 200)
+            UI.formLabel('Ranged / spell distance')
+            local newDist, changed = ImGui.SliderInt('##rangedRangeSlider', ctrl.ranged_dist or 40, 5, 200)
             if changed or (newDist and newDist ~= ctrl.ranged_dist) then
                 ctrl.ranged_dist = newDist
                 runtime.saveLoadout(true)
@@ -13963,8 +13988,8 @@ function UI.drawSettingsTab()
         end
 
         accent(GOLD, 'Spell Failures & Lockouts:')
-        ImGui.SetNextItemWidth(UI.px(160))
-        local retriesVal = ImGui.SliderInt('Max Retries##cmr', ctrl.cast_max_retries or 2, 1, 10)
+        UI.formLabel('Retries before lockout')
+        local retriesVal = ImGui.SliderInt('##cmr', ctrl.cast_max_retries or 2, 1, 10)
         if retriesVal ~= ctrl.cast_max_retries then
             ctrl.cast_max_retries = retriesVal
             runtime.saveLoadout(true)
@@ -13974,8 +13999,8 @@ function UI.drawSettingsTab()
                 'Consecutive failed debuff/ability attempts before temporarily backing off on that target.\nDefault: 2 tries.')
         end
         ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(160))
-        local lockoutVal = ImGui.SliderInt('Lockout Time##castLockoutSec', ctrl.cast_lockout_sec or 30, 5, 300, '%d s')
+        UI.formLabel('Lockout time')
+        local lockoutVal = ImGui.SliderInt('##castLockoutSec', ctrl.cast_lockout_sec or 30, 5, 300, '%d s')
         if lockoutVal ~= ctrl.cast_lockout_sec then
             ctrl.cast_lockout_sec = lockoutVal
             runtime.saveLoadout(true)
@@ -13999,7 +14024,7 @@ function UI.drawSettingsTab()
 
 
     -- 3. Navigation & Hazard Avoidance
-    if ImGui.CollapsingHeader('Navigation & Hazard Avoidance', ImGuiTreeNodeFlags.DefaultOpen) then
+    if UI.settingsSection('setNav', 'Navigation', 'mq2nav mesh moveutils hazard stuck door gate levitation stick isolation path breadcrumbs', false) then
         if not navLoaded() then
             accent(WARN, 'MQ2Nav is NOT loaded! Navigation and pathfinding require MQ2Nav.')
             ImGui.SameLine()
@@ -14098,8 +14123,8 @@ function UI.drawSettingsTab()
                 .. 'when only its own spot is unmeshed.')
         end
 
-        ImGui.SetNextItemWidth(UI.px(180))
-        local newRatio = ImGui.SliderFloat('Max Path / Dist Ratio##navMaxPathRatio', ctrl.nav_max_path_ratio or 2.5, 1.2, 5.0, '%.1fx')
+        UI.formLabel('Max path detour')
+        local newRatio = ImGui.SliderFloat('##navMaxPathRatio', ctrl.nav_max_path_ratio or 2.5, 1.2, 5.0, '%.1fx')
         if newRatio and newRatio ~= ctrl.nav_max_path_ratio then
             ctrl.nav_max_path_ratio = newRatio
             runtime.saveLoadout(true)
@@ -14109,8 +14134,8 @@ function UI.drawSettingsTab()
         end
 
         ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(180))
-        local newHzRad = ImGui.SliderInt('Hazard Radius##navHazardRadius', ctrl.nav_hazard_radius or 15, 8, 35, '%d units')
+        UI.formLabel('Hazard radius')
+        local newHzRad = ImGui.SliderInt('##navHazardRadius', ctrl.nav_hazard_radius or 15, 8, 35, '%d units')
         if newHzRad and newHzRad ~= ctrl.nav_hazard_radius then
             ctrl.nav_hazard_radius = newHzRad
             runtime.saveLoadout(true)
@@ -14119,8 +14144,8 @@ function UI.drawSettingsTab()
             ImGui.SetTooltip('Avoidance radius around learned stuck hotspots.')
         end
         ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(180))
-        local newDecayMin = ImGui.SliderInt('Forget Time##navHazardForget', ctrl.nav_hazard_decay_minutes or 10, 1, 60, '%d min')
+        UI.formLabel('Forget hazards after')
+        local newDecayMin = ImGui.SliderInt('##navHazardForget', ctrl.nav_hazard_decay_minutes or 10, 1, 60, '%d min')
         if newDecayMin and newDecayMin ~= ctrl.nav_hazard_decay_minutes then
             ctrl.nav_hazard_decay_minutes = newDecayMin
             runtime.saveLoadout(true)
@@ -14149,7 +14174,7 @@ function UI.drawSettingsTab()
 
 
     -- 4. Closer-NPC Retargeting During Movement
-    if ImGui.CollapsingHeader('Closer-NPC Retargeting During Movement', ImGuiTreeNodeFlags.DefaultOpen) then
+    if UI.settingsSection('setRetarget', 'Retargeting while moving', 'closer mobs cone line of sight retarget box network pulls', false) then
         local chkVal = ImGui.Checkbox('Switch to Closer Mobs While Traveling', ctrl.check_closer_mobs ~= false)
         if chkVal ~= (ctrl.check_closer_mobs ~= false) then
             ctrl.check_closer_mobs = chkVal
@@ -14180,7 +14205,8 @@ function UI.drawSettingsTab()
         ImGui.SetNextItemWidth(UI.px(180))
         local curRetargets = ctrl.max_closer_retargets or 1
         local retargetFmt = (curRetargets == 0) and 'Disabled (0)' or '%d retarget(s)'
-        local newMaxRetargets = ImGui.SliderInt('Max Retargets Per Leg##maxCloserRetargets', curRetargets, 0, 5, retargetFmt)
+        UI.formLabel('Retargets per trip')
+        local newMaxRetargets = ImGui.SliderInt('##maxCloserRetargets', curRetargets, 0, 5, retargetFmt)
         if newMaxRetargets and newMaxRetargets ~= ctrl.max_closer_retargets then
             ctrl.max_closer_retargets = newMaxRetargets
             runtime.saveLoadout(true)
@@ -14205,10 +14231,10 @@ function UI.drawSettingsTab()
 
 
     -- 5. Resting & Resource Management
-    if ImGui.CollapsingHeader('Resting & Resource Management', ImGuiTreeNodeFlags.DefaultOpen) then
+    if UI.settingsSection('setRest', 'Resting & med breaks', 'mana hp endurance med break rest sit pull minimum', false) then
         accent(GOLD, 'Combat Recovery & Pull Thresholds:')
-        ImGui.SetNextItemWidth(UI.px(180))
-        local minManaVal = ImGui.SliderInt('Min Mana %##mmp', ctrl.min_mana_pct or 0, 0, 95, '%d%%')
+        UI.formLabel('Min mana (non-heals)')
+        local minManaVal = ImGui.SliderInt('##mmp', ctrl.min_mana_pct or 0, 0, 95, '%d%%')
         if minManaVal ~= ctrl.min_mana_pct then
             ctrl.min_mana_pct = minManaVal
             runtime.saveLoadout(true)
@@ -14219,8 +14245,8 @@ function UI.drawSettingsTab()
                 .. 'Ignored during Burn Mode (0 = disabled / cast at any mana level).')
         end
         ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(180))
-        local minPullHpVal = ImGui.SliderInt('Min Pull HP %##minPullHpSettings', ctrl.pull_min_hp_pct or 0, 0, 95, '%d%%')
+        UI.formLabel('Rest below HP')
+        local minPullHpVal = ImGui.SliderInt('##minPullHpSettings', ctrl.pull_min_hp_pct or 0, 0, 95, '%d%%')
         if minPullHpVal ~= ctrl.pull_min_hp_pct then
             ctrl.pull_min_hp_pct = minPullHpVal
             runtime.saveLoadout(true)
@@ -14321,9 +14347,9 @@ function UI.drawSettingsTab()
 
     -- 6. Pet Management & Discipline (conditionally shown if quartet has pet class or active pet)
     if runtime.quartetHasPetClass() or hasActivePet() then
-        if ImGui.CollapsingHeader('Pet Management & Discipline', ImGuiTreeNodeFlags.DefaultOpen) then
-            ImGui.SetNextItemWidth(UI.px(180))
-            local petAssistVal = ImGui.SliderInt('Pet Assist At %##pa', ctrl.pet_assist_at or 100, 1, 100, '%d%%')
+        if UI.settingsSection('setPets', 'Pets', 'pet assist hold engage', false) then
+            UI.formLabel('Pet engages at mob HP')
+            local petAssistVal = ImGui.SliderInt('##pa', ctrl.pet_assist_at or 100, 1, 100, '%d%%')
             if petAssistVal ~= ctrl.pet_assist_at then
                 ctrl.pet_assist_at = petAssistVal
                 runtime.saveLoadout(true)
@@ -14351,7 +14377,7 @@ function UI.drawSettingsTab()
 
 
     -- 7. Interface, Overlays & Diagnostics
-    if ImGui.CollapsingHeader('Interface, Overlays & Diagnostics', ImGuiTreeNodeFlags.DefaultOpen) then
+    if UI.settingsSection('setUi', 'Interface & diagnostics', 'zoning pause floating crit damage compact debug log file dump fov field of view camera restart reload', false) then
         local pauseZoneVal = ImGui.Checkbox('Pause Autocombat When Zoning', ctrl.pause_on_zone ~= false)
         if pauseZoneVal ~= (ctrl.pause_on_zone ~= false) then
             ctrl.pause_on_zone = pauseZoneVal
@@ -14443,7 +14469,8 @@ function UI.drawSettingsTab()
         ImGui.SameLine()
         ImGui.SetNextItemWidth(UI.px(200))
         local curFov = ctrl.fov or 100
-        local newFov, fovChanged = ImGui.SliderInt('FOV##fovSlider', curFov, 50, 150, '%d units')
+        UI.formLabel('Field of view', 160)
+        local newFov, fovChanged = ImGui.SliderInt('##fovSlider', curFov, 50, 150, '%d units')
         if fovChanged or (newFov and newFov ~= ctrl.fov) then
             ctrl.fov = newFov
             ctrl.fov_enabled = true
@@ -14473,6 +14500,9 @@ function UI.drawSettingsTab()
         end
         ImGui.SameLine()
         ImGui.TextDisabled('also /ac restart')
+    end
+    if (runtime.settingsQuery or '') ~= '' and runtime.settingsMatches == 0 then
+        ImGui.TextDisabled('No settings match "' .. runtime.settingsQuery .. '".')
     end
 end
 
@@ -15292,10 +15322,11 @@ function UI.drawSidebar()
     local sw = runtime.sidebarWindowsCache
     if not sw or (now - sw.at) >= 1.0 then
         local ok, entries = pcall(pm.windowPlugins, true)
-        sw = { at = now, entries = ok and entries or {} }
+        local okS, scripts = pcall(pm.headerScripts)
+        sw = { at = now, entries = ok and entries or {}, scripts = okS and scripts or {} }
         runtime.sidebarWindowsCache = sw
     end
-    if #sw.entries == 0 then return end
+    if #sw.entries == 0 and #sw.scripts == 0 then return end
     ImGui.Spacing()
     accent(MUTED, 'WINDOWS')
     if ImGui.IsItemHovered() then UI.setTooltip('Pinned plugin windows. Choose which are pinned on Setup -> Plugins.') end
@@ -15304,6 +15335,13 @@ function UI.drawSidebar()
         local v = ImGui.Checkbox(tostring(e.window.label or e.id) .. '##tacNavWin_' .. e.id, isOpen)
         if v ~= isOpen then pm.toggleWindow(e.id) end
         if e.window.tooltip and ImGui.IsItemHovered() then UI.setTooltip('%s', tostring(e.window.tooltip)) end
+    end
+    -- pinned standalone scripts: checked = running
+    for _, sc in ipairs(sw.scripts) do
+        local running = pm.isScriptRunning(sc)
+        local v = ImGui.Checkbox(tostring(pm.scriptButtonLabel(sc)) .. '##tacNavScr_' .. tostring(sc.file), running)
+        if v ~= running then pm.toggleScript(sc) end
+        if ImGui.IsItemHovered() then UI.setTooltip('%s', string.format('/lua run %s (untick to stop it).', tostring(sc.runName))) end
     end
 end
 
