@@ -4,6 +4,11 @@
 
 ## 2026-10-24
 
+- **Fix: `/ac restart` crashed the game** (in-game report: "MacroQuest caught a crash", `mq2lua.dll`, `vsprintf_s_l`). Inherited from upstream: `/ac restart` and the Settings *Restart* button ran `/lua stop moriac` **from inside a callback**, the `/ac` bind or the ImGui render callback. That stopped the Lua state mid-callback, which this project's own rules list as an MQ crash.
+  - `runtime.restartScript()` now only requests the restart. The main loop picks it up between passes (`runtime.performRestart`): it saves, queues `/timed 15 /lua run moriac`, and leaves the loop, so the script ends through its normal shutdown (stop movement, save, close log) before the relaunch fires.
+  - Tests: Suite 101 checks that the callback path never stops itself. The smoke test requests a restart, steps the real main loop, and checks that the relaunch was queued, no `/lua stop` was sent, and the script ended.
+  - Note: the crash report doesn't name the Lua line, so this is the most likely cause rather than a confirmed one. If it happens again, note exactly what you did just before.
+
 - **Fix: only 2 of 4 classes detected (first in-game report).** The title showed "Clr / Mag". Imported necro spells were labelled Clr, some lines were blank, and the Nec pets showed as "extra" pets.
   - Cause: the Inventory-window parser took only the **first class on each line**, and the other class fields were only read when the first field found nothing. A 4-class Morituri character that shows two classes per line came out with two.
   - `runtime.parseClassesInLine` now reads every class in a line. It splits on `/ , ; | + &` and handles two-word names ("Shadow Knight", "Arch Mage"). **Level titles** (51/55/60/65 for all 16 classes, e.g. "High Priest", "Dread Lord", "Arch Convoker") are recognised from `IW_Class` only.

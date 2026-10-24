@@ -6690,17 +6690,26 @@ local function loadoutSig()
     return table.concat(p, '|')
 end
 
--- Restart the whole script: the same as /lua stop moriac followed by
--- /lua run moriac. A script cannot /lua run itself while it is still
--- running, so the run is handed to MQ's /timed (tenths of a second) and fires
--- after this script has exited; the stop goes last so the loadout is saved
--- through the normal shutdown path.
+-- Restart the whole script (/ac restart, the Settings button). This only
+-- REQUESTS it: both callers run inside a callback -- the /ac bind, or the
+-- ImGui render callback -- and stopping the Lua state from inside one crashed
+-- the game in mq2lua (first in-game report). The main loop picks the request
+-- up between passes (runtime.performRestart) and ends the script through its
+-- normal shutdown path.
 runtime.SCRIPT_NAME = 'moriac'
 function runtime.restartScript()
+    runtime.restartRequested = true
+end
+
+-- Main coroutine only. A script cannot /lua run itself while it is still
+-- running, so the run is handed to MQ's /timed (tenths of a second) and fires
+-- after this script has exited; the caller then leaves the main loop, which
+-- stops movement and saves on the way out.
+function runtime.performRestart()
+    runtime.restartRequested = false
     runtime.saveLoadout(true, true)
-    print('\ag[MoriAC]\ax restarting (/lua stop ' .. runtime.SCRIPT_NAME .. ' -> /lua run ' .. runtime.SCRIPT_NAME .. ')...')
+    print('\ag[MoriAC]\ax restarting (/lua run ' .. runtime.SCRIPT_NAME .. ' in 1.5s)...')
     mq.cmd('/timed 15 /lua run ' .. runtime.SCRIPT_NAME)
-    mq.cmd('/lua stop ' .. runtime.SCRIPT_NAME)
 end
 
 -- Field of View (FOV) Camera Management. /fov 50-150 is a native server
@@ -25529,6 +25538,11 @@ local function runMainLoop()
             end
         end
         end)
+        if runtime.restartRequested then
+            runtime.performRestart()
+            open = false
+            break
+        end
         if reDetectRequested then
             reDetectRequested = false
             local detected = detectClasses(true) -- safe here -- main loop coroutine can yield/delay
