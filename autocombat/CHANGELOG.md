@@ -4,6 +4,20 @@
 
 ## 2026-10-24
 
+- **Action editors rebuilt: Spells, Clickies, Abilities, AAs, Disciplines (`lua/triune.lua`).** Phase P3. Each page is now a compact table with one line per spell, item or ability, plus a labelled **detail panel** under it for the selected line. This replaces the rows of 12-16 unlabelled widgets (`^ v G3 [RDY] Nec ... 1 Unl Boss Burn X`) that ran about 1100px wide and needed sideways scrolling.
+  - **Per-spell Auto checkbox.** You can now stop a spell from being cast automatically without deleting it (user request). Before, the only way was dragging its % to 0, which nobody could find. The line and its settings are kept, the gem stays memorized so you can cast it yourself, and turning it back on restores its old threshold (kept in `pct_off`). Saved files stay compatible: Off still writes `pct = 0`, which the engine already treats as disabled, and lines switched off with the old slider come back at 100%.
+  - The tables show Auto/On, priority #, gem, live state (RDY / 4.2s / UNMEM / MANA ...), class, name, target, a readable condition ("HP <= 70%", "target HP 20-80%") and modifier tags (BURN, NAMED, HIGH, XT3, x2, TWIST, AUTO, GRP A, P40) with tooltips. Lines that are off are greyed.
+  - Detail panel: every option has a label. The % threshold **only appears for conditions that use it**; for the rest it was only a hidden on/off switch. Spells get Gem / Class / a **searchable spell picker** / spell-list filters, and Move up / Move down / Duplicate / Delete (Delete asks to confirm).
+  - Abilities, AAs and Disciplines share one catalog page with search, an "On only" filter, the Trained/Purchased-only filter, and the cooldowns window button. The AA panel shows the AA's description and its exclusion-group state (running / waiting). Row order (which drives AA exclusion-group firing order) is unchanged.
+  - Rows are cached for 1s and spell states for 0.3s, so the pages cost less per frame than the widget strips did.
+- **Tests.** Suite M3 covers On/Off and threshold parking, legacy 0% lines, clickie/catalog semantics, summaries and tags, and pins that an Auto-off spell stays memorized. `tests/smoke_ui.lua` now seeds a 4-class character with spell and clickie lines, selects a row on every action page (including enabled catalog entries), and adds a pass with every combo, popup and menu open, so the spell picker and modals render too. Upstream assertions about the old row layout now check the equivalent editor code.
+
+### In-game checklist (action editors)
+- [ ] Spells: untick Auto on a nuke; it stops being cast and stays memorized; tick it again and its old % is back.
+- [ ] Spells: the spell picker filter finds a spell by typing part of its name; picking it sets sensible defaults.
+- [ ] Move up / down / duplicate / delete (with confirm) behave; the order is the casting priority.
+- [ ] AAs / Discs / Abilities: search, On only, Trained/Purchased only; switching one on lets you edit it in the panel.
+
 - **New spell target "Group + Pets" (`lua/triune.lua`).** One heal line now covers everyone: you, present group members in range, **all of your pets** (one per pet class), and group members' pets. The most hurt one whose condition is met is picked first. Before this, you had to pick between Myself, a group option, or Pet, and no single choice healed both people and pets.
   - "Whole Group" is unchanged. It's still the option for group-wide spells, which target yourself (EQ group heals generally don't land on pets). "Me, then Group" and "Group, then Me" still skip pets.
   - Counts as a heal selector (like Lowest-HP Ally) and as a friendly buff target, so a "missing buff" line on it also keeps buffs up on pets. Help -> Target Filters describes it.

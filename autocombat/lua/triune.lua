@@ -9129,308 +9129,332 @@ function UI.computeGemStatusBadge(i, g)
     return GOOD, '[RDY]', string.format('Spell is memorized in Gem %d and ready to cast.', gemSlot)
 end
 
--- Row-rendering for the Spell Gems tab (Compact layout).
--- UI: spell/gem list editor
-function UI.drawGemList(gemsTable, idPrefix, isActiveSet, allowBurn)
-    if allowBurn == nil then allowBurn = true end
-    local maxGems = getNumGems()
-    local totalSpells = #gemsTable
-    local toDelete = nil
+-- ============================================================================
+-- Action editors (Morituri UI rebuild)
+-- Each action page is a compact table (one line per spell / item / ability;
+-- only its On box is editable in place) plus a labelled detail panel under
+-- it for the selected line. Replaces the one-row strips of 12-16 unlabelled
+-- widgets that ran ~1100 px wide. Data shapes are unchanged:
+--   spells   : loadout.gems     ordered list, a line is off when pct == 0
+--   clickies : loadout.clickies ordered list, enabled ~= false and pct > 0
+--   catalogs : loadout.actions / aas / discs, name -> entry, stored once on
+-- ============================================================================
 
-    local gemOpts = {}
-    for gNum = 1, 12 do
-        table.insert(gemOpts, string.format('G%d', gNum))
-    end
+-- Conditions whose % runtime.conditionMet reads (label for the slider). For
+-- every other condition the % only gates the line, so it is not shown.
+UI.PCT_WHENS = {
+    ['HP <=']             = 'HP at or below',
+    ['target HP <=']      = 'Target HP <=',
+    ['my HP <=']          = 'My HP <=',
+    ['my Mana <=']        = 'My mana <=',
+    ['target HP between'] = 'Target HP <=',
+    ['my Aggro >=']       = 'My aggro >=',
+}
+UI.XT_OPTS = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
+UI.MAXCAST_OPTS = { 'Unlimited', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
+UI.GEM_OPTS = { 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12' }
+runtime.actSel = runtime.actSel or {}
 
-    -- Compact styling inside gem list: scaled +10% for improved readability
-    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 3)
-
-    if ImGui.BeginChild('gemlist_' .. idPrefix, 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        if totalSpells == 0 then
-            ImGui.TextDisabled('No spells configured. Click "+ Add Spell" or "Import Bar" above to populate your spell list.')
-        else
-            for i = 1, totalSpells do
-                ImGui.PushID(idPrefix .. i)
-                local g = gemsTable[i]
-                if not g then g = {}; gemsTable[i] = g end
-                if g.gem == nil then g.gem = math.min(i, 12) end
-                local cls = g.cls
-
-                -- 1-click Priority Move Buttons (^ / v)
-                if i > 1 then
-                    if ImGui.Button('^##u', UI.px(17), UI.px(19)) then
-                        local tmp = gemsTable[i - 1]
-                        gemsTable[i - 1] = gemsTable[i]
-                        gemsTable[i] = tmp
-                        runtime.saveLoadout(true)
-                    end
-                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Move priority UP (swap with spell #%d).', i - 1) end
-                else
-                    ImGui.InvisibleButton('##uDummy', UI.px(17), UI.px(19))
-                end
-                ImGui.SameLine()
-                if i < totalSpells then
-                    if ImGui.Button('v##d', UI.px(17), UI.px(19)) then
-                        local tmp = gemsTable[i + 1]
-                        gemsTable[i + 1] = gemsTable[i]
-                        gemsTable[i] = tmp
-                        runtime.saveLoadout(true)
-                    end
-                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Move priority DOWN (swap with spell #%d).', i + 1) end
-                else
-                    ImGui.InvisibleButton('##dDummy', UI.px(17), UI.px(19))
-                end
-                ImGui.SameLine()
-
-                -- Gem Dropdown selector
-                local curGem = tonumber(g.gem) or 1
-                if curGem < 1 then curGem = 1 end
-                if curGem > 12 then curGem = 12 end
-                ImGui.SetNextItemWidth(UI.px(50))
-                local newGem = ImGui.Combo('##gem', curGem, gemOpts)
-                if newGem ~= curGem then
-                    g.gem = newGem
-                    runtime.saveLoadout(true)
-                end
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('Physical spell gem to cast this spell from. Multiple spells can share the same gem!')
-                end
-                ImGui.SameLine()
-
-                -- Live In-UI Status Badge
-                local bCol, bText, bTip = UI.getGemStatusBadge(i, g)
-                accent(bCol, bText)
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('%s', bTip)
-                end
-                ImGui.SameLine()
-
-                -- class combo (none + quartet)
-                local classOpts = { '--' }
-                for _, c in ipairs(myClasses) do classOpts[#classOpts + 1] = c end
-                local curCi = cls and idxOf(classOpts, cls) or 1
-                ImGui.SetNextItemWidth(UI.px(59))
-                local ci = ImGui.Combo('##c', curCi, classOpts)
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('Select class for slot (or "--" to clear).')
-                end
-                local newCls = (ci > 1) and classOpts[ci] or nil
-                if newCls ~= cls then
-                    if newCls then
-                        g.cls = newCls
-                        g.spell = nil
-                        g.target = 'F: Myself'
-                        g.when = 'always'
-                        g.pct = 100
-                    else
-                        g.cls = nil
-                        g.spell = nil
-                    end
-                    cls = newCls
-                    runtime.saveLoadout(true)
-                end
-
-                if cls then
-                    if not runtime.classHasSpells(cls) then
-                        ImGui.SameLine(); accent(MUTED, '  ' .. cls .. ' has no spells (melee) -> Abilities')
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip(cls .. ' is a melee class without castable spell gems. Set up disciplines and abilities on the Abilities tab.')
-                        end
-                    else
-                        local _, lookup = filteredSpells(cls)
-                        local fsc = runtime.filteredSpellsCache[cls]
-                        local spOpts = fsc.opts
-                        local curSi = (g.spell and fsc.indexOf[g.spell]) or 1
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(180))
-                        local si = ImGui.Combo('##s', curSi, spOpts)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Select spell to assign.')
-                        end
-                        if si > 1 then
-                            local lu = lookup[si - 1]
-                            if lu and lu.name ~= g.spell then
-                                g.spell = lu.name
-                                g.target, g.when, g.pct = defaultsForKind(lu.kind, lu.bene)
-                                if cls == 'Brd' then g.keep_singing = not lu.bene end
-                                if ctrl.automem and isActiveSet and (tonumber(g.gem) or 1) <= maxGems then
-                                    runtime.pendingMem[tonumber(g.gem) or 1] = lu.name
-                                end
-                                runtime.saveLoadout(true)
-                            end
-                        end
-
-                        -- target
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
-                        local ti = ImGui.Combo('##t', idxOf(COMBO_OPTIONS.TARGETS, g.target or 'F: Myself'), COMBO_OPTIONS.TARGETS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Target: who to cast on (Myself, Tank, Target, MA Target, Pet).')
-                        end
-                        local newTgt = COMBO_OPTIONS.TARGETS[ti]
-                        if newTgt ~= g.target then
-                            g.target = newTgt
-                            runtime.saveLoadout(true)
-                        end
-
-                        -- when
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
-                        local wi = ImGui.Combo('##w', idxOf(COMBO_OPTIONS.WHENS, g.when or 'always'), COMBO_OPTIONS.WHENS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Trigger: condition to cast (HP <=, target HP between, missing buff, has Curse, in combat).')
-                        end
-                        local newWhen = COMBO_OPTIONS.WHENS[wi]
-                        if newWhen ~= g.when then
-                            g.when = newWhen
-                            runtime.saveLoadout(true)
-                        end
-
-                        -- percent: draggable slider that shows the value (0% = Off)
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(57))
-                        local curPct = tonumber(g.pct)
-                        if curPct == nil then curPct = 100 end
-                        local isDis = (curPct == 0)
-                        local pCount = 0
-                        if isDis then pCount = UI.pushDisabledSliderStyle() end
-                        local newPct = ImGui.SliderInt('##p', curPct, 0, 100, isDis and 'Off' or '%d%%')
-                        local isHov = ImGui.IsItemHovered()
-                        if pCount > 0 then UI.popDisabledSliderStyle(pCount) end
-                        if newPct ~= curPct then
-                            g.pct = newPct
-                            runtime.saveLoadout(true)
-                        end
-                        if isHov then
-                            if newPct == 0 then
-                                UI.setTooltip('Spell is Disabled (0%). Drag slider above 0% to enable.')
-                            else
-                                UI.setTooltip(string.format('Threshold: %d%% (Set to 0%% to disable this spell).', newPct))
-                            end
-                        end
-
-                        -- If 'target HP between', show Min HP threshold slider
-                        if g.when == 'target HP between' then
-                            ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(48))
-                            local minHp = tonumber(g.min_hp) or 20
-                            local newMinHp = ImGui.SliderInt('##minhp', minHp, 0, 100, '%d%%>')
-                            if newMinHp ~= minHp then
-                                g.min_hp = newMinHp
-                                runtime.saveLoadout(true)
-                            end
-                            if ImGui.IsItemHovered() then
-                                UI.setTooltip(string.format('Min Target HP%%: %d%% (Cast when target is between %d%% and %d%% HP).', newMinHp, newMinHp, newPct))
-                            end
-                        end
-
-                        -- Bard: keep singing vs sing once and resing on drop
-                        if cls == 'Brd' then
-                            ImGui.SameLine()
-                            local ksCur = g.keep_singing == true
-                            local ksVal = ImGui.Checkbox('Twist##ks', ksCur)
-                            if ksVal ~= ksCur then
-                                g.keep_singing = ksVal
-                                runtime.saveLoadout(true)
-                            end
-                            if ImGui.IsItemHovered() then
-                                if ksVal then
-                                    UI.setTooltip('Keep singing: recast this song over and over whenever its trigger is met, even while its effect shows as up. For songs that only work while you are singing them (most detrimental songs).')
-                                else
-                                    UI.setTooltip('Sing once: cast it, then leave it alone until the effect is seen to drop, then sing it again. For songs that stay up after one sing (beneficial songs on this server).')
-                                end
-                            end
-                        end
-                    end
-
-                    ImGui.SameLine()
-                    local priorityVal = ImGui.Checkbox('High Priority##priority', g.priority_before_clickies == true)
-                    if priorityVal ~= (g.priority_before_clickies == true) then
-                        g.priority_before_clickies = priorityVal
-                        runtime.saveLoadout(true)
-                    end
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip('Try this spell after Abilities and Disciplines, but before Clickies. Other spells remain after Clickies.')
-                    end
-
-                    if allowBurn then
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                        local curXt = tonumber(g.min_xtar) or 1
-                        if curXt < 1 then curXt = 1 end
-                        if curXt > 10 then curXt = 10 end
-                        local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                        local newXti = ImGui.Combo('##mxt', curXt, xtOpts)
-                        if newXti ~= curXt then
-                            g.min_xtar = newXti
-                            runtime.saveLoadout(true)
-                        end
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Min active NPCs on XTarget required.')
-                        end
-
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(48))
-                        local maxCastOpts = { 'Unl', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                        local curMc = tonumber(g.max_casts) or 0
-                        if curMc < 0 or curMc > 10 then curMc = 0 end
-                        local newMci = ImGui.Combo('##mc', curMc + 1, maxCastOpts)
-                        local newMc = (newMci == 1) and 0 or (newMci - 1)
-                        if newMc ~= curMc then
-                            g.max_casts = newMc
-                            runtime.saveLoadout(true)
-                        end
-                        if ImGui.IsItemHovered() then
-                            if newMc == 0 then
-                                UI.setTooltip('Per-NPC Cast Limit: Unlimited (Unl). Triune will cast this spell whenever conditions are met.')
-                            else
-                                UI.setTooltip(string.format('Per-NPC Cast Limit: Max %d cast(s) per NPC. Once cast %d time(s) on a target, Triune will not cast it on that NPC again.', newMc, newMc))
-                            end
-                        end
-
-                        ImGui.SameLine()
-                        local gbossVal = ImGui.Checkbox('Boss##gbo', g.boss_only or false)
-                        if gbossVal ~= (g.boss_only or false) then
-                            g.boss_only = gbossVal
-                            runtime.saveLoadout(true)
-                        end
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Only cast if the resolved target is a Named mob.')
-                        end
-
-                        ImGui.SameLine()
-                        local boVal = ImGui.Checkbox('Burn##bo', g.burn_only or false)
-                        if boVal ~= (g.burn_only or false) then
-                            g.burn_only = boVal
-                            runtime.saveLoadout(true)
-                        end
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Only cast when Burn Mode is ON.')
-                        end
-                    end
-                end
-
-                -- Delete spell line button
-                ImGui.SameLine()
-                if ImGui.Button('X##del', UI.px(18), UI.px(19)) then
-                    toDelete = i
-                end
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('Delete this spell line from your loadout.')
-                end
-
-                ImGui.PopID()
-            end
-
-            if toDelete then
-                table.remove(gemsTable, toDelete)
-                runtime.saveLoadout(true)
-            end
-        end
-    end
-    ImGui.EndChild()
-    ImGui.PopStyleVar(2)
+-- Width / height left in the current window or child, whichever shape the
+-- binding returns (two numbers or an ImVec2).
+function UI.availSize()
+    local a, b = ImGui.GetContentRegionAvail()
+    if type(a) == 'number' then return a, tonumber(b) or 0 end
+    if type(a) == 'table' or type(a) == 'userdata' then return tonumber(a.x) or 0, tonumber(a.y) or 0 end
+    return 0, 0
 end
 
--- Header controls for the Spell Gems tab: + Add Spell, level band, scribed filter, rebuff threshold, and downtime buffs.
+function UI.shortTarget(tok)
+    return (tostring(tok or ''):gsub('^[FE]: ', ''))
+end
+
+-- 'HP <= 70%', 'target HP 20-80%', or the bare condition.
+function UI.ruleSummary(e)
+    local w = e.when or 'always'
+    local pct = tonumber(e.pct) or 100
+    if pct <= 0 then pct = tonumber(e.pct_off) or 100 end
+    if w == 'target HP between' then
+        return string.format('target HP %d-%d%%', tonumber(e.min_hp) or 20, pct)
+    end
+    if UI.PCT_WHENS[w] then return string.format('%s %d%%', w, pct) end
+    return w
+end
+
+-- Is the line live? pct 0 is off for every kind (runtime.conditionMet);
+-- clickies default on, catalog entries must be enabled.
+function UI.entryOn(e, kind)
+    if type(e) ~= 'table' then return false end
+    local pct = tonumber(e.pct)
+    if pct == nil then pct = 100 end
+    if pct <= 0 then return false end
+    if kind == 'spell' then return true end
+    if kind == 'clickie' then return e.enabled ~= false end
+    return e.enabled == true
+end
+
+-- Turning a spell off parks its % in pct_off so turning it on restores it.
+function UI.setEntryOn(e, kind, on)
+    local pct = tonumber(e.pct)
+    if pct == nil then pct = 100 end
+    if on then
+        if pct <= 0 then
+            e.pct = tonumber(e.pct_off) or 100
+            e.pct_off = nil
+        end
+        if kind ~= 'spell' then e.enabled = true end
+    elseif kind == 'spell' then
+        if pct > 0 then e.pct_off = pct end
+        e.pct = 0
+    else
+        e.enabled = false
+    end
+end
+
+-- Short coloured tags for a line's modifiers: { text, colour, tooltip }.
+function UI.entryChips(e, kind)
+    local chips = {}
+    if e.burn_only then chips[#chips + 1] = { 'BURN', ERR, 'Only while Burn is on.' } end
+    if e.boss_only then chips[#chips + 1] = { 'NAMED', GOLD, 'Only on named mobs.' } end
+    if kind == 'spell' and e.priority_before_clickies then
+        chips[#chips + 1] = { 'HIGH', ARC, 'High priority: tried after Abilities and Disciplines, before Clickies.' }
+    end
+    local xt = tonumber(e.min_xtar) or 1
+    if xt > 1 then chips[#chips + 1] = { 'XT' .. xt, WARN, string.format('Needs %d or more mobs on XTarget.', xt) } end
+    local mc = tonumber(e.max_casts) or 0
+    if mc > 0 then chips[#chips + 1] = { 'x' .. mc, MUTED, string.format('At most %d cast(s) per mob.', mc) } end
+    if e.keep_singing then chips[#chips + 1] = { 'TWIST', ARC, 'Keeps singing while the trigger holds.' } end
+    if e.autoskill then chips[#chips + 1] = { 'AUTO', GOOD, 'Fires on cooldown in melee, no condition check.' } end
+    if e.excl and e.excl ~= '-' then
+        chips[#chips + 1] = { 'GRP ' .. e.excl, ARC, 'Exclusion group ' .. e.excl .. ': one AA of the group runs at a time.' }
+    end
+    if (kind == 'action' or kind == 'disc') and e.priority and e.priority ~= 50 then
+        chips[#chips + 1] = { 'P' .. tostring(e.priority), MUTED, 'Priority ' .. tostring(e.priority) .. ' (lower is tried first).' }
+    end
+    return chips
+end
+
+function UI.drawChips(chips)
+    for i, c in ipairs(chips) do
+        if i > 1 then ImGui.SameLine(0, UI.px(5)) end
+        accent(c[2], c[1])
+        if ImGui.IsItemHovered() then UI.setTooltip('%s', c[3]) end
+    end
+end
+
+-- Muted text for the rest of a row whose line is off. Returns colours pushed.
+function UI.pushRowMuted(on)
+    if on then return 0 end
+    local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
+    if Col and pcall(ImGui.PushStyleColor, Col.Text, MUTED[1], MUTED[2], MUTED[3], 1.0) then return 1 end
+    return 0
+end
+
+function UI.popRowMuted(n)
+    if n and n > 0 then pcall(ImGui.PopStyleColor, n) end
+end
+
+-- Label cell + control cell in a 4-column form table; the control fills its cell.
+function UI.formCell(label, tip)
+    ImGui.TableNextColumn()
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextDisabled(label)
+    if tip and ImGui.IsItemHovered() then UI.setTooltip('%s', tip) end
+    ImGui.TableNextColumn()
+    ImGui.SetNextItemWidth(-1)
+end
+
+function UI.formSkip()
+    ImGui.TableNextColumn(); ImGui.TableNextColumn()
+end
+
+function UI.beginForm(id)
+    local flags = (ImGuiTableFlags and ImGuiTableFlags.SizingStretchProp) or 0
+    if not ImGui.BeginTable(id, 4, flags) then return false end
+    ImGui.TableSetupColumn('##l1', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+    ImGui.TableSetupColumn('##c1', ImGuiTableColumnFlags.WidthStretch)
+    ImGui.TableSetupColumn('##l2', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+    ImGui.TableSetupColumn('##c2', ImGuiTableColumnFlags.WidthStretch)
+    return true
+end
+
+function UI.targetTip(tok)
+    for _, t in ipairs(UI.HELP_TARGETS or {}) do
+        if t.opt == tok then return t.desc end
+    end
+    return 'Who to use it on. F: = friendly, E: = enemy.'
+end
+
+-- The who / when / limits part of every detail panel. opts: kind, maxCasts,
+-- boss, priority, excl, highPriority, bard, autoskill (eligible).
+-- Returns true when something changed.
+function UI.drawRuleEditor(e, opts)
+    local changed = false
+    local auto = opts.autoskill and e.autoskill
+    if UI.beginForm('##ruleForm') then
+        if not auto then
+            UI.formCell('Target', UI.targetTip(e.target))
+            local ti = ImGui.Combo('##reTarget', idxOf(COMBO_OPTIONS.TARGETS, e.target or 'F: Myself'), COMBO_OPTIONS.TARGETS)
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', UI.targetTip(e.target)) end
+            local nt = COMBO_OPTIONS.TARGETS[ti]
+            if nt and nt ~= e.target then e.target = nt; changed = true end
+
+            UI.formCell('Condition', 'When to use it.')
+            local wi = ImGui.Combo('##reWhen', idxOf(COMBO_OPTIONS.WHENS, e.when or 'always'), COMBO_OPTIONS.WHENS)
+            local nw = COMBO_OPTIONS.WHENS[wi]
+            if nw and nw ~= e.when then e.when = nw; changed = true end
+
+            local pctLabel = UI.PCT_WHENS[e.when]
+            if pctLabel then
+                -- A line that is off keeps its % in pct_off; edit that one.
+                local raw = tonumber(e.pct)
+                if raw == nil then raw = 100 end
+                local cur = raw <= 0 and (tonumber(e.pct_off) or 100) or raw
+                UI.formCell(pctLabel, 'Threshold for the condition.')
+                local nv = ImGui.SliderInt('##rePct', cur, 1, 100, '%d%%')
+                if nv ~= cur then
+                    if raw <= 0 then e.pct_off = nv else e.pct = nv end
+                    changed = true
+                end
+                if e.when == 'target HP between' then
+                    UI.formCell('Target HP >=', 'Lower end of the band: fires while target HP is between this and the threshold.')
+                    local mn = tonumber(e.min_hp) or 20
+                    local nmn = ImGui.SliderInt('##reMinHp', mn, 0, 100, '%d%%')
+                    if nmn ~= mn then e.min_hp = nmn; changed = true end
+                else
+                    UI.formSkip()
+                end
+            end
+        end
+
+        UI.formCell('Min mobs (XT)', 'Only when at least this many hostile NPCs are on your Extended Target window.')
+        local xt = math.max(1, math.min(10, tonumber(e.min_xtar) or 1))
+        local nxt = ImGui.Combo('##reXt', xt, UI.XT_OPTS)
+        if nxt ~= xt then e.min_xtar = nxt; changed = true end
+
+        if opts.maxCasts and not auto then
+            UI.formCell('Casts per mob', 'Stop casting it on a mob after this many casts.')
+            local mc = tonumber(e.max_casts) or 0
+            if mc < 0 or mc > 10 then mc = 0 end
+            local nmc = ImGui.Combo('##reMc', mc + 1, UI.MAXCAST_OPTS) - 1
+            if nmc ~= mc then e.max_casts = nmc; changed = true end
+        elseif opts.priority and not auto then
+            UI.formCell('Priority', 'Lower is tried first when several are ready at once.')
+            local pr = tonumber(e.priority) or 50
+            local npr = ImGui.SliderInt('##rePri', pr, 1, 99, '%d')
+            if npr ~= pr then e.priority = npr; changed = true end
+        elseif opts.excl then
+            UI.formCell('Group', 'Exclusion group: AAs sharing a letter never run at the same time. '
+                .. 'The one listed highest fires first; the next fires when that effect drops.')
+            local exOpts = runtime.AA_EXCL_GROUPS
+            local cur = e.excl or '-'
+            local exi = ImGui.Combo('##reExcl', idxOf(exOpts, cur), exOpts)
+            local nex = (exi > 1) and exOpts[exi] or nil
+            if nex ~= e.excl then e.excl = nex; changed = true end
+        else
+            UI.formSkip()
+        end
+        ImGui.EndTable()
+    end
+
+    -- Option toggles on one line.
+    local first = true
+    local function toggle(label, key, tip)
+        if not first then ImGui.SameLine(0, UI.px(14)) end
+        first = false
+        local cur = e[key] == true
+        local v = ImGui.Checkbox(label, cur)
+        if ImGui.IsItemHovered() then UI.setTooltip('%s', tip) end
+        if v ~= cur then e[key] = v; changed = true end
+    end
+    if opts.autoskill then toggle('Auto on cooldown##reAuto', 'autoskill', 'Fire it whenever it is ready in melee combat, without checking target or condition.') end
+    toggle('Burn only##reBurn', 'burn_only', 'Only while Burn mode is on.')
+    if opts.boss and not auto then toggle('Named only##reBoss', 'boss_only', 'Only when the target is a named mob.') end
+    if opts.highPriority then
+        toggle('High priority##rePrio', 'priority_before_clickies', 'Try this spell after Abilities and Disciplines, but before Clickies. Other spells come after Clickies.')
+    end
+    if opts.bard then
+        toggle('Keep singing (twist)##reTwist', 'keep_singing', 'On: recast it whenever the trigger holds, even while the effect is up (most detrimental songs). '
+            .. 'Off: sing once and resing when the effect drops (beneficial songs).')
+    end
+    return changed
+end
+
+-- Two-click delete: the first click arms it for 3 s.
+function UI.confirmButton(label, key)
+    local arm = runtime.actDeleteArm
+    local armed = arm and arm.key == key and (os.clock() - arm.at) < 3.0
+    local pushed = 0
+    if armed then
+        local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
+        if Col and pcall(ImGui.PushStyleColor, Col.Button, 0.65, 0.15, 0.15, 1.0) then pushed = 1 end
+    end
+    local clicked = ImGui.Button((armed and 'Click to confirm' or label) .. '##del_' .. key)
+    if pushed > 0 then pcall(ImGui.PopStyleColor, pushed) end
+    if ImGui.IsItemHovered() then UI.setTooltip('%s', armed and 'Click again to delete.' or 'Delete this line (asks to confirm).') end
+    if clicked then
+        if armed then
+            runtime.actDeleteArm = nil
+            return true
+        end
+        runtime.actDeleteArm = { key = key, at = os.clock() }
+    end
+    return false
+end
+
+-- Up / Down / Duplicate / Delete for an ordered list. Returns true if the list changed.
+function UI.drawLineActions(list, i, selKey)
+    local changed = false
+    if i <= 1 then ImGui.BeginDisabled() end
+    if ImGui.Button('Move up##la_up') then
+        list[i - 1], list[i] = list[i], list[i - 1]
+        runtime.actSel[selKey] = i - 1
+        changed = true
+    end
+    if i <= 1 then ImGui.EndDisabled() end
+    ImGui.SameLine()
+    if i >= #list then ImGui.BeginDisabled() end
+    if ImGui.Button('Move down##la_dn') then
+        list[i + 1], list[i] = list[i], list[i + 1]
+        runtime.actSel[selKey] = i + 1
+        changed = true
+    end
+    if i >= #list then ImGui.EndDisabled() end
+    ImGui.SameLine()
+    if ImGui.Button('Duplicate##la_dup') then
+        local copy = {}
+        for k, v in pairs(list[i]) do copy[k] = v end
+        table.insert(list, i + 1, copy)
+        runtime.actSel[selKey] = i + 1
+        changed = true
+    end
+    ImGui.SameLine(0, UI.px(18))
+    if UI.confirmButton('Delete', selKey .. tostring(i)) then
+        table.remove(list, i)
+        if #list == 0 then runtime.actSel[selKey] = nil
+        elseif i > #list then runtime.actSel[selKey] = #list end
+        changed = true
+    end
+    return changed
+end
+
+-- Table rows get this height budget; the detail panel takes the rest.
+function UI.listHeight(panelH)
+    local _, availH = UI.availSize()
+    if availH <= 0 then availH = UI.px(420) end
+    return math.max(UI.px(110), availH - panelH)
+end
+
+function UI.listTableFlags()
+    return bit.bor(ImGuiTableFlags.Borders or 0, ImGuiTableFlags.RowBg or 0, ImGuiTableFlags.ScrollY or 0,
+        ImGuiTableFlags.SizingFixedFit or 0, ImGuiTableFlags.Resizable or 0)
+end
+
+-- ---------------------------------------------------------------------------
+-- Spells
+-- ---------------------------------------------------------------------------
 function UI.drawGemTabHeader(gemsTable)
-    if ImGui.Button('+ Add Spell##addSpellBtn') then
-        local maxG = getNumGems()
-        local nextGem = math.min(#gemsTable + 1, maxG)
+    if ImGui.Button('+ Add line##addSpellBtn') then
+        local nextGem = math.min(#gemsTable + 1, getNumGems())
         table.insert(gemsTable, {
             gem = nextGem,
             cls = (myClasses and myClasses[1]) or 'War',
@@ -9442,91 +9466,599 @@ function UI.drawGemTabHeader(gemsTable)
             max_casts = 0,
             burn_only = false
         })
+        runtime.actSel.spells = #gemsTable
         runtime.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Add a new spell line with customizable controls and gem selection.')
-    end
-
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-
-    ImGui.SameLine()
-    local pendingCount = 0
-    if runtime.pendingMem then
-        for _ in pairs(runtime.pendingMem) do pendingCount = pendingCount + 1 end
-    end
-    local memBtnLabel = pendingCount > 0 and string.format('Mem All (%d)##memAllBtn', pendingCount) or 'Mem All##memAllBtn'
-    if ImGui.Button(memBtnLabel) then
-        runtime.queueMemAll()
-    end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Memorize any missing or wrong spells on your gem bar back to each gem\'s priority spell.')
-    end
-
+    if ImGui.IsItemHovered() then UI.setTooltip('Add an empty spell line at the bottom and select it.') end
     ImGui.SameLine()
     if ImGui.Button('Import Bar##importBarBtn') then
         runtime.importCurrentGems(gemsTable)
     end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Auto-populate spell lines based on what is currently memorized on your spell gems.')
-    end
-
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-
-    ImGui.SameLine(); ImGui.TextDisabled('Lvl:')
-    if ImGui.IsItemHovered() then ImGui.SetTooltip('Filter available spells by character level range.') end
-    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(29))
-    local newLvlMin = ImGui.InputInt('##lmin', lvlMin, 0, 0)
-    if newLvlMin < 1 then newLvlMin = 1 end
-    if ImGui.IsItemHovered() then ImGui.SetTooltip('Minimum spell level.') end
-    if newLvlMin ~= lvlMin then lvlMin = newLvlMin; clearFilteredSpellsCache() end
-    ImGui.SameLine(); ImGui.TextDisabled('-')
-    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(29))
-    local playerMaxLvl = (mq.TLO.Me and mq.TLO.Me.Level and (tonumber(mq.TLO.Me.Level()) or 65)) or 65
-    if playerMaxLvl < 1 then playerMaxLvl = 65 end
-    local newLvlMax = ImGui.InputInt('##lmax', lvlMax, 0, 0)
-    if newLvlMax < 1 then newLvlMax = 1 end
-    if newLvlMax > 65 then newLvlMax = 65 end
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(string.format('Maximum spell level (current character level: %d).', playerMaxLvl)) end
-    if newLvlMax ~= lvlMax then lvlMax = newLvlMax; clearFilteredSpellsCache() end
-    if lvlMin > lvlMax then lvlMin = lvlMax end
-
+    if ImGui.IsItemHovered() then UI.setTooltip('Build spell lines from what is memorized on your spell bar right now.') end
     ImGui.SameLine()
-    local newScribed = ImGui.Checkbox('Scribed', ctrl.scribed_only)
-    if newScribed ~= ctrl.scribed_only then
-        ctrl.scribed_only = newScribed
-        clearFilteredSpellsCache()
+    local pendingCount = 0
+    for _ in pairs(runtime.pendingMem or {}) do pendingCount = pendingCount + 1 end
+    if ImGui.Button(pendingCount > 0 and string.format('Mem All (%d)##memAllBtn', pendingCount) or 'Mem All##memAllBtn') then
+        runtime.queueMemAll()
     end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Only show spells in your spellbook. Turn off to browse all.')
-    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Memorize any missing or wrong spells back into their gems.') end
 
-    ImGui.SameLine(); ImGui.TextDisabled('| Rebuff:')
-    if ImGui.IsItemHovered() then ImGui.SetTooltip('Pre-refresh buffs out of combat when remaining duration falls below this threshold.') end
-    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(60))
-    local curRefSec = tonumber(ctrl.buff_refresh_sec) or 45
-    local newRefSec = ImGui.SliderInt('##refsec', curRefSec, 0, 300, '%ds')
-    ctrl.buff_refresh_sec = newRefSec
-    if ImGui.IsItemHovered() then UI.setTooltip(string.format('Pre-refresh buffs out of combat if remaining duration <= %d seconds (0s = only when expired).', newRefSec)) end
-
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-
-    ImGui.SameLine()
-    local dtVal = ImGui.Checkbox('Downtime Buffs', ctrl.downtime_buffing ~= false)
+    ImGui.SameLine(0, UI.px(18))
+    local dtVal = ImGui.Checkbox('Downtime buffs', ctrl.downtime_buffing ~= false)
     if dtVal ~= (ctrl.downtime_buffing ~= false) then
         ctrl.downtime_buffing = dtVal
         runtime.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Auto-swap spell gems during downtime to cast missing buffs.')
+    if ImGui.IsItemHovered() then UI.setTooltip('Swap gems out of combat to cast missing buffs.') end
+    ImGui.SameLine()
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextDisabled('Rebuff at')
+    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(70))
+    local curRefSec = tonumber(ctrl.buff_refresh_sec) or 45
+    local newRefSec = ImGui.SliderInt('##refsec', curRefSec, 0, 300, '%ds left')
+    if newRefSec ~= curRefSec then ctrl.buff_refresh_sec = newRefSec end
+    if ImGui.IsItemHovered() then UI.setTooltip('%s', string.format('Out of combat, refresh a buff once it has %d seconds or less left (0 = only when it drops).', newRefSec)) end
+end
+
+function UI.drawSpellTable(gems, h)
+    local sel = runtime.actSel.spells
+    if not ImGui.BeginTable('##spellLines', 9, UI.listTableFlags(), 0, h) then return end
+    ImGui.TableSetupColumn('Auto', ImGuiTableColumnFlags.WidthFixed, UI.px(34))
+    ImGui.TableSetupColumn('#', ImGuiTableColumnFlags.WidthFixed, UI.px(22))
+    ImGui.TableSetupColumn('Gem', ImGuiTableColumnFlags.WidthFixed, UI.px(32))
+    ImGui.TableSetupColumn('State', ImGuiTableColumnFlags.WidthFixed, UI.px(48))
+    ImGui.TableSetupColumn('Class', ImGuiTableColumnFlags.WidthFixed, UI.px(34))
+    ImGui.TableSetupColumn('Spell', ImGuiTableColumnFlags.WidthStretch)
+    ImGui.TableSetupColumn('Target', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+    ImGui.TableSetupColumn('Condition', ImGuiTableColumnFlags.WidthFixed, UI.px(124))
+    ImGui.TableSetupColumn('Flags', ImGuiTableColumnFlags.WidthFixed, UI.px(96))
+    ImGui.TableHeadersRow()
+    for i = 1, #gems do
+        local g = gems[i]
+        if type(g) ~= 'table' then g = {}; gems[i] = g end
+        if g.gem == nil then g.gem = math.min(i, 12) end
+        ImGui.PushID('spl' .. i)
+        ImGui.TableNextRow()
+        local on = UI.entryOn(g, 'spell')
+        ImGui.TableNextColumn()
+        local nv = ImGui.Checkbox('##on', on)
+        if ImGui.IsItemHovered() then
+            UI.setTooltip('%s', on and 'Auto-cast ON. Uncheck to stop Triune casting this spell; the line and its settings are kept.'
+                or 'Auto-cast OFF: never cast automatically. It stays memorized (unless another line uses the gem), so you can cast it yourself. Check to turn it back on.')
+        end
+        if nv ~= on then UI.setEntryOn(g, 'spell', nv); runtime.saveLoadout(true) end
+        local muted = UI.pushRowMuted(on)
+        ImGui.TableNextColumn(); ImGui.Text(tostring(i))
+        ImGui.TableNextColumn(); ImGui.Text('G' .. tostring(tonumber(g.gem) or i))
+        ImGui.TableNextColumn()
+        if g.spell and g.spell ~= '' then
+            local bc, bt, btip = UI.getGemStatusBadge(i, g)
+            accent(bc, (tostring(bt):gsub('[%[%]]', '')))
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', btip) end
+        end
+        ImGui.TableNextColumn()
+        if g.cls then
+            local r, gc, b, a = classColor(g.cls)
+            ImGui.TextColored(r, gc, b, a, g.cls) ---@diagnostic disable-line: param-type-mismatch
+        else
+            ImGui.TextDisabled('--')
+        end
+        ImGui.TableNextColumn()
+        local label = (g.spell and g.spell ~= '') and g.spell or '(choose a spell)'
+        local _, pressed = ImGui.Selectable(label .. '##sel', sel == i)
+        if pressed then runtime.actSel.spells = i end
+        ImGui.TableNextColumn(); ImGui.Text(UI.shortTarget(g.target))
+        ImGui.TableNextColumn(); ImGui.Text(UI.ruleSummary(g))
+        ImGui.TableNextColumn(); UI.drawChips(UI.entryChips(g, 'spell'))
+        UI.popRowMuted(muted)
+        ImGui.PopID()
+    end
+    ImGui.EndTable()
+end
+
+-- Searchable spell picker for one class (BeginCombo + filter box). Returns
+-- the chosen lookup row ({ name, level, bene, kind }) or nil.
+function UI.spellPicker(id, cls, current)
+    local _, lookup = filteredSpells(cls)
+    local fsc = runtime.filteredSpellsCache and runtime.filteredSpellsCache[cls]
+    local picked = nil
+    if ImGui.BeginCombo(id, (current and current ~= '') and current or '-- choose a spell --') then
+        runtime.spellPickFilter = runtime.spellPickFilter or {}
+        ImGui.SetNextItemWidth(-1)
+        local f = ImGui.InputTextWithHint(id .. 'Filter', 'type to filter...', runtime.spellPickFilter[id] or '')
+        if type(f) ~= 'string' then f = '' end
+        runtime.spellPickFilter[id] = f
+        local fl = f:lower()
+        local shown = 0
+        for k, name in ipairs(fsc and fsc.names or {}) do
+            if fl == '' or name:lower():find(fl, 1, true) then
+                local lu = lookup[k]
+                local _, pressed = ImGui.Selectable(name .. '##sp' .. k, lu ~= nil and lu.name == current)
+                if pressed then picked = lu end
+                shown = shown + 1
+            end
+        end
+        if shown == 0 then ImGui.TextDisabled('No spells match (check the level range / Scribed only).') end
+        ImGui.EndCombo()
+    end
+    return picked
+end
+
+function UI.drawSpellDetail(gems, i)
+    local g = gems[i]
+    local changed = false
+    accent(GOLD, string.format('Line %d', i))
+    ImGui.SameLine()
+    ImGui.Text((g.spell and g.spell ~= '') and g.spell or 'New spell line')
+    ImGui.SameLine(0, UI.px(18))
+    if UI.drawLineActions(gems, i, 'spells') then
+        runtime.saveLoadout(true)
+        return
     end
 
-    ImGui.Separator()
+    local cls = g.cls
+    if UI.beginForm('##spellWhat') then
+        UI.formCell('Gem', 'Spell gem it is cast from. Several lines can share a gem; it is swapped in when needed.')
+        local curGem = math.max(1, math.min(12, tonumber(g.gem) or 1))
+        local newGem = ImGui.Combo('##spGem', curGem, UI.GEM_OPTS)
+        if newGem ~= curGem then g.gem = newGem; changed = true end
+
+        UI.formCell('Class', 'Which of your classes casts it.')
+        local classOpts = { '--' }
+        for _, c in ipairs(myClasses) do classOpts[#classOpts + 1] = c end
+        local curCi = cls and idxOf(classOpts, cls) or 1
+        local ci = ImGui.Combo('##spCls', curCi, classOpts)
+        local newCls = (ci > 1) and classOpts[ci] or nil
+        if newCls ~= cls then
+            g.cls, g.spell = newCls, nil
+            if newCls then g.target, g.when, g.pct = 'F: Myself', 'always', 100 end
+            cls = newCls
+            changed = true
+        end
+
+        UI.formCell('Spell', 'Spells of the class in the level range (Scribed only hides unscribed ones).')
+        if cls and runtime.classHasSpells(cls) then
+            local lu = UI.spellPicker('##spPick', cls, g.spell)
+            if lu and lu.name ~= g.spell then
+                g.spell = lu.name
+                g.target, g.when, g.pct = defaultsForKind(lu.kind, lu.bene)
+                g.pct_off = nil
+                if cls == 'Brd' then g.keep_singing = not lu.bene end
+                if ctrl.automem and (tonumber(g.gem) or 1) <= getNumGems() then
+                    runtime.pendingMem[tonumber(g.gem) or 1] = lu.name
+                end
+                changed = true
+            end
+        elseif cls then
+            ImGui.TextDisabled(cls .. ' has no spells - use Abilities / Disciplines')
+        else
+            ImGui.TextDisabled('pick a class first')
+        end
+
+        UI.formCell('Spell list', 'Filters the Spell picker: level range and scribed spells only.')
+        ImGui.SetNextItemWidth(UI.px(40))
+        local newLvlMin = ImGui.InputInt('##lmin', lvlMin, 0, 0)
+        if newLvlMin < 1 then newLvlMin = 1 end
+        if newLvlMin ~= lvlMin then lvlMin = newLvlMin; clearFilteredSpellsCache() end
+        ImGui.SameLine(); ImGui.TextDisabled('-'); ImGui.SameLine()
+        ImGui.SetNextItemWidth(UI.px(40))
+        local newLvlMax = ImGui.InputInt('##lmax', lvlMax, 0, 0)
+        if newLvlMax < 1 then newLvlMax = 1 end
+        if newLvlMax > 65 then newLvlMax = 65 end
+        if newLvlMax ~= lvlMax then lvlMax = newLvlMax; clearFilteredSpellsCache() end
+        if lvlMin > lvlMax then lvlMin = lvlMax end
+        ImGui.SameLine()
+        local newScribed = ImGui.Checkbox('Scribed only', ctrl.scribed_only)
+        if newScribed ~= ctrl.scribed_only then
+            ctrl.scribed_only = newScribed
+            clearFilteredSpellsCache()
+        end
+        ImGui.EndTable()
+    end
+
+    if cls and g.spell and g.spell ~= '' then
+        ImGui.Spacing()
+        if UI.drawRuleEditor(g, { kind = 'spell', maxCasts = true, boss = true, highPriority = true, bard = (cls == 'Brd') }) then
+            changed = true
+        end
+    end
+    if changed then runtime.saveLoadout(true) end
 end
 
 function UI.drawGemTab()
-    UI.drawGemTabHeader(loadout.gems)
-    UI.drawGemList(loadout.gems, 'gem', true, true)
+    local gems = loadout.gems
+    UI.drawGemTabHeader(gems)
+    ImGui.Separator()
+    local sel = runtime.actSel.spells
+    if sel and (sel < 1 or sel > #gems) then sel = nil; runtime.actSel.spells = nil end
+    if #gems == 0 then
+        ImGui.TextDisabled('No spell lines yet. Click "+ Add line", or "Import Bar" to start from what you have memorized.')
+        return
+    end
+    UI.drawSpellTable(gems, UI.listHeight(sel and UI.px(250) or UI.px(30)))
+    if sel then
+        UI.drawSpellDetail(gems, sel)
+    else
+        ImGui.TextDisabled('Click a spell name to edit it. Lines are tried top to bottom; untick Auto to stop a spell being cast automatically.')
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Clickies
+-- ---------------------------------------------------------------------------
+function UI.drawClickieTab()
+    loadout.clickies = loadout.clickies or {}
+    local list = loadout.clickies
+    local curItem = mq.TLO.Cursor
+    local hasCursorItem = curItem and curItem() and (curItem.ID() or 0) > 0
+    local curName = hasCursorItem and tostring(curItem.Name() or 'Item') or nil
+
+    if not hasCursorItem then ImGui.BeginDisabled() end
+    if ImGui.Button('+ Add item on cursor##addCursorClickie') then
+        if UI.addClickieFromCursor() then runtime.actSel.clickies = #list end
+    end
+    if not hasCursorItem then ImGui.EndDisabled() end
+    if ImGui.IsItemHovered() then
+        UI.setTooltip('%s', hasCursorItem and string.format('Add [%s] to the list.', curName)
+            or 'Pick up an item with a click effect onto your cursor, then click this.')
+    end
+    ImGui.SameLine()
+    ImGui.AlignTextToFramePadding()
+    if hasCursorItem then accent(GOOD, 'Cursor: ' .. curName) else ImGui.TextDisabled('Cursor: empty') end
+    ImGui.Separator()
+
+    local sel = runtime.actSel.clickies
+    if sel and (sel < 1 or sel > #list) then sel = nil; runtime.actSel.clickies = nil end
+    if #list == 0 then
+        ImGui.TextDisabled('No clickies yet. Pick up an item with a click effect and click "+ Add item on cursor".')
+        return
+    end
+
+    if ImGui.BeginTable('##clickieLines', 7, UI.listTableFlags(), 0, UI.listHeight(sel and UI.px(170) or UI.px(30))) then
+        ImGui.TableSetupColumn('On', ImGuiTableColumnFlags.WidthFixed, UI.px(26))
+        ImGui.TableSetupColumn('#', ImGuiTableColumnFlags.WidthFixed, UI.px(22))
+        ImGui.TableSetupColumn('Item', ImGuiTableColumnFlags.WidthStretch)
+        ImGui.TableSetupColumn('Effect', ImGuiTableColumnFlags.WidthFixed, UI.px(130))
+        ImGui.TableSetupColumn('Target', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+        ImGui.TableSetupColumn('Condition', ImGuiTableColumnFlags.WidthFixed, UI.px(124))
+        ImGui.TableSetupColumn('Flags', ImGuiTableColumnFlags.WidthFixed, UI.px(70))
+        ImGui.TableHeadersRow()
+        for idx, c in ipairs(list) do
+            ImGui.PushID('clk' .. idx)
+            ImGui.TableNextRow()
+            local on = UI.entryOn(c, 'clickie')
+            ImGui.TableNextColumn()
+            local nv = ImGui.Checkbox('##on', on)
+            if nv ~= on then UI.setEntryOn(c, 'clickie', nv); runtime.saveLoadout(true) end
+            local muted = UI.pushRowMuted(on)
+            ImGui.TableNextColumn(); ImGui.Text(tostring(idx))
+            ImGui.TableNextColumn()
+            local _, pressed = ImGui.Selectable(tostring(c.name or 'Item') .. '##sel', sel == idx)
+            if pressed then runtime.actSel.clickies = idx end
+            ImGui.TableNextColumn(); ImGui.Text(tostring(c.spell or ''))
+            ImGui.TableNextColumn(); ImGui.Text(UI.shortTarget(c.target or 'F: Myself'))
+            ImGui.TableNextColumn(); ImGui.Text(UI.ruleSummary(c))
+            ImGui.TableNextColumn(); UI.drawChips(UI.entryChips(c, 'clickie'))
+            UI.popRowMuted(muted)
+            ImGui.PopID()
+        end
+        ImGui.EndTable()
+    end
+
+    if not sel then
+        ImGui.TextDisabled('Click an item to edit it. Items are tried top to bottom.')
+        return
+    end
+    local c = list[sel]
+    accent(GOLD, string.format('Item %d', sel))
+    ImGui.SameLine(); ImGui.Text(tostring(c.name or 'Item'))
+    if c.spell and c.spell ~= '' then ImGui.SameLine(); ImGui.TextDisabled('(' .. c.spell .. ')') end
+    ImGui.SameLine(0, UI.px(18))
+    if UI.drawLineActions(list, sel, 'clickies') then
+        runtime.saveLoadout(true)
+        return
+    end
+    if UI.drawRuleEditor(c, { kind = 'clickie' }) then runtime.saveLoadout(true) end
+end
+
+-- ---------------------------------------------------------------------------
+-- Catalog pages: Abilities, AAs, Disciplines. Every row the character could
+-- use is listed; a row is stored in its loadout map once it is switched on.
+-- spec: key (actSel / filter key), kind, store, rows() -> { name, cls, info,
+-- infoTip?, tooltip?() }, default(row), opts(row, entry), filterLabel,
+-- filterKey, intro, extra(row, entry)?
+-- ---------------------------------------------------------------------------
+function UI.catalogEntry(spec, row)
+    local stored = spec.store[row.name]
+    if stored then return stored, true end
+    runtime.catalogDefaults = runtime.catalogDefaults or {}
+    local bucket = runtime.catalogDefaults[spec.key] or {}
+    runtime.catalogDefaults[spec.key] = bucket
+    if not bucket[row.name] then bucket[row.name] = spec.default(row) end
+    return bucket[row.name], false
+end
+
+function UI.storeCatalogEntry(spec, row, entry)
+    if not spec.store[row.name] then
+        spec.store[row.name] = entry
+        if runtime.catalogDefaults and runtime.catalogDefaults[spec.key] then
+            runtime.catalogDefaults[spec.key][row.name] = nil
+        end
+    end
+end
+
+function UI.drawCatalogPage(spec)
+    runtime.catalogSearch = runtime.catalogSearch or {}
+    ImGui.SetNextItemWidth(UI.px(170))
+    local q = ImGui.InputTextWithHint('##catSearch_' .. spec.key, 'search...', runtime.catalogSearch[spec.key] or '')
+    if type(q) ~= 'string' then q = '' end
+    runtime.catalogSearch[spec.key] = q
+    ImGui.SameLine()
+    runtime.catalogOnOnly = runtime.catalogOnOnly or {}
+    runtime.catalogOnOnly[spec.key] = ImGui.Checkbox('On only##catOn_' .. spec.key, runtime.catalogOnOnly[spec.key] == true)
+    if ImGui.IsItemHovered() then UI.setTooltip('Show only the ones that are switched on.') end
+    ImGui.SameLine()
+    local fv = ImGui.Checkbox(spec.filterLabel .. '##catF_' .. spec.key, ctrl[spec.filterKey] == true)
+    if fv ~= (ctrl[spec.filterKey] == true) then ctrl[spec.filterKey] = fv end
+    if ImGui.IsItemHovered() then UI.setTooltip('%s', spec.filterTip) end
+    ImGui.SameLine()
+    if ImGui.Button('Cooldowns window##catCd_' .. spec.key) then
+        ctrl.show_cooldowns = true
+        runtime.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Open the cooldown monitor.') end
+    if spec.intro then
+        ImGui.SameLine()
+        ImGui.TextDisabled('(?)')
+        if ImGui.IsItemHovered() then UI.setTooltip('%s', spec.intro) end
+    end
+    ImGui.Separator()
+
+    local rows = spec.rows()
+    local ql = q:lower()
+    local onOnly = runtime.catalogOnOnly[spec.key] == true
+    local shown, selRow = {}, nil
+    local selName = runtime.actSel[spec.key]
+    for _, row in ipairs(rows) do
+        local entry, stored = UI.catalogEntry(spec, row)
+        local on = stored and UI.entryOn(entry, spec.kind)
+        if (ql == '' or row.name:lower():find(ql, 1, true)) and (not onOnly or on) then
+            shown[#shown + 1] = { row = row, entry = entry, stored = stored, on = on }
+        end
+        if row.name == selName then selRow = row end
+    end
+    if selName and not selRow then runtime.actSel[spec.key] = nil end
+
+    if #rows == 0 then
+        ImGui.TextDisabled(spec.emptyText or 'Nothing found for your classes.')
+        return
+    end
+
+    local panelH = selRow and UI.px(spec.panelH or 190) or UI.px(30)
+    if ImGui.BeginTable('##cat_' .. spec.key, 7, UI.listTableFlags(), 0, UI.listHeight(panelH)) then
+        ImGui.TableSetupColumn('On', ImGuiTableColumnFlags.WidthFixed, UI.px(26))
+        ImGui.TableSetupColumn('Class', ImGuiTableColumnFlags.WidthFixed, UI.px(34))
+        ImGui.TableSetupColumn('Name', ImGuiTableColumnFlags.WidthStretch)
+        ImGui.TableSetupColumn(spec.infoHeader or 'Info', ImGuiTableColumnFlags.WidthFixed, UI.px(60))
+        ImGui.TableSetupColumn('Target', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+        ImGui.TableSetupColumn('Condition', ImGuiTableColumnFlags.WidthFixed, UI.px(124))
+        ImGui.TableSetupColumn('Flags', ImGuiTableColumnFlags.WidthFixed, UI.px(90))
+        ImGui.TableHeadersRow()
+        for i, s in ipairs(shown) do
+            local row, entry = s.row, s.entry
+            ImGui.PushID(spec.key .. i .. row.name)
+            ImGui.TableNextRow()
+            ImGui.TableNextColumn()
+            local nv = ImGui.Checkbox('##on', s.on)
+            if nv ~= s.on then
+                UI.setEntryOn(entry, spec.kind, nv)
+                if nv then UI.storeCatalogEntry(spec, row, entry) end
+                runtime.saveLoadout(true)
+            end
+            local muted = UI.pushRowMuted(s.on)
+            ImGui.TableNextColumn()
+            local r, gc, b, a = classColor(row.cls)
+            ImGui.TextColored(r, gc, b, a, tostring(row.cls)) ---@diagnostic disable-line: param-type-mismatch
+            ImGui.TableNextColumn()
+            local _, pressed = ImGui.Selectable(row.name .. '##sel', selName == row.name)
+            if pressed then runtime.actSel[spec.key] = row.name end
+            if row.tooltip and ImGui.IsItemHovered() then row.tooltip() end
+            ImGui.TableNextColumn(); ImGui.TextDisabled(tostring(row.info or ''))
+            if row.infoTip and ImGui.IsItemHovered() then UI.setTooltip('%s', row.infoTip) end
+            if s.on then
+                local auto = entry.autoskill
+                ImGui.TableNextColumn(); ImGui.Text(auto and '-' or UI.shortTarget(entry.target))
+                ImGui.TableNextColumn(); ImGui.Text(auto and 'on cooldown' or UI.ruleSummary(entry))
+                ImGui.TableNextColumn(); UI.drawChips(UI.entryChips(entry, spec.kind))
+            else
+                ImGui.TableNextColumn(); ImGui.TableNextColumn(); ImGui.TableNextColumn()
+            end
+            UI.popRowMuted(muted)
+            ImGui.PopID()
+        end
+        ImGui.EndTable()
+    end
+    if #shown == 0 then ImGui.TextDisabled('Nothing matches the search / filters.') end
+
+    if not selRow then
+        ImGui.TextDisabled('Click a name to edit it; the checkbox switches it on or off.')
+        return
+    end
+    local entry, stored = UI.catalogEntry(spec, selRow)
+    local on = stored and UI.entryOn(entry, spec.kind)
+    local r, gc, b, a = classColor(selRow.cls)
+    ImGui.TextColored(r, gc, b, a, tostring(selRow.cls)) ---@diagnostic disable-line: param-type-mismatch
+    ImGui.SameLine(); accent(GOLD, selRow.name)
+    if selRow.info and selRow.info ~= '' then ImGui.SameLine(); ImGui.TextDisabled('(' .. tostring(selRow.info) .. ')') end
+    ImGui.SameLine(0, UI.px(18))
+    local nv = ImGui.Checkbox('On##catDetailOn', on)
+    if nv ~= on then
+        UI.setEntryOn(entry, spec.kind, nv)
+        if nv then UI.storeCatalogEntry(spec, selRow, entry) end
+        runtime.saveLoadout(true)
+        on = nv
+    end
+    if spec.extra then spec.extra(selRow, entry) end
+    if not on then
+        ImGui.TextDisabled('Switch it on to choose when it fires.')
+        return
+    end
+    if UI.drawRuleEditor(entry, spec.opts(selRow, entry)) then runtime.saveLoadout(true) end
+end
+
+-- Rows are rebuilt at most once a second (they walk DATA and query skills /
+-- AAs / discs per row); `sig` forces a rebuild when the filter changes.
+function UI.cachedRows(key, sig, build)
+    runtime.catalogRows = runtime.catalogRows or {}
+    local c = runtime.catalogRows[key]
+    local now = os.clock()
+    if not c or c.sig ~= sig or (now - c.at) >= 1.0 then
+        c = { at = now, sig = sig, rows = build() }
+        runtime.catalogRows[key] = c
+    end
+    return c.rows
+end
+
+function UI.drawAbilitiesTab()
+    UI.drawCatalogPage({
+        key = 'abilities', kind = 'action', store = loadout.actions,
+        filterLabel = 'Trained only', filterKey = 'action_trained_only',
+        filterTip = 'Only abilities you have trained. Off: browse everything your classes can learn.',
+        intro = 'Innate combat abilities and skills (/doability): Kick, Bash, Backstab, Taunt, Mend, monk strikes... '
+            .. 'They fire on their own timers, independent of spell gems.',
+        infoHeader = 'Skill',
+        emptyText = 'No combat abilities found for your classes.',
+        rows = function()
+            local clsKey = table.concat(myClasses or {}, ',')
+            return UI.cachedRows('abilities', clsKey .. tostring(ctrl.action_trained_only), function()
+                -- getClientAbilities does ~8 TLO calls per ability: rebuilt every 3 s.
+                local nowAb = os.clock()
+                local abCache = runtime.clientAbilitiesCache
+                if not abCache or (nowAb - abCache.at) >= 3.0 or abCache.clsKey ~= clsKey then
+                    local list = getClientAbilities()
+                    for _, item in ipairs(list) do
+                        if item.isTrained == nil and type(item.name) == 'string' then
+                            item.isTrained = hasActionSkill(item.name) or false
+                        end
+                    end
+                    abCache = { at = nowAb, clsKey = clsKey, list = list }
+                    runtime.clientAbilitiesCache = abCache
+                end
+                local out = {}
+                for _, item in ipairs(abCache.list) do
+                    local nm = item.name
+                    if type(nm) == 'string' and nm ~= '' and nm ~= 'NULL' and nm ~= 'false'
+                        and (not ctrl.action_trained_only or item.isTrained) then
+                        local cap = (item.skillCap and item.skillCap > 0) and string.format('%d/%d', item.currentSkill or 0, item.skillCap) or ''
+                        out[#out + 1] = { name = nm, cls = item.cls or (myClasses and myClasses[1]) or 'War', info = cap,
+                            infoTip = cap ~= '' and ('Skill ' .. cap) or nil }
+                    end
+                end
+                return out
+            end)
+        end,
+        default = function(row) return defaultActionEntry(row.name, row.cls) end,
+        extra = function(row, entry)
+            entry.cls = entry.cls or row.cls
+            if entry.kind == nil or entry.autoskill == nil then
+                local d = defaultActionEntry(row.name, row.cls)
+                entry.kind = entry.kind or d.kind
+                if entry.autoskill == nil then entry.autoskill = d.autoskill end
+            end
+            if not isAutoskillEligible(row.name) then entry.autoskill = false end
+        end,
+        opts = function(row) return { kind = 'action', priority = true, autoskill = isAutoskillEligible(row.name) } end,
+    })
+end
+
+function UI.drawAATab()
+    UI.drawCatalogPage({
+        key = 'aas', kind = 'aa', store = loadout.aas,
+        filterLabel = 'Purchased only', filterKey = 'aa_purchased_only',
+        filterTip = 'Only AAs you have bought a rank in. Off: browse every AA your classes can train.',
+        intro = 'Activated AAs, grouped short / mid / burn by cooldown; each has its own timer. '
+            .. 'Group: AAs that grant the same effect (e.g. two rage AAs) share a letter so they chain instead of overlapping - '
+            .. 'the one listed highest fires first.',
+        infoHeader = 'Cooldown', panelH = 210,
+        emptyText = 'No activated AAs found for your classes.',
+        rows = function()
+            return UI.cachedRows('aas', table.concat(myClasses or {}, ',') .. tostring(ctrl.aa_purchased_only), function()
+                local out = {}
+                for _, tier in ipairs({ 'short', 'mid', 'burn' }) do
+                    for _, cls in ipairs(myClasses) do
+                        for sec, list in pairs(DATA.aas[cls] or {}) do
+                            local isTuple = type(list) == 'table' and type(list[1]) == 'string' and tonumber(list[2]) ~= nil
+                            local secNum = isTuple and tonumber(list[2]) or tonumber(sec) or 60
+                            if aaTier(secNum) == tier and type(list) == 'table' then
+                                for _, item in ipairs(isTuple and { list } or list) do
+                                    local nm = type(item) == 'table' and (item[1] or item.name) or tostring(item)
+                                    if type(nm) == 'string' then nm = nm:match('^%s*(.-)%s*$') end
+                                    if type(nm) == 'string' and not tonumber(nm) and (not ctrl.aa_purchased_only or runtime.hasAA(nm)) then
+                                        out[#out + 1] = { name = nm, cls = cls, info = fmtSec(secNum),
+                                            infoTip = 'Cooldown ' .. fmtSec(secNum) .. ' (' .. tier .. ')',
+                                            tooltip = function() runtime.showAATabTooltip(nm, cls, secNum, tier) end }
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                return out
+            end)
+        end,
+        default = function(row)
+            local isFD = isFeignDeathAbility(row.name)
+            return { cls = row.cls, target = 'F: Myself', when = isFD and 'my HP <=' or 'in combat', enabled = false,
+                pct = isFD and 20 or 30, burn_only = false }
+        end,
+        extra = function(row, entry)
+            if entry.excl then
+                ImGui.SameLine()
+                if runtime.aaGroupBusyCached(row.name, entry) then
+                    ImGui.TextDisabled('waiting on group ' .. entry.excl)
+                elseif runtime.aaGroupSnapshot().running[row.name] then
+                    accent(GOOD, 'running')
+                end
+            end
+            local desc = runtime.getAADescription and runtime.getAADescription(row.name)
+            if desc and desc ~= '' then
+                ImGui.PushTextWrapPos(0)
+                ImGui.TextDisabled(desc)
+                ImGui.PopTextWrapPos()
+            end
+        end,
+        opts = function() return { kind = 'aa', boss = true, excl = true } end,
+    })
+end
+
+function UI.drawDiscTab()
+    UI.drawCatalogPage({
+        key = 'discs', kind = 'disc', store = loadout.discs,
+        filterLabel = 'Trained only', filterKey = 'disc_trained_only',
+        filterTip = 'Only disciplines you have trained. Off: browse every disc your classes can learn.',
+        intro = 'Disciplines (/disc). Named only keeps long-cooldown offensive discs for real fights. '
+            .. 'Priority: when several are ready, lower numbers are tried first; if the top one is on cooldown the next fires.',
+        infoHeader = 'Level',
+        emptyText = 'No disciplines found for your classes.',
+        rows = function()
+            return UI.cachedRows('discs', table.concat(myClasses or {}, ',') .. tostring(ctrl.disc_trained_only), function()
+                local out = {}
+                for _, cls in ipairs(myClasses) do
+                    for _, row in ipairs(DATA.discs[cls] or {}) do
+                        local nm, lv = row[1], row[2]
+                        if type(nm) == 'string' and (not ctrl.disc_trained_only or runtime.hasDisc(nm)) then
+                            out[#out + 1] = { name = nm, cls = cls, info = 'L' .. tostring(lv), infoTip = 'Required level ' .. tostring(lv) }
+                        end
+                    end
+                end
+                return out
+            end)
+        end,
+        default = function(row)
+            return { cls = row.cls, target = 'F: Myself', when = 'HP <=', enabled = false, pct = 30, boss_only = false, burn_only = false, priority = 50 }
+        end,
+        opts = function() return { kind = 'disc', boss = true, priority = true } end,
+    })
 end
 
 function UI.addClickieFromCursor()
@@ -9604,384 +10136,7 @@ function UI.addClickieFromCursor()
     return true
 end
 
-function UI.drawClickieTab()
-    ImGui.TextWrapped('Clickable Items: Manage inventory and equipped items with activatable spell effects. Click [+ Add Item on Cursor] while holding an item to add it.')
-    if ImGui.IsItemHovered() then
-        UI.setTooltip('Configure automated clickies (inventory/worn items). Items are clicked automatically when conditions are met.')
-    end
-
-    -- Cursor inspection info
-    local curItem = mq.TLO.Cursor
-    local hasCursorItem = curItem and curItem() and (curItem.ID() or 0) > 0
-    local curName = hasCursorItem and tostring(curItem.Name() or 'Item') or nil
-
-    if not hasCursorItem then ImGui.BeginDisabled() end
-    if ImGui.Button('+ Add Item on Cursor##addCursorClickie', UI.px(150), UI.px(20)) then
-        UI.addClickieFromCursor()
-    end
-    if not hasCursorItem then ImGui.EndDisabled() end
-
-    if ImGui.IsItemHovered() then
-        if hasCursorItem then
-            UI.setTooltip(string.format('Add [%s] from your cursor to the Clickies list.', curName))
-        else
-            UI.setTooltip('Pick up an item with a click effect onto your cursor, then click this button.')
-        end
-    end
-
-    ImGui.SameLine()
-    if hasCursorItem then
-        accent(GOOD, 'Cursor: ' .. curName)
-    else
-        accent(MUTED, 'Cursor: (Empty)')
-    end
-
-    ImGui.SameLine()
-    ImGui.TextDisabled(string.format('| %d item(s)', #(loadout.clickies or {})))
-
-    ImGui.Separator()
-
-    -- Compact styling inside clickies list: tighter item spacing & frame padding
-    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 3)
-
-    if ImGui.BeginChild('clickielist', 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        loadout.clickies = loadout.clickies or {}
-        local toRemove = nil
-
-        for idx, c in ipairs(loadout.clickies) do
-            ImGui.PushID('clk_' .. idx .. '_' .. (c.name or ''))
-
-            -- Reorder Up
-            if idx > 1 then
-                if ImGui.Button('^##up', UI.px(17), UI.px(19)) then
-                    local tmp = loadout.clickies[idx]
-                    loadout.clickies[idx] = loadout.clickies[idx - 1]
-                    loadout.clickies[idx - 1] = tmp
-                    runtime.saveLoadout(true)
-                end
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Move higher in priority order.')
-                end
-            else
-                ImGui.InvisibleButton('##upDummy', UI.px(17), UI.px(19))
-            end
-
-            ImGui.SameLine()
-            -- Reorder Down
-            if idx < #loadout.clickies then
-                if ImGui.Button('v##dn', UI.px(17), UI.px(19)) then
-                    local tmp = loadout.clickies[idx]
-                    loadout.clickies[idx] = loadout.clickies[idx + 1]
-                    loadout.clickies[idx + 1] = tmp
-                    runtime.saveLoadout(true)
-                end
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Move lower in priority order.')
-                end
-            else
-                ImGui.InvisibleButton('##dnDummy', UI.px(17), UI.px(19))
-            end
-
-            ImGui.SameLine()
-            -- Delete button
-            local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
-            local pCol = 0
-            if Col and pcall(ImGui.PushStyleColor, Col.Button, 0.65, 0.15, 0.15, 1.0) then pCol = pCol + 1 end
-            if Col and pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.85, 0.25, 0.25, 1.0) then pCol = pCol + 1 end
-            if ImGui.Button('X##del', UI.px(17), UI.px(19)) then
-                toRemove = idx
-            end
-            if pCol > 0 then pcall(ImGui.PopStyleColor, pCol) end
-            if ImGui.IsItemHovered() then
-                UI.setTooltip(string.format('Remove [%s] from Clickies.', c.name))
-            end
-
-            ImGui.SameLine()
-            ImGui.Text(string.format('%2d', idx))
-            if ImGui.IsItemHovered() then
-                UI.setTooltip(string.format('Clickie Priority #%d', idx))
-            end
-
-            ImGui.SameLine()
-            c.enabled = ImGui.Checkbox('##en', c.enabled ~= false)
-            if ImGui.IsItemHovered() then
-                UI.setTooltip(string.format('Enable or disable %s.', c.name))
-            end
-
-            ImGui.SameLine()
-            accent(c.enabled ~= false and GOOD or MUTED, c.name or 'Item')
-            if ImGui.IsItemHovered() then
-                UI.setTooltip(string.format('Clickie Item: %s\nSpell Effect: %s', tostring(c.name), tostring(c.spell or 'Unknown')))
-            end
-
-            if c.spell and c.spell ~= '' then
-                ImGui.SameLine()
-                ImGui.TextDisabled('(' .. c.spell .. ')')
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip(string.format('Click Effect Spell: %s', c.spell))
-                end
-            end
-
-            if c.enabled ~= false then
-                ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
-                local ti = ImGui.Combo('##ct', idxOf(COMBO_OPTIONS.TARGETS, c.target or 'F: Myself'), COMBO_OPTIONS.TARGETS)
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Target condition: who or what to use this clickie on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
-                end
-                c.target = COMBO_OPTIONS.TARGETS[ti]
-
-                ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
-                local wi = ImGui.Combo('##cw', idxOf(COMBO_OPTIONS.WHENS, c.when or 'missing buff'), COMBO_OPTIONS.WHENS)
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Trigger condition: when this clickie should be used (e.g. missing buff, HP <=, in combat, always).')
-                end
-                c.when = COMBO_OPTIONS.WHENS[wi]
-
-                ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(57))
-                local curPct = tonumber(c.pct)
-                if curPct == nil then curPct = 100 end
-                local isDis = (curPct == 0)
-                local pCount = 0
-                if isDis then pCount = UI.pushDisabledSliderStyle() end
-                local cpVal = ImGui.SliderInt('##cp', curPct, 0, 100, isDis and 'Off' or '%d%%')
-                local isHov = ImGui.IsItemHovered()
-                if pCount > 0 then UI.popDisabledSliderStyle(pCount) end
-                c.pct = cpVal
-                if isHov then
-                    if cpVal == 0 then
-                        UI.setTooltip('Clickie is Disabled (0%). Drag slider above 0% to enable.')
-                    else
-                        UI.setTooltip(string.format('Threshold: %d%% (Set to 0%% to disable this clickie).', cpVal))
-                    end
-                end
-
-                ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                local curXt = tonumber(c.min_xtar) or 1
-                if curXt < 1 then curXt = 1 end
-                if curXt > 10 then curXt = 10 end
-                local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                local xti = ImGui.Combo('##cmxt', curXt, xtOpts)
-                c.min_xtar = xti
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Minimum number of active NPCs on XTarget required for this clickie to fire.')
-                end
-
-                ImGui.SameLine()
-                local cboVal = ImGui.Checkbox('Burn##cbo', c.burn_only or false)
-                c.burn_only = cboVal
-                if ImGui.IsItemHovered() then
-                    UI.setTooltip('Only use this clickie when Burn Mode is ON.')
-                end
-            end
-
-            ImGui.PopID()
-        end
-
-        if toRemove then
-            local removedName = loadout.clickies[toRemove] and loadout.clickies[toRemove].name or 'item'
-            table.remove(loadout.clickies, toRemove)
-            runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Removed Clickie: [' .. removedName .. ']')
-        end
-
-        if #loadout.clickies == 0 then
-            accent(MUTED, '  (No clickies added yet -- pick up an item with a click effect on your cursor and click [+ Add Item on Cursor] above)')
-        end
-    end
-    ImGui.EndChild()
-    ImGui.PopStyleVar(2)
-end
-
 -- UI: Innate Combat Abilities & Skills tab
-function UI.drawAbilitiesTab()
-    ImGui.TextWrapped('Innate Combat Abilities & Skills (/doability) -- Kick, Bash, Slam, Mend, Backstab, Monk strikes, Taunt, Disarm, Frenzy, etc.')
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Innate class actions and combat abilities operate independently of spell gems and fire automatically when ready or when conditions are met.')
-    end
-    ctrl.action_trained_only = ImGui.Checkbox('Trained Only##act', ctrl.action_trained_only)
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Only show abilities you\'ve actually trained/unlocked in your skill list. Turn off to browse/plan ahead.')
-    end
-    ImGui.SameLine()
-    if ImGui.Button('Popout Cooldowns##actCdPop') then
-        ctrl.show_cooldowns = true
-        runtime.saveLoadout(true)
-    end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Opens the standalone popout Cooldown & Ability Monitor window.')
-    end
-    ImGui.Separator()
-
-    -- Compact styling inside abilities list: tighter item spacing & frame padding
-    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 3)
-
-    if ImGui.BeginChild('abilitieslist', 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        -- getClientAbilities does ~8 TLO calls per ability; rebuild it every
-        -- 3 s (skills train slowly) instead of every frame, and resolve
-        -- `isTrained` once per rebuild rather than per row.
-        local nowAb = os.clock()
-        local abCache = runtime.clientAbilitiesCache
-        local clsKey = table.concat(myClasses or {}, ',')
-        if not abCache or (nowAb - abCache.at) >= 3.0 or abCache.clsKey ~= clsKey then
-            local list = getClientAbilities()
-            for _, item in ipairs(list) do
-                if item.isTrained == nil and type(item.name) == 'string' then
-                    item.isTrained = hasActionSkill(item.name) or false
-                end
-            end
-            abCache = { at = nowAb, clsKey = clsKey, list = list }
-            runtime.clientAbilitiesCache = abCache
-        end
-        local clientAbilities = abCache.list
-        local anyAction = false
-        for _, item in ipairs(clientAbilities) do
-            local nm = item.name
-            local cls = item.cls or (myClasses and myClasses[1]) or 'War'
-            if type(nm) == 'string' and nm ~= '' and nm ~= 'NULL' and nm ~= 'false' then
-                local isTrained = item.isTrained
-                if not ctrl.action_trained_only or isTrained then
-                    anyAction = true
-                    ImGui.PushID('act_' .. tostring(cls) .. '_' .. tostring(nm))
-                -- Unsaved rows use a throwaway default, stored only once a
-                -- control a disabled row shows (enable / Auto) is changed.
-                local stored = loadout.actions[nm]
-                local rowChanged = false
-                local entry = stored
-                if not entry then
-                    entry = defaultActionEntry(nm, cls)
-                else
-                    entry.cls = entry.cls or cls
-                    if entry.kind == nil or entry.autoskill == nil then
-                        local d = defaultActionEntry(nm, cls)
-                        entry.kind = entry.kind or d.kind
-                        if entry.autoskill == nil then entry.autoskill = d.autoskill end
-                    end
-                end
-
-                entry.enabled = ImGui.Checkbox('##en', entry.enabled)
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip(string.format('Enable or disable %s.', nm))
-                end
-                ImGui.SameLine()
-                local r, gc, b, a = classColor(cls)
-                ImGui.TextColored(r, gc, b, a, cls) ---@diagnostic disable-line: param-type-mismatch
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip(string.format('Class: %s', cls))
-                end
-                ImGui.SameLine()
-                ImGui.Text(nm)
-                if ImGui.IsItemHovered() then
-                    local capStr = (item.skillCap and item.skillCap > 0) and string.format(' (Cap: %d, Skill: %d)', item.skillCap, item.currentSkill or 0) or ''
-                    ImGui.SetTooltip(string.format('Combat Ability / Skill: %s%s', nm, capStr))
-                end
-
-                if isAutoskillEligible(nm) then
-                    ImGui.SameLine()
-                    local asVal = ImGui.Checkbox('Auto##as', entry.autoskill or false)
-                    if asVal ~= (entry.autoskill or false) then rowChanged = true end
-                    entry.autoskill = asVal
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip('Autoskill: Automatically fire this ability continuously on cooldown during combat against hostile targets in melee range.')
-                    end
-                else
-                    entry.autoskill = false
-                end
-
-                if entry.enabled then
-                    if entry.autoskill then
-                        ImGui.SameLine()
-                        ImGui.TextDisabled('[Auto on Cooldown]')
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Autoskill active: Fires whenever ready during melee combat without condition checks.')
-                        end
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                        local curXt = tonumber(entry.min_xtar) or 1
-                        if curXt < 1 then curXt = 1 end
-                        if curXt > 10 then curXt = 10 end
-                        local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                        local xti = ImGui.Combo('##actmxt', curXt, xtOpts)
-                        entry.min_xtar = xti
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Minimum number of active NPCs on XTarget required for this ability to fire.')
-                        end
-                        ImGui.SameLine()
-                        local aboVal = ImGui.Checkbox('Burn##actbo', entry.burn_only or false)
-                        entry.burn_only = aboVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Only fire when Burn Mode is ON.')
-                        end
-                    else
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
-                        local ti = ImGui.Combo('##actt', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Target condition: who or what to use this ability on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
-                        end
-                        entry.target = COMBO_OPTIONS.TARGETS[ti]
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
-                        local wi = ImGui.Combo('##actw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Trigger condition: when this ability should be used (e.g. in combat, my HP <=, always).')
-                        end
-                        entry.when = COMBO_OPTIONS.WHENS[wi]
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(57))
-                        local curPct = tonumber(entry.pct)
-                        if curPct == nil then curPct = 100 end
-                        local isDis = (curPct == 0)
-                        local pCount = 0
-                        if isDis then pCount = UI.pushDisabledSliderStyle() end
-                        local spVal = ImGui.SliderInt('##actp', curPct, 0, 100, isDis and 'Off' or '%d%%')
-                        local isHov = ImGui.IsItemHovered()
-                        if pCount > 0 then UI.popDisabledSliderStyle(pCount) end
-                        entry.pct = spVal
-                        if isHov then
-                            if spVal == 0 then
-                                UI.setTooltip('Ability is Disabled (0%). Drag slider above 0% to enable.')
-                            else
-                                UI.setTooltip(string.format('Threshold: %d%% (Set to 0%% to disable this ability).', spVal))
-                            end
-                        end
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                        local curXt = tonumber(entry.min_xtar) or 1
-                        if curXt < 1 then curXt = 1 end
-                        if curXt > 10 then curXt = 10 end
-                        local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                        local xti = ImGui.Combo('##actmxt', curXt, xtOpts)
-                        entry.min_xtar = xti
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Minimum number of active NPCs on XTarget required for this ability to fire.')
-                        end
-                        ImGui.SameLine()
-                        local sbrnVal = ImGui.Checkbox('Burn##actbrn', entry.burn_only or false)
-                        entry.burn_only = sbrnVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Only fires when Burn Mode is ON.')
-                        end
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(70))
-                        local priVal = ImGui.SliderInt('##actpri', entry.priority or 50, 1, 99, 'Pri %d')
-                        entry.priority = priVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Lower = tried first when more than one eligible ability is ready at the same time.')
-                        end
-                    end
-                end
-                if not stored and (entry.enabled or rowChanged) then loadout.actions[nm] = entry end
-                ImGui.PopID()
-            end
-        end
-    end
-        if not anyAction then
-            ImGui.TextDisabled('  (no combat abilities found for your classes)')
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('No combat abilities found for your current character classes.')
-            end
-        end
-    end
-    ImGui.EndChild()
-    ImGui.PopStyleVar(2)
-end
-
 -- UI: activated AAs tab
 -- Exclusion-group state for the AAs tab, built once per main-loop pass
 -- (runtime.tickSerial; 0.25 s when the loop has not stamped one) instead of
@@ -10018,165 +10173,6 @@ function runtime.aaGroupBusyCached(name, a)
         if oname ~= name then return true end
     end
     return false
-end
-
-function UI.drawAATab()
-    ImGui.TextWrapped('Activated Alternate Advancements (each has its own timer -- all fire when ready). Grouped by cooldown. Use Grp to chain AAs that do the same thing.')
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip(
-            'Activated Alternate Advancement abilities operate on independent cooldown timers and fire automatically when their conditions are met.\n\n' ..
-            'Grp: put AAs that grant the same effect (e.g. Bloodlust and Rage of Rallos Zek) in the same letter group.\n' ..
-            'Only one AA per group runs at a time -- the one listed highest in this tab fires first, and the next\n' ..
-            'one fires once that effect drops, so they chain back-to-back instead of overlapping.')
-    end
-    ctrl.aa_purchased_only = ImGui.Checkbox('Purchased Only', ctrl.aa_purchased_only)
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip(
-            'Only show AAs you\'ve actually bought a rank in, not every AA your\nclass could ever train. Updates live as you spend AA points. Turn\noff to browse/plan ahead.')
-    end
-    ImGui.SameLine()
-    if ImGui.Button('Popout Cooldowns##aaCdPop') then
-        ctrl.show_cooldowns = true
-        runtime.saveLoadout(true)
-    end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Opens the standalone popout Cooldown & Ability Monitor window.')
-    end
-    ImGui.Separator()
-
-    -- Compact styling inside AA list: tighter item spacing & frame padding
-    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 3)
-
-    if ImGui.BeginChild('aalist', 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        local TIER_ORDER = { 'short', 'mid', 'burn' }
-        for _, tier in ipairs(TIER_ORDER) do
-            local any = false
-            for _, cls in ipairs(myClasses) do
-                for sec, list in pairs(DATA.aas[cls] or {}) do
-                    local isTuple = type(list) == 'table' and type(list[1]) == 'string' and tonumber(list[2]) ~= nil
-                    local secNum = isTuple and tonumber(list[2]) or tonumber(sec) or 60
-                    if aaTier(secNum) == tier and type(list) == 'table' then
-                        local items = isTuple and { list } or list
-                        for _, item in ipairs(items) do
-                            local nm = type(item) == 'table' and (item[1] or item.name) or tostring(item)
-                            if type(nm) == 'string' then nm = nm:match('^%s*(.-)%s*$') end
-                            if not tonumber(nm) and (not ctrl.aa_purchased_only or runtime.hasAA(nm)) then
-                                any = true
-                                ImGui.PushID('aa_' .. tier .. '_' .. cls .. '_' .. nm)
-                                local isFD = isFeignDeathAbility(nm)
-                                -- Unsaved rows use a throwaway default, stored only once
-                                -- enabled (the only control a disabled row shows).
-                                local stored = loadout.aas[nm]
-                                local entry = stored or
-                                    { cls = cls, target = 'F: Myself', when = isFD and 'my HP <=' or 'in combat', enabled = false, pct = isFD and 20 or 30, burn_only = false }
-                                entry.enabled = ImGui.Checkbox('##en', entry.enabled)
-                                if ImGui.IsItemHovered() then
-                                    ImGui.SetTooltip(string.format('Enable or disable %s.', nm))
-                                end
-                                ImGui.SameLine(); local r, gc, b, a = classColor(cls); ImGui.TextColored(r, gc, b, a, cls) ---@diagnostic disable-line: param-type-mismatch
-                                if ImGui.IsItemHovered() then
-                                    ImGui.SetTooltip(string.format('Class: %s', cls))
-                                end
-                                ImGui.SameLine(); ImGui.Text(nm)
-                                if ImGui.IsItemHovered() then
-                                    runtime.showAATabTooltip(nm, cls, secNum, tier)
-                                end
-                                ImGui.SameLine(); ImGui.TextDisabled('(' .. fmtSec(secNum) .. ')')
-                                if ImGui.IsItemHovered() then
-                                    runtime.showAATabTooltip(nm, cls, secNum, tier)
-                                end
-                                if entry.enabled then
-                                    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
-                                    local ti = ImGui.Combo('##aat', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip('Target condition: who or what to cast this ability on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
-                                    end
-                                    entry.target = COMBO_OPTIONS.TARGETS[ti]
-                                    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
-                                    local wi = ImGui.Combo('##aaw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip('Trigger condition: when this ability should be cast (e.g. in combat, HP <=, my Mana <=, missing buff, always).')
-                                    end
-                                    entry.when = COMBO_OPTIONS.WHENS[wi]
-                                    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(57))
-                                    local curPct = tonumber(entry.pct)
-                                    if curPct == nil then curPct = 30 end
-                                    local isDis = (curPct == 0)
-                                    local pCount = 0
-                                    if isDis then pCount = UI.pushDisabledSliderStyle() end
-                                    local newPct = ImGui.SliderInt('##aap', curPct, 0, 100, isDis and 'Off' or '%d%%')
-                                    local isHov = ImGui.IsItemHovered()
-                                    if pCount > 0 then UI.popDisabledSliderStyle(pCount) end
-                                    entry.pct = newPct
-                                    if isHov then
-                                        if newPct == 0 then
-                                            UI.setTooltip('Ability is Disabled (0%). Drag slider above 0% to enable.')
-                                        else
-                                            UI.setTooltip(string.format('Threshold: %d%% (Set to 0%% to disable this ability).', newPct))
-                                        end
-                                    end
-                                    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                                    local curXt = tonumber(entry.min_xtar) or 1
-                                    if curXt < 1 then curXt = 1 end
-                                    if curXt > 10 then curXt = 10 end
-                                    local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                                    local xti = ImGui.Combo('##aamxt', curXt, xtOpts)
-                                    entry.min_xtar = xti
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip(
-                                            'Minimum number of active NPCs on XTarget required for this AA to fire.')
-                                    end
-                                    ImGui.SameLine()
-                                    local aabossVal = ImGui.Checkbox('Boss##aabs', entry.boss_only or false)
-                                    entry.boss_only = aabossVal
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip('Only fire this AA if the resolved target is a Named mob.')
-                                    end
-                                    ImGui.SameLine()
-                                    local aaboVal = ImGui.Checkbox('Burn##bo', entry.burn_only or false)
-                                    entry.burn_only = aaboVal
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip('Only fire this AA when Burn Mode is ON.')
-                                    end
-                                    ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(38))
-                                    local exOpts = runtime.AA_EXCL_GROUPS
-                                    local exi = ImGui.Combo('##aaex', idxOf(exOpts, entry.excl or '-'), exOpts)
-                                    entry.excl = (exi > 1) and exOpts[exi] or nil
-                                    if ImGui.IsItemHovered() then
-                                        ImGui.SetTooltip(
-                                            'Exclusion group. AAs sharing a letter never run at the same time:\n' ..
-                                            'the one listed highest in this tab fires first, the next fires when\n' ..
-                                            'that effect drops. Use for AAs that grant the same thing.')
-                                    end
-                                    if entry.excl then
-                                        ImGui.SameLine()
-                                        if runtime.aaGroupBusyCached(nm, entry) then
-                                            ImGui.TextDisabled('waiting')
-                                            if ImGui.IsItemHovered() then
-                                                ImGui.SetTooltip('Another AA in group ' .. entry.excl .. ' is still running; this one fires when it drops.')
-                                            end
-                                        elseif runtime.aaGroupSnapshot().running[nm] then
-                                            local r2, g2, b2 = 0.4, 0.9, 0.4
-                                            ImGui.TextColored(r2, g2, b2, 1, 'running')
-                                            if ImGui.IsItemHovered() then
-                                                ImGui.SetTooltip('This AA\'s effect is up; the rest of group ' .. entry.excl .. ' waits for it.')
-                                            end
-                                        end
-                                    end
-                                end
-                                if not stored and entry.enabled then loadout.aas[nm] = entry end
-                                ImGui.PopID()
-                            end
-                        end
-                    end
-                end
-            end
-            if any then ImGui.Separator() end
-        end
-    end
-    ImGui.EndChild()
-    ImGui.PopStyleVar(2)
 end
 
 function runtime.wrapText(text, maxLineLen)
@@ -10343,145 +10339,6 @@ function runtime.showAATabTooltip(name, cls, secNum, tier)
     end
 
     UI.setTooltip('%s', table.concat(lines, '\n'))
-end
-
-function UI.drawDiscTab()
-    ImGui.TextWrapped(
-        'Disciplines (/disc) -- no cooldown data from the extractor to group by tier, so listed flat per class. '
-        ..
-        'Boss Only gates a disc to Named targets (save long-cooldown offensive discs like Mighty Strike for real fights, while '
-        ..
-        'a survival disc like Whirlwind can stay on for regular grinding). Priority: when multiple discs are eligible at once, '
-        .. 'lower numbers are tried first -- if the top one is still on cooldown, the next one down the list fires instead. '
-        .. 'Innate combat abilities (Kick, Bash, Mend, Monk abilities, etc.) are configured on the Abilities tab.')
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Combat disciplines share timer groups and are evaluated in order of assigned priority.')
-    end
-    ctrl.disc_trained_only = ImGui.Checkbox('Trained Only', ctrl.disc_trained_only)
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip(
-            'Only show disciplines you\'ve actually trained, not every disc your\nclass could ever learn. Updates live as you train new ones. Turn\noff to browse/plan ahead.')
-    end
-    ImGui.SameLine()
-    if ImGui.Button('Popout Cooldowns##discCdPop') then
-        ctrl.show_cooldowns = true
-        runtime.saveLoadout(true)
-    end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Opens the standalone popout Cooldown & Ability Monitor window.')
-    end
-    ImGui.Separator()
-    -- Compact styling inside disciplines list: tighter item spacing & frame padding
-    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 3)
-
-    if ImGui.BeginChild('disclist', 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        local anyDisc = false
-        for _, cls in ipairs(myClasses) do
-            for _, row in ipairs(DATA.discs[cls] or {}) do
-                local nm, lv = row[1], row[2]
-                if not ctrl.disc_trained_only or runtime.hasDisc(nm) then
-                    anyDisc = true
-                    ImGui.PushID('disc' .. cls .. nm)
-                    -- Rows without a saved entry draw from a throwaway default; it is
-                    -- only stored once the user turns it on (the other controls only
-                    -- show for enabled rows), so browsing the tab adds nothing.
-                    local stored = loadout.discs[nm]
-                    local entry = stored or
-                        { cls = cls, target = 'F: Myself', when = 'HP <=', enabled = false, pct = 30, boss_only = false, burn_only = false, priority = 50 }
-                    entry.enabled = ImGui.Checkbox('##en', entry.enabled)
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip(string.format('Enable or disable %s.', nm))
-                    end
-                    ImGui.SameLine(); local r, gc, b, a = classColor(cls); ImGui.TextColored(r, gc, b, a, cls) ---@diagnostic disable-line: param-type-mismatch
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip(string.format('Class: %s', cls))
-                    end
-                    ImGui.SameLine(); ImGui.Text(nm)
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip(string.format('Discipline: %s', nm))
-                    end
-                    ImGui.SameLine(); ImGui.TextDisabled('(L' .. lv .. ')')
-                    if ImGui.IsItemHovered() then
-                        ImGui.SetTooltip(string.format('Required Level: %s', tostring(lv)))
-                    end
-                    if entry.enabled then
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
-                        local ti = ImGui.Combo('##dt', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Target condition: who or what to use this discipline on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
-                        end
-                        entry.target = COMBO_OPTIONS.TARGETS[ti]
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
-                        local wi = ImGui.Combo('##dw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip('Trigger condition: when this discipline should be used (e.g. HP <=, in combat, my Mana <=, always).')
-                        end
-                        entry.when = COMBO_OPTIONS.WHENS[wi]
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(57))
-                        local curPct = tonumber(entry.pct)
-                        if curPct == nil then curPct = 30 end
-                        local isDis = (curPct == 0)
-                        local pCount = 0
-                        if isDis then pCount = UI.pushDisabledSliderStyle() end
-                        local dpVal = ImGui.SliderInt('##dp', curPct, 0, 100, isDis and 'Off' or '%d%%')
-                        local isHov = ImGui.IsItemHovered()
-                        if pCount > 0 then UI.popDisabledSliderStyle(pCount) end
-                        entry.pct = dpVal
-                        if isHov then
-                            if dpVal == 0 then
-                                UI.setTooltip('Discipline is Disabled (0%). Drag slider above 0% to enable.')
-                            else
-                                UI.setTooltip(string.format('Threshold: %d%% (Set to 0%% to disable this discipline).', dpVal))
-                            end
-                        end
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(35))
-                        local curXt = tonumber(entry.min_xtar) or 1
-                        if curXt < 1 then curXt = 1 end
-                        if curXt > 10 then curXt = 10 end
-                        local xtOpts = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-                        local xti = ImGui.Combo('##dmxt', curXt, xtOpts)
-                        entry.min_xtar = xti
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip(
-                                'Minimum number of active NPCs on XTarget required for this discipline to fire.')
-                        end
-                        ImGui.SameLine()
-                        local dboVal = ImGui.Checkbox('Boss##bo', entry.boss_only)
-                        entry.boss_only = dboVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip(
-                                'Only fires if the resolved target is a Named mob.')
-                        end
-                        ImGui.SameLine()
-                        local dbrnVal = ImGui.Checkbox('Burn##brn', entry.burn_only or false)
-                        entry.burn_only = dbrnVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip(
-                                'Only fires when Burn Mode is ON.')
-                        end
-                        ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(70))
-                        local priVal = ImGui.SliderInt('##pri', entry.priority or 50, 1, 99, 'Pri %d')
-                        entry.priority = priVal
-                        if ImGui.IsItemHovered() then
-                            ImGui.SetTooltip(
-                                'Lower = tried first when more than one eligible\ndisc is ready at the same time.')
-                        end
-                    end
-                    if not stored and entry.enabled then loadout.discs[nm] = entry end
-                    ImGui.PopID()
-                end
-            end
-        end
-        if not anyDisc then
-            ImGui.TextDisabled('  (none for your classes)')
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('No combat disciplines found for your current character classes.')
-            end
-        end
-    end
-    ImGui.EndChild()
-    ImGui.PopStyleVar(2)
 end
 
 local function setManualHunterPetHold(on, force)
