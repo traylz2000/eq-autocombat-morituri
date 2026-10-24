@@ -341,7 +341,8 @@ function M.drawSpellGemBarWindow()
         if ImGui.BeginPopupContextWindow('##gemWinContextMenu') then
             if core.applyWindowScale then core.applyWindowScale('spell_gems') end
             if core.drawWindowMenuItems then
-                core.drawWindowMenuItems('spell_gems', { header = false, lock = false, scale = false, layout = false, close = false })
+                core.drawWindowMenuItems('spell_gems', { header = false, lock = false, scale = false, layout = false,
+                    onClose = function() core.ctrl.show_spell_gems = false end })
                 ImGui.Separator()
             end
             renderGemSettingsContent()
@@ -714,11 +715,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     accent(GOLD, 'Spell Gem Bar HUD')
-    local isWinOpen = (ctrl.show_spell_gems == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##sgToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_spell_gems = not isWinOpen
-        core.saveLoadout(true)
-    end
     ImGui.TextDisabled('Orientation, layout, and lock options are in the window\'s right-click menu.')
 end
 

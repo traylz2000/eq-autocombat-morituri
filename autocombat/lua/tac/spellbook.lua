@@ -1177,11 +1177,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Spellbook Browser')
-    local isWinOpen = (ctrl.show_spellbook == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##sbToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_spellbook = not isWinOpen
-        core.saveLoadout(true)
-    end
     local dbg = ImGui.Checkbox('Debug logging##sbDebug', state.debugLogging == true)
     if dbg ~= (state.debugLogging == true) then state.debugLogging = dbg end
     local byp = ImGui.Checkbox('Bypass scribed check when memorizing##sbBypass', state.bypassScribedCheck == true)

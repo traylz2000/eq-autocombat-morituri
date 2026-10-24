@@ -1280,11 +1280,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     accent(GOLD, 'Cooldown Monitor')
-    local isWinOpen = (ctrl.show_cooldowns == true)
-    if ImGui.Button((isWinOpen and 'Popout Window: Visible (Click to Hide)' or 'Popout Window: Hidden (Click to Show)') .. '##cdToggleWin', core.px(280), core.px(24)) then
-        ctrl.show_cooldowns = not isWinOpen
-        core.saveLoadout(true)
-    end
     local lockVal = ImGui.Checkbox('Lock Popout Position & Size##cdLock', ctrl.cooldown_locked or false)
     if lockVal ~= (ctrl.cooldown_locked or false) then
         ctrl.cooldown_locked = lockVal

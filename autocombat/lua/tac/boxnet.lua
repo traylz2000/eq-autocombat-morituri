@@ -1679,11 +1679,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Box Network (MacroQuest Actors)')
-    local isWinOpen = (ctrl.show_boxnet == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##bnToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_boxnet = not isWinOpen
-        core.saveLoadout(true)
-    end
 
     local accept = ImGui.Checkbox('Accept remote /ac commands from other boxes##bnAccept', cfg.acceptCommands)
     if accept ~= cfg.acceptCommands then

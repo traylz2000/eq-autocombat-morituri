@@ -907,10 +907,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Parcel Helper')
-    local isWinOpen = (ctrl.show_parcels == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##parcelToggleWin', core.px(250), core.px(24)) then
-        plugin.openWindow(not isWinOpen)
-    end
     ImGui.Spacing()
     ImGui.TextDisabled('Status: ' .. statusLabel(state.status, state.count))
     ImGui.Spacing()

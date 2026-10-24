@@ -8854,13 +8854,30 @@ function UI.drawPluginsTab()
                 pm.defer('reload ' .. modalId, function() pm.reloadPlugin(modalId) end)
             end
 
+            -- One "Show" box per window the plugin declares (replaces the
+            -- per-plugin "Window: Visible (Click to Hide)" buttons).
+            if p.enabled and p.status ~= 'Error' then
+                local shown = 0
+                for _, e in ipairs(pm.windowPlugins(false)) do
+                    if e.pluginId == pm.activeConfigPluginId then
+                        if shown > 0 then ImGui.SameLine() end
+                        local on = pm.isWindowOpen(e.id)
+                        if ImGui.Checkbox(string.format('Show %s##modalWin_%s', tostring(e.window.label or e.id), e.id), on) ~= on then
+                            pm.setWindowOpen(e.id, not on)
+                        end
+                        if ImGui.IsItemHovered() and e.window.desc then UI.setTooltip('%s', tostring(e.window.desc)) end
+                        shown = shown + 1
+                    end
+                end
+            end
+
             ImGui.Spacing()
             ImGui.Separator()
             ImGui.Spacing()
 
             -- Custom Settings Panel inside child frame for smooth scrolling if large
             if p.instance and p.instance.onDrawSettings then
-                if ImGui.BeginChild('plgModalSettingsChild', UI.px(520), UI.px(240), true) then
+                if ImGui.BeginChild('plgModalSettingsChild', UI.px(600), UI.px(380), true) then
                     pm.drawPluginSettings(pm.activeConfigPluginId)
                 end
                 ImGui.EndChild()

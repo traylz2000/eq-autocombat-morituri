@@ -135,11 +135,6 @@ local function renderXtSettingsContent()
     accent(GOLD, 'Extended Target Options')
     ImGui.Separator()
 
-    local isWinOpen = (ctrl.show_xtarget_window == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##xtToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_xtarget_window = not isWinOpen
-        core.saveLoadout(true)
-    end
 
     local lockVal = ImGui.Checkbox('Lock Window Position & Size##xtLock', ctrl.xt_lock or false)
     if lockVal ~= (ctrl.xt_lock or false) then
@@ -346,7 +341,8 @@ function plugin.onDrawUI()
         if ImGui.BeginPopupContextWindow('##xtWinContextMenu') then
             if core.applyWindowScale then core.applyWindowScale('xtarget') end
             if core.drawWindowMenuItems then
-                core.drawWindowMenuItems('xtarget', { header = false, lock = false, scale = false, layout = false, close = false })
+                core.drawWindowMenuItems('xtarget', { header = false, lock = false, scale = false, layout = false,
+                    onClose = function() core.ctrl.show_xtarget_window = false end })
                 ImGui.Separator()
             end
             renderXtSettingsContent()

@@ -2420,11 +2420,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'Buffbot Station')
-    local isWinOpen = (ctrl.show_buffbot == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##bbToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_buffbot = not isWinOpen
-        core.saveLoadout(true)
-    end
     local on = ImGui.Checkbox('Buffbot station active (answer tells & cast)##bbEnabled', cfg.enabled == true)
     if on ~= (cfg.enabled == true) then setEnabled(on) end
     ImGui.TextDisabled(string.format('State: %s | Queue: %d | Mode: %s', tostring(rt.state), #rt.activeQueue, tostring(cfg.guildMode or 'Off')))

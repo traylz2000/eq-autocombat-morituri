@@ -4,6 +4,13 @@
 
 ## 2026-10-24
 
+- **Plugin windows: one way to show and close them (`lua/moriac.lua`, `lua/tac/*.lua`).**
+  - The big "Window: Visible (Click to Hide)" / "Hidden (Click to Show)" buttons at the top of 21 plugin settings panels are gone. **Setup -> Plugins -> Config** now has one **Show *window*** checkbox for each window the plugin has (both of the Target & Player HUD's windows, both NMS Loot windows, and so on), next to *Enabled* and *Pin to sidebar*. The settings area in that dialog is bigger.
+  - Chat's box reopens chat windows you closed one by one, the same as `/tacchat show`. The Hot Buttons box shows or hides every hotbar.
+  - Right-click menus on the Group, XTarget, Effects, Gems, HUD and Target windows now end with **Close window** (that button was their only close path).
+  - Tests: the smoke test now enables every plugin, opens all 23 plugin windows and draws them closed, open with every tooltip hovered, and collapsed. It also opens the Configure dialog for every plugin. Any plugin draw error or unbalanced ImGui scope fails the run.
+  - In game: Setup -> Plugins -> **Config** on Map: tick and untick **Show Map**. Right-click the Group window: **Close window** closes it.
+
 - **Help page is searchable (`lua/moriac.lua`).** One box filters every reference table at once (slash commands, combat modes, targets, conditions) by name or description. Typing *heal* shows only the matching commands, targets and conditions, each section with its match count. With no search, the sections are remembered collapsibles (commands open). Long descriptions wrap instead of running off the page.
 - **`/moriac` command alias**, the same as `/ac`. `/triune` still works.
 - Confirmed in game: 4-class detection and the Spells page (see PROJECT.md).

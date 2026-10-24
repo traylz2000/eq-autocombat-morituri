@@ -1645,10 +1645,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'NMS Loot')
-    local isWinOpen = (ctrl.show_nmsloot == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##nmsToggleWin', core.px(250), core.px(24)) then
-        plugin.openWindow(not isWinOpen)
-    end
     ImGui.Spacing()
     ImGui.TextDisabled('Active looter: ' .. looterLabel(state.looter) .. '   Loot echo: ' .. (state.echo == nil and 'unknown' or (state.echo and 'on' or 'off')))
     ImGui.Spacing()

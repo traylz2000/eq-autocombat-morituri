@@ -1552,10 +1552,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'GM Commands')
-    local isWinOpen = (ctrl.show_gm_commands == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##gmToggleWin', core.px(250), core.px(24)) then
-        plugin.openWindow(not isWinOpen)
-    end
     ImGui.Spacing()
     ImGui.TextDisabled('Needs GM status on the account; a # line from a normal account is just ignored by the server.')
     ImGui.TextDisabled(string.format('%d commands in the reference. /ac gm <line> runs one from a hot button or over the Box Network.', #COMMANDS))

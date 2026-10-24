@@ -5398,6 +5398,9 @@ plugin.window = {
     order = 35,
     getLock = function() return cfg.locked == true end,
     setLock = function(val) cfg.locked = (val == true); markDirty() end,
+    -- 'show' also reopens every chat window the user closed one by one
+    isOpen = function() return ctrl ~= nil and ctrl.show_chat == true end,
+    setOpen = function(val) chatCommand(val and 'show' or 'hide') end,
 }
 
 -- ----------------------------------------------------------------------------
@@ -5509,11 +5512,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'Chat Windows')
-    local isOpen = (ctrl.show_chat == true)
-    if ImGui.Button((isOpen and 'Windows: Visible (Click to Hide)' or 'Windows: Hidden (Click to Show)') .. '##chatToggleWin', core.px(250), core.px(24)) then
-        chatCommand(isOpen and 'hide' or 'show')
-    end
-    ImGui.SameLine()
     if ImGui.Button('Chat Settings...##chatOpenEditor', core.px(140), core.px(24)) then chatCommand('settings') end
     ImGui.SameLine()
     if ImGui.SmallButton('Color test##chatSetColor') then colorTest() end

@@ -104,7 +104,7 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | Update Checker | `/ac update` | Tells you when a newer MoriAC release is out. Nothing is downloaded. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
-Each of these is a plugin in `lua/tac/`. Turn them on or off under **Setup -> Plugins**.
+Each of these is a plugin in `lua/tac/`. Turn them on or off under **Setup -> Plugins**. Its **Config** button has the plugin's settings and a **Show** box for each of its windows. HUD-style windows also close from their right-click menu.
 
 ---
 
@@ -162,7 +162,7 @@ All paths are inside your MacroQuest folder.
 
 ## Writing a plugin
 
-A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `name`, and any of the hooks `onInit(core)`, `onTick()`, `onDrawUI()`, `onDrawSettings()`, `onCommand(cmd, args)`, `onSaveSettings()` and `onLoadSettings(t)`. `core` gives you `mq`, `ImGui`, the live `ctrl` config, `core.log` for logging and `core.delay(ms)` instead of `mq.delay`. Add `plugin.window = { label = 'Mine', flag = 'show_mine' }` and it gets a header button and a place in the window manager. The shipped plugins are the best examples - `cursor.lua` is the smallest.
+A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `name`, and any of the hooks `onInit(core)`, `onTick()`, `onDrawUI()`, `onDrawSettings()`, `onCommand(cmd, args)`, `onSaveSettings()` and `onLoadSettings(t)`. `core` gives you `mq`, `ImGui`, the live `ctrl` config, `core.log` for logging and `core.delay(ms)` instead of `mq.delay`. Add `plugin.window = { label = 'Mine', flag = 'show_mine' }` and it gets a Windows-menu entry, a sidebar pin, a Show box in its Config dialog and a place in the window manager, so don't draw your own show / hide button. The shipped plugins are the best examples - `cursor.lua` is the smallest.
 
 ---
 

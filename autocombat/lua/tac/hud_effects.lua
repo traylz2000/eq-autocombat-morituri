@@ -115,11 +115,6 @@ local function renderEffSettingsContent()
     accent(GOLD, 'Effects & Songs Options')
     ImGui.Separator()
 
-    local isWinOpen = (ctrl.show_effects_window == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##effToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_effects_window = not isWinOpen
-        core.saveLoadout(true)
-    end
 
     local curSort = ctrl.eff_sort_by or 'Time Left (Ascending)'
     local curSortIdx = core.idxOf(sortModes, curSort)
@@ -563,7 +558,8 @@ function plugin.onDrawUI()
         if ImGui.BeginPopupContextWindow('##effWinContextMenu') then
             if core.applyWindowScale then core.applyWindowScale('effects') end
             if core.drawWindowMenuItems then
-                core.drawWindowMenuItems('effects', { header = false, lock = false, scale = false, layout = false, close = false })
+                core.drawWindowMenuItems('effects', { header = false, lock = false, scale = false, layout = false,
+                    onClose = function() core.ctrl.show_effects_window = false end })
                 ImGui.Separator()
             end
             renderEffSettingsContent()

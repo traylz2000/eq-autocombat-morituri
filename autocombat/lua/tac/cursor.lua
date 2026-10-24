@@ -429,11 +429,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Cursor Item Manager')
-    local isWinOpen = (ctrl.show_cursor == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##curToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_cursor = not isWinOpen
-        core.saveLoadout(true)
-    end
     local autoVal = ImGui.Checkbox('Auto-Clear Items on Pick (Continuous)##curAuto', state.autoClearOnPick)
     if autoVal ~= state.autoClearOnPick then
         state.autoClearOnPick = autoVal

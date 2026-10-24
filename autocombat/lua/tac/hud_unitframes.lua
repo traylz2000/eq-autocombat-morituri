@@ -617,15 +617,6 @@ local function renderTargetWindowSettingsContent()
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], 'Target Window Settings')
     ImGui.Separator()
 
-    local isWinOpen = (ctrl.show_target_window == true)
-    local btnText = isWinOpen and 'Target Window: Visible (Click to Hide)' or 'Target Window: Hidden (Click to Show)'
-    if ImGui.Button(btnText .. '##twToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_target_window = not isWinOpen
-        if core.saveLoadout then core.saveLoadout(true) end
-    end
-    if ImGui.IsItemHovered() and core.setTooltip then
-        core.setTooltip('A popout with just the target frame (name, HP bar, ToT, buffs). Scale it up and park it where you can always see what you are on.\nAlso: /ac target')
-    end
     ImGui.Spacing()
 
     local hdrOn = targetWindowHeaderButton()
@@ -694,14 +685,8 @@ local function renderUfSettingsContent()
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], 'Target & Player HUD Settings')
     ImGui.Separator()
 
-    local isWinOpen = (ctrl.show_unit_frames == true)
-    local btnText = isWinOpen and 'HUD Window: Visible (Click to Hide)' or 'HUD Window: Hidden (Click to Show)'
-    if ImGui.Button(btnText .. '##ufToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_unit_frames = not isWinOpen
-        if core.saveLoadout then core.saveLoadout(true) end
-    end
     local twOpen = (ctrl.show_target_window == true)
-    if ImGui.Button((twOpen and 'Popout Target Window: Visible (Click to Hide)' or 'Popout Target Window: Hidden (Click to Show)') .. '##ufTwToggle', core.px(250), core.px(24)) then
+    if ImGui.Checkbox('Show the Target window##ufTwToggle', twOpen) ~= twOpen then
         ctrl.show_target_window = not twOpen
         if core.saveLoadout then core.saveLoadout(true) end
     end
@@ -828,7 +813,8 @@ local function drawUnitFramesWindow()
         if ImGui.BeginPopupContextWindow('##ufContextMenu') then
             if core.applyWindowScale then core.applyWindowScale('unit_frames') end
             if core.drawWindowMenuItems then
-                core.drawWindowMenuItems('unit_frames', { header = false, lock = false, scale = false, layout = false, close = false })
+                core.drawWindowMenuItems('unit_frames', { header = false, lock = false, scale = false, layout = false,
+                    onClose = function() core.ctrl.show_unit_frames = false end })
                 ImGui.Separator()
             end
             renderUfSettingsContent()
@@ -1009,7 +995,8 @@ local function drawTargetWindow()
             if ImGui.BeginPopupContextWindow('##twContextMenu') then
                 if core.applyWindowScale then core.applyWindowScale('target_window') end
                 if core.drawWindowMenuItems then
-                    core.drawWindowMenuItems('target_window', { header = false, lock = false, scale = false, layout = false, close = false })
+                    core.drawWindowMenuItems('target_window', { header = false, lock = false, scale = false, layout = false,
+                        onClose = function() core.ctrl.show_target_window = false end })
                     ImGui.Separator()
                 end
                 renderTargetWindowSettingsContent()

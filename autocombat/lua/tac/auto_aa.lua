@@ -3095,11 +3095,6 @@ function plugin.onDrawSettings()
     if not core or not ImGui then return end
     ctrl = core.ctrl
     accent(GOLD, 'Auto AA Spender')
-    local isWinOpen = (ctrl.show_auto_aa == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##aaToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_auto_aa = not isWinOpen
-        core.saveLoadout(true)
-    end
     ImGui.TextWrapped('Full configuration lives in the Auto AA window (header button or /ac aawin). Quick toggles:')
     local spendVal = ImGui.Checkbox('Auto-Spend AA##aaPlgSpend', ctrl.auto_spend_aa or false)
     if spendVal ~= (ctrl.auto_spend_aa or false) then

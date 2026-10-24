@@ -728,11 +728,6 @@ function plugin.onDrawSettings()
     local colors = core.colors or {}
     local GOLD = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Auto-Accept Invites')
-    local isWinOpen = (c.show_auto_accept == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##aaAccToggleWin', core.px(250), core.px(24)) then
-        c.show_auto_accept = not isWinOpen
-        saveLoadout()
-    end
     ImGui.TextDisabled('Rules and the player whitelist live in the Auto-Accept window (header button or /ac autoaccept). Quick toggles:')
     checkbox('Auto-Accept Group Invites##aaGrpQ', 'auto_group', 'Automatically joins group when invited by an authorized player.')
     checkbox('Auto-Accept Trades##aaTrdQ', 'auto_trade', 'Automatically clicks trade accept when incoming trade partner has clicked their trade button and is authorized.')

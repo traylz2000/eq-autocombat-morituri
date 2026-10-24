@@ -4279,11 +4279,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'Inventory & Bank Manager')
-    local isWinOpen = (ctrl.show_inv == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##invToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_inv = not isWinOpen
-        core.saveLoadout(true)
-    end
     if ImGui.Button('Rescan Now##invRescan', core.px(120), core.px(22)) then
         state.pendingAction = { type = 'rescan' }
     end

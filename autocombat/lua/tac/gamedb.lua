@@ -4101,11 +4101,6 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Game Database')
-    local isWinOpen = (ctrl.show_gamedb == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##gdbToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_gamedb = not isWinOpen
-        core.saveLoadout(true)
-    end
     local la = ImGui.Checkbox('Loot Advisor while looting (drop chance, value, quest / recipe notes)##gdbLoot', S.lootAdvisor == true)
     if la ~= (S.lootAdvisor == true) then
         S.lootAdvisor = la

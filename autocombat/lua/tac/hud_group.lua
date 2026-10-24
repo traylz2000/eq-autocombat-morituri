@@ -159,11 +159,6 @@ local function renderGwSettingsContent()
 
     accent(GOLD, 'Group Window Settings')
     ImGui.Separator()
-    local isWinOpen = (ctrl.show_group_window == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##gwToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_group_window = not isWinOpen
-        core.saveLoadout(true)
-    end
     local lockVal = ImGui.Checkbox('Lock Window Position & Size##gwLock', ctrl.gw_lock or false)
     if lockVal ~= (ctrl.gw_lock or false) then
         ctrl.gw_lock = lockVal
@@ -536,7 +531,8 @@ function plugin.onDrawUI()
         if ImGui.BeginPopupContextWindow('##gwContextMenu') then
             if core.applyWindowScale then core.applyWindowScale('group') end
             if core.drawWindowMenuItems then
-                core.drawWindowMenuItems('group', { header = false, lock = false, scale = false, layout = false, close = false })
+                core.drawWindowMenuItems('group', { header = false, lock = false, scale = false, layout = false,
+                    onClose = function() core.ctrl.show_group_window = false end })
                 ImGui.Separator()
             end
             renderGwSettingsContent()

@@ -2480,11 +2480,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'DPS Parser')
-    local isWinOpen = (ctrl.show_dps == true)
-    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##dpsToggleWin', core.px(250), core.px(24)) then
-        ctrl.show_dps = not isWinOpen
-        core.saveLoadout(true)
-    end
     local compact = ImGui.Checkbox('Compact Mini HUD mode##dpsCompact', cfg.compact == true)
     if compact ~= (cfg.compact == true) then cfg.compact = compact; saveConfig() end
     local paused = ImGui.Checkbox('Pause tracking##dpsPaused', cfg.paused == true)

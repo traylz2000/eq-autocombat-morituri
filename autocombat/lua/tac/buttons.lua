@@ -4003,11 +4003,6 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'Hot Buttons (Button Master-style hotbars)')
-    local isOpen = ctrl.show_buttons == true and anyHotbarVisible()
-    if ImGui.Button((isOpen and 'Hotbars: Visible (Click to Hide)' or 'Hotbars: Hidden (Click to Show)') .. '##btnToggleWin', core.px(250), core.px(24)) then
-        setAllVisible(not isOpen)
-    end
-    ImGui.SameLine()
     if ImGui.Button('New Hotbar##btnNewHb', core.px(110), core.px(24)) then newHotbarForMe() end
     ImGui.TextDisabled(string.format('%d button(s), %d set(s) in the shared library; %d hotbar(s) for this character.',
         tableSize(db and db.buttons), tableSize(db and db.sets), #hotbars()))
