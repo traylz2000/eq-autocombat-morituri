@@ -4,6 +4,22 @@
 
 ## 2026-10-24
 
+- **Overview page rebuilt (`lua/moriac.lua`).** Phase P4. It replaces the Status tab's stack of bullet-text tables (`• ENGINE: RUNNING`, `• Nav Stalls: 0 | Frame Counter: 12`, ...) with cards:
+  - **Target | You** side by side.
+    - Target: name in con colour, level and class, HP bar, one status line (distance, melee range, line of sight, who has aggro), quick actions (Face, Attack, Clear, +/- Pull list, +/- Ignore), and the Main Assist's target with a Target button.
+    - You: HP / Mana / End bars, your four classes in their slot colours, only the status flags that are actually on (sitting, feigning, invisible...), and an HP bar per pet showing what it's fighting. Click a pet's bar to target its mob.
+  - **Threats**: compact XTarget table with HP bars and who each mob is on. Click a name to target it.
+  - **Session** line: time, AA/hr, plat/hr, Reset.
+  - **Mode details** (open by default): what the current mode is set to do, camp distance, waypoint progress, and a button to its settings page.
+  - **Navigation diagnostics** (collapsed by default): MQ2Nav / mesh / MoveUtils state, movement and destination, stalls, unreachable mobs, stuck attempts, detours, mesh isolation. It's kept for troubleshooting and bug reports.
+  - Section open/closed state is remembered (`ctrl.overview_open`). Engine/mode/burn state now lives only in the command bar and status line, no longer repeated on the page.
+- **Tests:** the smoke test's fake game now has a hostile target on XTarget, and TLO calls with arguments return objects like MQ does. So the populated Target card, the threat table, and the engine's combat passes against a target all get exercised; the test checks both cards actually resolved the target.
+
+### In-game checklist (Overview)
+- [ ] Target a mob: con colour, HP bar, distance/aggro line and the quick buttons look right.
+- [ ] Pets show one bar each; clicking a pet bar targets its mob.
+- [ ] Threats lists XTarget mobs; clicking a name targets it.
+
 - **Renamed to Morituri Auto Combat (MoriAC). Start it with `/lua run moriac`** (user request). It's still `/ac` in game.
   - `lua/triune.lua` is now `lua/moriac.lua` and `config/triune_data.lua` is now `config/moriac_data.lua`. `config/ingame.cfg` runs moriac, and `/ac restart` re-runs moriac.
   - User-visible text says "Morituri Auto Combat" / "MoriAC": window titles, chat prefixes (`[MoriAC]`, `[MoriAC Chat]`, ...), tooltips and help. Only string literals were changed. Hidden ImGui window IDs (`###triune...`) are unchanged, so **window positions and layouts carry over**.

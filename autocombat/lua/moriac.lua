@@ -261,6 +261,7 @@ local function sanitizeModeConfig(c)
     if c.show_nmsloot == nil then c.show_nmsloot = false end
     if c.show_gm_commands == nil then c.show_gm_commands = false end
     if type(c.ui_page) ~= 'string' then c.ui_page = 'overview' end
+    if type(c.overview_open) ~= 'table' then c.overview_open = {} end
     if c.cooldown_alpha == nil then c.cooldown_alpha = 0.90 end
     if c.cooldown_locked == nil then c.cooldown_locked = false end
     if c.cooldown_view_mode == nil then c.cooldown_view_mode = 'table' end
@@ -518,6 +519,7 @@ local function defaultCtrl()
         burn                     = false,
         compact                  = false,
         ui_page                  = 'overview', -- main window sidebar page (UI.PAGES id)
+        overview_open            = {},         -- Overview collapsible sections: key -> open
         ui_scale                 = 1.0,
         window_scale             = {},
         mini_lock                = false,
@@ -10769,795 +10771,429 @@ function UI.resolveTargetOfTarget(targetId)
 end
 
 -- UI: status tab
-function UI.drawStatusTab()
+-- ============================================================================
+-- Overview page (Morituri UI rebuild): the old Status tab's four stacked
+-- text tables become cards -- Target | You side by side, then Threats, the
+-- session line, and collapsible Mode details / Navigation diagnostics.
+-- ============================================================================
 
-    -- 1. Live Engine & Mode Overview with Integrated Session Tracker
-    local inCombat = hasActualNPCXtarget()
-    local elapsedSec = os.time() - (runtime.trackStartTime or os.time())
-    local elapsedHrs = math.max(elapsedSec / 3600.0, 0)
-    local aaGained = (runtime.startAA and runtime.currentAA) and math.max(0, runtime.currentAA - runtime.startAA) or 0
-    local aaRate = (elapsedHrs > 0.0001) and (aaGained / elapsedHrs) or 0.0
-    local platGained = (runtime.startPlat and runtime.currentPlat) and (runtime.currentPlat - runtime.startPlat) or 0
-    local platRate = (elapsedHrs > 0.0001) and (platGained / elapsedHrs) or 0.0
+-- Green / yellow / red by health percentage.
+function UI.hpRgb(pct)
+    pct = tonumber(pct) or 0
+    if pct <= 25 then return 0.90, 0.20, 0.20 end
+    if pct <= 50 then return 0.95, 0.75, 0.20 end
+    return 0.25, 0.80, 0.35
+end
 
-    local m = math.floor(elapsedSec / 60)
-    local s = elapsedSec % 60
-    local h = math.floor(m / 60)
-    m = m % 60
-    local timeStr = h > 0 and string.format('%dh %dm %ds', h, m, s) or string.format('%dm %ds', m, s)
-
-    accent(GOLD, 'Overview')
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-    ImGui.SameLine(); accent(ARC, timeStr)
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-    ImGui.SameLine(); accent(GOOD, string.format('AA/hr: %.1f (%+.2f)', aaRate, aaGained))
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-    ImGui.SameLine(); accent(GOLD, string.format('Plat/hr: %.1f p (%+d p)', platRate, platGained))
-    ImGui.SameLine()
-    if ImGui.Button('Reset##statResetTrack', UI.px(46), UI.px(18)) then
-        UI.resetTracker()
+-- Collapsible Overview section; open state persists in ctrl.overview_open.
+function UI.overviewSection(key, label, defaultOpen)
+    if type(ctrl.overview_open) ~= 'table' then ctrl.overview_open = {} end
+    local stored = ctrl.overview_open[key]
+    if stored == nil then stored = defaultOpen and true or false end
+    runtime.overviewInit = runtime.overviewInit or {}
+    if not runtime.overviewInit[key] then
+        runtime.overviewInit[key] = true
+        if ImGui.SetNextItemOpen then pcall(ImGui.SetNextItemOpen, stored) end
     end
-    if ImGui.IsItemHovered() then
-        UI.setTooltip(string.format(
-            "Session Tracker (%s):\n" ..
-            "-------------------------------\n" ..
-            "AA/hr Rate:   %.2f / hr\n" ..
-            "Total AA:     %+.2f gained (Current: %.2f | Start: %.2f)\n" ..
-            "-------------------------------\n" ..
-            "Plat/hr Rate: %.1f p/hr\n" ..
-            "Total Plat:   %+d p gained (Current: %dp | Start: %dp)\n" ..
-            "-------------------------------\n" ..
-            "Click 'Reset' to restart session.",
-            timeStr, aaRate, aaGained, runtime.currentAA or 0, runtime.startAA or 0,
-            platRate, platGained, runtime.currentPlat or 0, runtime.startPlat or 0
-        ))
+    local isOpen = ImGui.CollapsingHeader(label .. '###ov_' .. key, stored and ImGuiTreeNodeFlags.DefaultOpen or 0)
+    if (isOpen and true or false) ~= stored then
+        ctrl.overview_open[key] = isOpen and true or false
+        runtime.saveLoadout(true)
     end
+    return isOpen
+end
 
-    local statusTableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-    if ImGui.BeginTable('##StatusOverviewTable', 4, statusTableFlags) then
-        ImGui.TableSetupColumn('Engine State', ImGuiTableColumnFlags.WidthStretch)
-        ImGui.TableSetupColumn('Active Mode', ImGuiTableColumnFlags.WidthStretch)
-        ImGui.TableSetupColumn('Combat & Attack Style', ImGuiTableColumnFlags.WidthStretch)
-        ImGui.TableSetupColumn('Subsystems', ImGuiTableColumnFlags.WidthStretch)
-        ImGui.TableHeadersRow()
+function UI.cardTitle(text)
+    accent(GOLD, text)
+    ImGui.Separator()
+end
 
-        ImGui.TableNextRow()
-        -- Column 1: Engine State
-        ImGui.TableNextColumn()
-        if ctrl.running then
-            accent(GOOD, '• ENGINE: RUNNING')
-        else
-            accent(WARN, '• ENGINE: PAUSED')
-        end
-        if inCombat then
-            accent({ 1.0, 0.35, 0.35, 1.0 }, '• COMBAT: IN COMBAT')
-        else
-            accent(GOOD, '• COMBAT: STANDBY / IDLE')
-        end
-
-        -- Column 2: Active Mode
-        ImGui.TableNextColumn()
-        local modeStr = ctrl.mode or 'Manual'
-        if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
-            modeStr = string.format('%s (%s)', ctrl.mode, ctrl.submode)
-        end
-        accent(GOLD, '• Mode: ' .. modeStr)
-        local descKey = ctrl.mode
-        if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
-            descKey = string.format('%s:%s', ctrl.mode, ctrl.submode)
-        end
-        ImGui.TextDisabled(MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
-
-        -- Column 3: Combat & Attack Style
-        ImGui.TableNextColumn()
-        local styleStr = ctrl.combat_style or 'Melee'
-        if styleStr == 'Ranged' and runtime.serverAttackMode then
-            styleStr = string.format('Ranged (Server: %s%s)', runtime.serverAttackMode,
-                runtime.serverAttackModeAssumed and ', assumed' or '')
-        end
-        accent(ARC, '• Style: ' .. styleStr)
-        if ctrl.burn then
-            accent({ 1.0, 0.30, 0.30, 1.0 }, '• BURN: ACTIVE')
-        else
-            ImGui.TextDisabled('• Burn: Inactive')
-        end
-
-        -- Column 4: Subsystems (MedBreak, Cast)
-        ImGui.TableNextColumn()
-        if runtime.medBreakActive then
-            accent(ARC, '• MedBreak: RESTING')
-        else
-            ImGui.TextDisabled('• MedBreak: Inactive')
-        end
-        local castingName = nil
-        pcall(function() castingName = mq.TLO.Me.Casting.Name() end)
-        if castingName and castingName ~= '' and castingName ~= 'NULL' then
-            accent(GOOD, '• Cast: ' .. castingName)
-        else
-            ImGui.TextDisabled('• Cast: Idle')
-        end
-
-        ImGui.EndTable()
+function UI.ovTarget()
+    UI.cardTitle('Target')
+    local maInfo = nil
+    if ctrl.mode == 'Assist' or (ctrl.ma_id and ctrl.ma_id > 0) or (ctrl.ma_name and ctrl.ma_name ~= '') then
+        maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
     end
 
-    -- 2. Current Target & Threat Card
-    if UI.drawCollapsingStatusHeader('target', 'Current Target & Threat', 'statusTarget') then
-        if ctrl.mode == 'Assist' or (ctrl.ma_id and ctrl.ma_id > 0) or (ctrl.ma_name and ctrl.ma_name ~= '') then
-            local maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
-            if maInfo and maInfo.hasMA then
-                accent(GOLD, 'Main Assist:')
-                ImGui.SameLine(); ImGui.Text(string.format('%s (ID: %d)', maInfo.maName, maInfo.maId))
-                ImGui.SameLine(); ImGui.TextDisabled('|')
-                ImGui.SameLine()
-                if maInfo.hasTarget then
-                    local clsStr = (maInfo.targetClass ~= '') and (' [' .. maInfo.targetClass .. ']') or ''
-                    accent(ARC, 'MA Target:')
-                    ImGui.SameLine()
-                    local conCol = UI.getConColorRgb(maInfo.targetCon)
-                    accent(conCol, string.format('%s%s (ID: %d, %d%% HP, %.1fft)', maInfo.targetName, clsStr, maInfo.targetId, maInfo.targetHp, maInfo.targetDist))
-                    ImGui.SameLine()
-                    if ImGui.Button('Target MA Target##statCardTargMA', UI.px(125), UI.px(18)) then
-                        mq.cmdf('/target id %d', maInfo.targetId)
-                    end
-                    if ImGui.IsItemHovered() then UI.setTooltip(string.format('Acquire Main Assist target: %s (ID %d)', maInfo.targetName, maInfo.targetId)) end
-                else
-                    accent(MUTED, 'MA Target: No Target')
-                end
-                ImGui.Separator()
-            end
+    local tId, tName, tLvl, tClass, tCon, tHpPct, tDist, tLoS
+    pcall(function()
+        tId = mq.TLO.Target.ID()
+        if tId and tId > 0 then
+            tName = mq.TLO.Target.CleanName() or 'Unknown'
+            tLvl = mq.TLO.Target.Level() or 0
+            tClass = mq.TLO.Target.Class.ShortName() or '?'
+            tCon = mq.TLO.Target.ConColor() or 'White'
+            tHpPct = mq.TLO.Target.PctHPs() or 0
+            tDist = mq.TLO.Target.Distance() or 0
+            tLoS = mq.TLO.Target.LineOfSight() or false
         end
+    end)
 
-        local tId, tName, tLvl, tClass, tRace, tType, tCon, tHpPct, tCurHp, tMaxHp, tDist, tLoS, tHeading
-        local tTotPct, tMyAggro, tMySecAggro
+    -- Target-of-target, hostility and XTarget membership cost several spawn
+    -- lookups; refreshed 4x a second.
+    local now = os.clock()
+    local snap = runtime.statusTargetSnapshot
+    if not snap or snap.id ~= (tId or 0) or (now - snap.at) >= 0.25 then
+        local totName, _, _, myPctAggro = UI.resolveTargetOfTarget(tId)
+        local inMelee = false
         pcall(function()
-            tId = mq.TLO.Target.ID()
-            if tId and tId > 0 then
-                tName = mq.TLO.Target.CleanName() or 'Unknown'
-                tLvl = mq.TLO.Target.Level() or 0
-                tClass = mq.TLO.Target.Class.ShortName() or '?'
-                tRace = mq.TLO.Target.Race.Name() or '?'
-                tType = mq.TLO.Target.Type() or 'NPC'
-                tCon = mq.TLO.Target.ConColor() or 'White'
-                tHpPct = mq.TLO.Target.PctHPs() or 0
-                tCurHp = mq.TLO.Target.CurrentHPs() or 0
-                tMaxHp = mq.TLO.Target.MaxHPs() or 0
-                tDist = mq.TLO.Target.Distance() or 0
-                tLoS = mq.TLO.Target.LineOfSight() or false
-                pcall(function() tHeading = mq.TLO.Target.Heading.Degrees() or 0 end)
-                -- PctAggro is MY aggro on the target; SecondaryPctAggro is the
-                -- runner-up's. These were swapped so both rows showed secondary.
-                tMyAggro = mq.TLO.Target.PctAggro() or 0
-                tMySecAggro = mq.TLO.Target.SecondaryPctAggro() or 0
-            end
+            local maxD = (runtime.maxMeleeDistance and runtime.maxMeleeDistance(tId)) or 15
+            inMelee = (tDist or 999) <= maxD
         end)
+        snap = {
+            at = now, id = tId or 0, totName = totName, myPctAggro = myPctAggro, inMelee = inMelee,
+            isHostile = (tId and tId > 0 and isHostileTarget and isHostileTarget(tId)) or false,
+        }
+        runtime.statusTargetSnapshot = snap
+    end
 
-        -- resolveTargetOfTarget (up to 3 Spawn lookups + 7 closures),
-        -- isHostileTarget and isXTargetId (13-slot walk) are the expensive
-        -- part of this card; refresh them 4x/s instead of every frame.
-        local cardNow = os.clock()
-        local cardSnap = runtime.statusTargetSnapshot
-        if not cardSnap or cardSnap.id ~= (tId or 0) or (cardNow - cardSnap.at) >= 0.25 then
-            local totName, _, _, myPctAggro = UI.resolveTargetOfTarget(tId)
-            cardSnap = {
-                at = cardNow,
-                id = tId or 0,
-                totName = totName,
-                myPctAggro = myPctAggro,
-                isHostile = (tId and tId > 0 and isHostileTarget and isHostileTarget(tId)) or false,
-                isXtar = (tId and tId > 0 and isXTargetId and isXTargetId(tId)) or false,
-            }
-            runtime.statusTargetSnapshot = cardSnap
+    if not (tId and tId > 0 and tName) then
+        ImGui.TextDisabled('No target.')
+    else
+        accent(UI.getConColorRgb(tCon), tName)
+        ImGui.SameLine()
+        ImGui.TextDisabled(string.format('L%d %s', tLvl or 0, tostring(tClass or '?')))
+        if not snap.isHostile then ImGui.SameLine(); accent(GOOD, 'friendly') end
+        local r, g, b = UI.hpRgb(tHpPct)
+        UI.drawStatusProgressBar((tHpPct or 0) / 100.0, -1, UI.px(16), string.format('%d%%', tHpPct or 0), r, g, b, 1.0)
+
+        ImGui.Text(string.format('%.0f ft', tDist or 0))
+        if snap.inMelee then ImGui.SameLine(); accent(GOOD, 'melee') end
+        if not tLoS then ImGui.SameLine(); accent(WARN, 'no line of sight') end
+        if snap.isHostile then
+            ImGui.SameLine(); ImGui.TextDisabled('aggro:')
+            ImGui.SameLine()
+            local tot = snap.totName
+            if tot and tot ~= '' and tot ~= 'None' then
+                if myName and tot == myName then
+                    accent(ERR, 'YOU')
+                else
+                    ImGui.Text(tostring(tot))
+                end
+                if ImGui.IsItemHovered() then UI.setTooltip('%s', string.format('Your aggro on it: %d%%', tonumber(snap.myPctAggro) or 0)) end
+            else
+                ImGui.TextDisabled('none')
+            end
         end
-        local tTotName = cardSnap.totName
-        tTotPct = cardSnap.myPctAggro
 
-        if tId and tId > 0 and tName then
-            local conCol = UI.getConColorRgb(tCon)
-            accent(conCol, string.format('[Lvl %d %s %s] %s (ID: %d)', tLvl or 0, tClass or '?', tRace or '?', tName, tId))
-            ImGui.SameLine(); ImGui.TextDisabled('|')
-            ImGui.SameLine(); accent(conCol, string.format('Con: %s', tCon or 'White'))
-            ImGui.SameLine(); ImGui.TextDisabled('|')
-            ImGui.SameLine(); ImGui.TextDisabled(string.format('Type: %s', tType or 'NPC'))
-
-            local isHostile = cardSnap.isHostile
-            local isXtar = cardSnap.isXtar
-            ImGui.SameLine(); ImGui.TextDisabled('|')
-            ImGui.SameLine()
-            if isHostile then
-                accent({ 1.0, 0.35, 0.35, 1.0 }, 'Hostile')
-            else
-                accent(GOOD, 'Friendly/Neutral')
-            end
-            if isXtar then
-                ImGui.SameLine(); accent(WARN, '[On XTarget]')
-            end
-
-            -- Health Bar with Dynamic Color
-            local hpFrac = (tHpPct or 0) / 100.0
-            local r, g, b = 0.25, 0.80, 0.35
-            if (tHpPct or 0) <= 20 then
-                r, g, b = 0.90, 0.20, 0.20
-            elseif (tHpPct or 0) <= 50 then
-                r, g, b = 0.95, 0.75, 0.20
-            end
-            local hpStr = string.format('%d%% HP (%s / %s)', tHpPct or 0,
-                (tCurHp and tCurHp > 0) and tostring(tCurHp) or '?',
-                (tMaxHp and tMaxHp > 0) and tostring(tMaxHp) or '?')
-            UI.drawStatusProgressBar(hpFrac, -1, UI.px(18), hpStr, r, g, b, 1.0)
-
-            -- Target Metrics Table
-            local targetTableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-            if ImGui.BeginTable('##StatusTargetMetricsTable', 4, targetTableFlags) then
-                ImGui.TableSetupColumn('Distance & Range', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableSetupColumn('Line of Sight & Heading', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableSetupColumn('Aggro Holder (ToT)', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableSetupColumn('Threat Metrics', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableHeadersRow()
-
-                ImGui.TableNextRow()
-                ImGui.TableNextColumn()
-                accent(ARC, string.format('Distance: %.1f ft', tDist or 0))
-                local inMelee = false
-                pcall(function()
-                    local maxD = (runtime.maxMeleeDistance and runtime.maxMeleeDistance(mq.TLO.Target.ID())) or 15
-                    inMelee = (tDist or 999) <= maxD
-                end)
-                if inMelee then
-                    accent(GOOD, 'In Melee Range: Yes')
-                else
-                    ImGui.TextDisabled('In Melee Range: No')
-                end
-
-                ImGui.TableNextColumn()
-                if tLoS then
-                    accent(GOOD, 'Line of Sight: YES')
-                else
-                    accent(WARN, 'Line of Sight: NO')
-                end
-                ImGui.TextDisabled(string.format('Heading: %.0f°', tHeading or 0))
-
-                ImGui.TableNextColumn()
-                if tTotName and tTotName ~= 'None' and tTotName ~= '' then
-                    local isMe = (myName and tTotName == myName)
-                    if isMe then
-                        accent({ 1.0, 0.35, 0.35, 1.0 }, 'Tanking: YOU (' .. tostring(tTotPct or 100) .. '%)')
-                    else
-                        -- tTotPct is OUR aggro, not the holder's; label it as such
-                        accent(GOOD, string.format('Holding: %s (mine %d%%)', tTotName, tTotPct or 0))
-                    end
-                else
-                    ImGui.TextDisabled('Holding Aggro: None / Unknown')
-                end
-
-                ImGui.TableNextColumn()
-                ImGui.Text(string.format('My Aggro: %d%%', tMyAggro or 0))
-                ImGui.TextDisabled(string.format('Secondary: %d%%', tMySecAggro or 0))
-
-                ImGui.EndTable()
-            end
-
-            -- Target Quick Actions Toolbar
-            if ImGui.Button('Face Target##statFace') then
-                mq.cmd('/face fast')
-            end
-            if ImGui.IsItemHovered() then UI.setTooltip('Turns character directly toward current target.') end
-
-            ImGui.SameLine()
-            local isAttacking = mq.TLO.Me.Combat() or false
-            if isAttacking then
-                if ImGui.Button('Attack OFF##statAtk') then mq.cmd('/attack off') end
-            else
-                if ImGui.Button('Attack ON##statAtk') then mq.cmd('/attack on') end
-            end
-            if ImGui.IsItemHovered() then UI.setTooltip('Toggles auto-attack on/off.') end
-
-            ImGui.SameLine()
-            if ImGui.Button('Clear Target##statClear') then
-                runtime.clearTarget()
-            end
-            if ImGui.IsItemHovered() then UI.setTooltip('Clears current target selection.') end
-
+        if ImGui.SmallButton('Face##ovFace') then mq.cmd('/face fast') end
+        ImGui.SameLine()
+        local attacking = false
+        pcall(function() attacking = mq.TLO.Me.Combat() or false end)
+        if ImGui.SmallButton((attacking and 'Attack off' or 'Attack on') .. '##ovAtk') then
+            mq.cmd(attacking and '/attack off' or '/attack on')
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Clear##ovClear') then runtime.clearTarget() end
+        if snap.isHostile then
             ImGui.SameLine()
             if runtime.isPullListed(tName) then
-                if ImGui.Button('- Pull List##statRemPull') then runtime.removePull(tName) end
+                if ImGui.SmallButton('- Pull list##ovPull') then runtime.removePull(tName) end
             else
-                if ImGui.Button('+ Pull List##statAddPull') then runtime.addPull(tName) end
+                if ImGui.SmallButton('+ Pull list##ovPull') then runtime.addPull(tName) end
             end
-            if ImGui.IsItemHovered() then UI.setTooltip('Adds/removes target name to/from the Puller include list.') end
-
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', 'Puller include list: only listed names are pulled when the list is not empty.') end
             ImGui.SameLine()
             if isIgnored(tName) then
-                if ImGui.Button('- Ignore List##statRemIgnore') then runtime.removeIgnore(tName) end
+                if ImGui.SmallButton('- Ignore##ovIgn') then runtime.removeIgnore(tName) end
             else
-                if ImGui.Button('+ Ignore List##statAddIgnore') then runtime.addIgnore(tName) end
+                if ImGui.SmallButton('+ Ignore##ovIgn') then runtime.addIgnore(tName) end
             end
-            if ImGui.IsItemHovered() then UI.setTooltip('Adds/removes target name to/from the global ignore list.') end
-        else
-            accent(MUTED, 'No target currently selected.')
-            ImGui.TextDisabled('Select a target in EverQuest or use the Extended Target list below to acquire a target.')
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', 'Never pull or auto-target this name.') end
         end
     end
 
-
-    -- 3. Player, Gestalt Quartet & Pet Vitals Card
-    if UI.drawCollapsingStatusHeader('vitals', 'Player, Gestalt Quartet & Pet Vitals', 'statusVitals') then
-        local myHpPct, myCurHp, myMaxHp, myManaPct, myCurMana, myMaxMana, myEndPct, myCurEnd, myMaxEnd
-        local isDuck, isSit, isFeign, isLev
-        pcall(function()
-            myHpPct = mq.TLO.Me.PctHPs() or 0
-            myCurHp = mq.TLO.Me.CurrentHPs() or 0
-            myMaxHp = mq.TLO.Me.MaxHPs() or 0
-            myManaPct = mq.TLO.Me.PctMana() or 0
-            myCurMana = mq.TLO.Me.CurrentMana() or 0
-            myMaxMana = mq.TLO.Me.MaxMana() or 0
-            myEndPct = mq.TLO.Me.PctEndurance() or 0
-            myCurEnd = mq.TLO.Me.CurrentEndurance() or 0
-            myMaxEnd = mq.TLO.Me.MaxEndurance() or 0
-            isDuck = isDucking()
-            isSit = isSitting()
-            isFeign = mq.TLO.Me.Feigning() or false
-            isLev = mq.TLO.Me.Levitating() or false
-        end)
-
-        -- Player HP Bar
-        local r, g, b = 0.25, 0.80, 0.35
-        if (myHpPct or 0) <= 25 then
-            r, g, b = 0.90, 0.20, 0.20
-        elseif (myHpPct or 0) <= 50 then
-            r, g, b = 0.95, 0.75, 0.20
-        end
-        local hpStr = string.format('Player HP: %d%% (%d / %d)', myHpPct or 0, myCurHp or 0, myMaxHp or 0)
-        UI.drawStatusProgressBar((myHpPct or 0) / 100.0, -1, UI.px(16), hpStr, r, g, b, 1.0)
-
-        -- Player Mana Bar (if character has mana)
-        if (myMaxMana or 0) > 0 then
-            local manaStr = string.format('Player Mana: %d%% (%d / %d)', myManaPct or 0, myCurMana or 0, myMaxMana or 0)
-            UI.drawStatusProgressBar((myManaPct or 0) / 100.0, -1, UI.px(14), manaStr, 0.25, 0.60, 0.95, 1.0)
-        end
-
-        -- Player Endurance Bar (if character has endurance)
-        if (myMaxEnd or 0) > 0 then
-            local endStr = string.format('Player Endurance: %d%% (%d / %d)', myEndPct or 0, myCurEnd or 0, myMaxEnd or 0)
-            UI.drawStatusProgressBar((myEndPct or 0) / 100.0, -1, UI.px(14), endStr, 0.95, 0.60, 0.25, 1.0)
-        end
-
-        -- Status flags & Quartet class badges
-        accent(GOLD, 'Gestalt Quartet:')
-        for i = 1, CLASS_SLOTS do
-            local cls = myClasses[i]
-            if cls and cls ~= '' and cls ~= '-- None --' then
+    if maInfo and maInfo.hasMA then
+        ImGui.Spacing()
+        ImGui.TextDisabled('MA')
+        ImGui.SameLine(); ImGui.Text(tostring(maInfo.maName))
+        ImGui.SameLine(); ImGui.TextDisabled('->')
+        ImGui.SameLine()
+        if maInfo.hasTarget then
+            accent(UI.getConColorRgb(maInfo.targetCon), string.format('%s %d%%', maInfo.targetName, maInfo.targetHp or 0))
+            if maInfo.targetId ~= tId then
                 ImGui.SameLine()
-                local cr, cg, cb = classColor(cls)
-                accent({ cr, cg, cb, 1.0 }, string.format('[Slot %d: %s]', i, cls))
+                if ImGui.SmallButton('Target##ovTargMA') then mq.cmdf('/target id %d', maInfo.targetId) end
             end
+        else
+            ImGui.TextDisabled('no target')
         end
+    end
+end
 
-        ImGui.SameLine(); ImGui.TextDisabled('|')
-        ImGui.SameLine(); ImGui.TextDisabled(string.format('Combat: %s', inCombat and 'Yes' or 'No'))
-        ImGui.SameLine(); ImGui.TextDisabled(string.format('Ducking: %s', isDuck and 'Yes' or 'No'))
-        ImGui.SameLine(); ImGui.TextDisabled(string.format('Sitting: %s', isSit and 'Yes' or 'No'))
-        ImGui.SameLine(); ImGui.TextDisabled(string.format('Feigning: %s', isFeign and 'Yes' or 'No'))
-        ImGui.SameLine(); ImGui.TextDisabled(string.format('Lev: %s', isLev and 'Yes' or 'No'))
+function UI.ovYou()
+    UI.cardTitle(myName or 'You')
+    local hp, mana, maxMana, endu, maxEnd = 0, 0, 0, 0, 0
+    local isDuck, isSit, isFeign, isLev, isInvis = false, false, false, false, false
+    pcall(function()
+        hp = mq.TLO.Me.PctHPs() or 0
+        mana = mq.TLO.Me.PctMana() or 0
+        maxMana = mq.TLO.Me.MaxMana() or 0
+        endu = mq.TLO.Me.PctEndurance() or 0
+        maxEnd = mq.TLO.Me.MaxEndurance() or 0
+        isDuck = isDucking()
+        isSit = isSitting()
+        isFeign = mq.TLO.Me.Feigning() or false
+        isLev = mq.TLO.Me.Levitating() or false
+        isInvis = mq.TLO.Me.Invis() or false
+    end)
+    local r, g, b = UI.hpRgb(hp)
+    UI.drawStatusProgressBar(hp / 100.0, -1, UI.px(16), string.format('HP %d%%', hp), r, g, b, 1.0)
+    if maxMana > 0 then UI.drawStatusProgressBar(mana / 100.0, -1, UI.px(14), string.format('Mana %d%%', mana), 0.25, 0.60, 0.95, 1.0) end
+    if maxEnd > 0 then UI.drawStatusProgressBar(endu / 100.0, -1, UI.px(14), string.format('End %d%%', endu), 0.95, 0.60, 0.25, 1.0) end
 
-        -- Active Pet Vitals (support all pets across the quartet)
-        local petSlots, extraPets = getMultiPetList()
-        local activePets = {}
-        local seenPetIds = {}
-        for _, slot in ipairs(petSlots) do
-            if slot.petId and slot.petId > 0 and not seenPetIds[slot.petId] and isSpawnAlive(slot.petId) then
-                seenPetIds[slot.petId] = true
-                local info = getPetSpawnInfo(slot.petId)
-                table.insert(activePets, {
-                    id = slot.petId,
-                    cls = slot.cls,
-                    slotNum = slot.slotNum,
-                    info = info
-                })
-            end
+    local first = true
+    for i = 1, CLASS_SLOTS do
+        local cls = myClasses[i]
+        if cls and cls ~= '' and cls ~= '-- None --' then
+            if not first then ImGui.SameLine() end
+            first = false
+            local cr, cg, cb = classColor(cls)
+            accent({ cr, cg, cb, 1.0 }, cls)
         end
-        for _, extraPid in ipairs(extraPets or {}) do
-            if extraPid and extraPid > 0 and not seenPetIds[extraPid] and isSpawnAlive(extraPid) then
-                seenPetIds[extraPid] = true
-                local info = getPetSpawnInfo(extraPid)
-                table.insert(activePets, {
-                    id = extraPid,
-                    cls = 'Pet',
-                    slotNum = nil,
-                    info = info
-                })
-            end
-        end
-        -- Me.Pet is always in getMultiPetList (slot or extra), which is deduplicated by pet name.
+    end
+    if first then ImGui.TextDisabled('classes not detected (Setup -> Settings)') end
+    -- Only the flags that are on.
+    for _, f in ipairs({ { isSit, 'sitting' }, { isDuck, 'ducking' }, { isFeign, 'feigning' }, { isLev, 'levitating' }, { isInvis, 'invisible' } }) do
+        if f[1] then ImGui.SameLine(); ImGui.TextDisabled(f[2]) end
+    end
 
-        if #activePets > 0 then
-            accent(GOLD, string.format('Active Pets (%d):', #activePets))
+    local petSlots, extraPets = getMultiPetList()
+    local pets, seen = {}, {}
+    for _, slot in ipairs(petSlots) do
+        if slot.petId and slot.petId > 0 and not seen[slot.petId] and isSpawnAlive(slot.petId) then
+            seen[slot.petId] = true
+            pets[#pets + 1] = { cls = slot.cls, info = getPetSpawnInfo(slot.petId) }
+        end
+    end
+    for _, pid in ipairs(extraPets or {}) do
+        if pid and pid > 0 and not seen[pid] and isSpawnAlive(pid) then
+            seen[pid] = true
+            pets[#pets + 1] = { cls = nil, info = getPetSpawnInfo(pid) }
+        end
+    end
+    if #pets > 0 then
+        ImGui.Spacing()
+        ImGui.TextDisabled(string.format('Pets (%d)', #pets))
+        if petState.petHoldActive then
             ImGui.SameLine()
-            if petState.petHoldActive then
-                accent(WARN, string.format('Pet Hold: ACTIVE (Holding until mob HP <= %d%%)', ctrl.pet_assist_at or 100))
-            else
-                accent(GOOD, 'Pet Orders: Normal / Engaged')
+            accent(WARN, string.format('holding until mob <= %d%%', ctrl.pet_assist_at or 100))
+        end
+        for i, p in ipairs(pets) do
+            local info = p.info
+            local hpVal = tonumber(info.hpPct or 0) or 0
+            local pr, pg, pb = UI.hpRgb(hpVal)
+            local label = string.format('%s%s %d%%', p.cls and (p.cls .. ' ') or '', tostring(info.cleanName or 'pet'), hpVal)
+            if info.targetName and info.targetName ~= '' and info.targetName ~= 'None' then
+                label = label .. '  > ' .. tostring(info.targetName)
             end
-
-            for _, pData in ipairs(activePets) do
-                local info = pData.info
-                local clsTag = pData.cls and string.format('[%s] ', pData.cls) or ''
-                local cr, cg, cb = classColor(pData.cls or 'Mag')
-                ImGui.TextColored(cr, cg, cb, 1.0, clsTag)
-                ImGui.SameLine()
-                accent(GOLD, string.format('%s (Lvl %d %s, ID: %d)', info.cleanName, info.level, info.race, info.id))
-                ImGui.SameLine(); ImGui.TextDisabled('|')
-                ImGui.SameLine()
-                local hasTarg = (info.targetName and info.targetName ~= '' and info.targetName ~= 'None')
-                if hasTarg then
-                    accent(ARC, string.format('Target: %s (%d%%)', info.targetName, info.targetHpPct or 0))
-                    if info.targetDist and info.targetDist > 0 and info.targetDist < 900 then
-                        ImGui.SameLine(); ImGui.TextDisabled(string.format('(%.1fft)', info.targetDist))
-                    end
-                    if info.targetId and info.targetId > 0 then
-                        ImGui.SameLine()
-                        if ImGui.SmallButton(string.format('Target##petTarg_%d', info.id or 0)) then
-                            mq.cmdf('/target id %d', info.targetId)
-                        end
-                        if ImGui.IsItemHovered() then
-                            UI.setTooltip(string.format('Target pet\'s target: %s (ID %d)', info.targetName, info.targetId))
-                        end
-                    end
-                else
-                    accent(MUTED, 'Target: None')
-                end
-
-                local pr, pg, pb = 0.35, 0.75, 0.45
-                local hpVal = tonumber(info.hpPct or 0) or 0
-                if hpVal <= 25 then
-                    pr, pg, pb = 0.90, 0.20, 0.20
-                elseif hpVal <= 50 then
-                    pr, pg, pb = 0.95, 0.75, 0.20
-                end
-                local petHpStr
-                if (info.curHp or 0) > 0 and (info.maxHp or 0) > 0 then
-                    petHpStr = string.format('%s HP: %d%% (%d / %d)', info.cleanName, hpVal, info.curHp, info.maxHp)
-                else
-                    petHpStr = string.format('%s HP: %d%%', info.cleanName, hpVal)
-                end
-                UI.drawStatusProgressBar(hpVal / 100.0, -1, UI.px(14), petHpStr, pr, pg, pb, 1.0)
+            UI.drawStatusProgressBar(hpVal / 100.0, -1, UI.px(14), label, pr, pg, pb, 1.0)
+            if info.targetId and info.targetId > 0 and ImGui.IsItemHovered() then
+                UI.setTooltip('%s', string.format('Click to target what %s is fighting (%s).', tostring(info.cleanName), tostring(info.targetName)))
             end
+            if info.targetId and info.targetId > 0 and ImGui.IsItemClicked() then
+                mq.cmdf('/target id %d', info.targetId)
+            end
+            if i >= 6 then break end
         end
     end
+end
 
-
-    -- 4. Navigation & MQ2Nav Subsystem Card
-    if UI.drawCollapsingStatusHeader('nav', 'Navigation & MQ2Nav Subsystem', 'statusNav') then
-        local navOk = navLoaded()
-        local meshOk = navMeshLoaded()
-        local stickOk = stickLoaded()
-        local curZoneShort = 'zone'
+-- Live hostile XTarget rows, rebuilt at most 4x a second.
+function UI.xtargetRows()
+    local now = os.clock()
+    local snap = runtime.statusXtSnapshot
+    if snap and (now - snap.at) < 0.25 then return snap.rows end
+    local slots = 13
+    pcall(function() slots = mq.TLO.Me.XTargetSlots() or 13 end)
+    local rows = {}
+    for slot = 1, slots do
         pcall(function()
-            curZoneShort = mq.TLO.Zone.ShortName() or 'zone'
+            local xt = mq.TLO.Me.XTarget(slot)
+            if not (xt and xt()) then return end
+            local xid = xt.ID() or 0
+            if xid <= 0 then return end
+            local stype = xt.Type() or ''
+            if stype ~= 'NPC' and stype ~= 'Pet' then return end
+            if xt.Dead() or not isSpawnAlive(xid) then return end
+            if isIgnored and isIgnored(xt.CleanName()) then return end
+            if isHostileTarget and not isHostileTarget(xid) then return end
+            rows[#rows + 1] = {
+                slot = slot, id = xid, name = xt.CleanName() or 'Unknown', level = xt.Level() or 0,
+                dist = xt.Distance() or 0, hpPct = xt.PctHPs() or 0, con = xt.ConColor() or 'White',
+                tot = xt.TargetOfTarget.CleanName() or 'None', aggroPct = xt.PctAggro() or 0,
+            }
         end)
+    end
+    runtime.statusXtSnapshot = { at = now, rows = rows }
+    return rows
+end
 
-        local navTableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-        if ImGui.BeginTable('##StatusNavSubsystemTable', 3, navTableFlags) then
-            ImGui.TableSetupColumn('Plugin & Mesh Status', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableSetupColumn('Live Navigation State', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableSetupColumn('Anti-Stuck & Diagnostics', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableHeadersRow()
-
+function UI.ovThreats()
+    local rows = UI.xtargetRows()
+    accent(GOLD, string.format('Threats (%d)', #rows))
+    if #rows == 0 then
+        ImGui.SameLine(); ImGui.TextDisabled('- nothing hostile on XTarget')
+        return
+    end
+    local curT = 0
+    pcall(function() curT = mq.TLO.Target.ID() or 0 end)
+    local flags = bit.bor(ImGuiTableFlags.RowBg or 0, ImGuiTableFlags.SizingFixedFit or 0, ImGuiTableFlags.BordersInnerH or 0)
+    if ImGui.BeginTable('##ovThreats', 5, flags) then
+        ImGui.TableSetupColumn('Name', ImGuiTableColumnFlags.WidthStretch)
+        ImGui.TableSetupColumn('Lvl', ImGuiTableColumnFlags.WidthFixed, UI.px(30))
+        ImGui.TableSetupColumn('HP', ImGuiTableColumnFlags.WidthFixed, UI.px(110))
+        ImGui.TableSetupColumn('Dist', ImGuiTableColumnFlags.WidthFixed, UI.px(46))
+        ImGui.TableSetupColumn('On', ImGuiTableColumnFlags.WidthFixed, UI.px(110))
+        for _, x in ipairs(rows) do
+            ImGui.PushID('ovxt' .. x.slot)
             ImGui.TableNextRow()
-            -- Column 1: Plugins & NavMesh
             ImGui.TableNextColumn()
-            if navOk then
-                accent(GOOD, '• MQ2Nav: Loaded')
-            else
-                accent(WARN, '• MQ2Nav: NOT LOADED')
-                if ImGui.Button('Load MQ2Nav##statBtnLoadNav') then
-                    mq.cmd('/plugin mq2nav'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-                end
-            end
-
-            if meshOk then
-                accent(GOOD, string.format('• Zone Mesh: Loaded (%s)', curZoneShort))
-            else
-                accent(WARN, string.format('• Zone Mesh: MISSING (%s)', curZoneShort))
-                if ImGui.Button('Reload Mesh##statBtnRelMesh') then
-                    mq.cmd('/nav reload'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-                end
-            end
-
-            if stickOk then
-                local stickActive = false
-                pcall(function() stickActive = (mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON') or false end)
-                if stickActive then
-                    accent(ARC, '• MoveUtils (Stick): ACTIVE')
-                else
-                    ImGui.TextDisabled('• MoveUtils (Stick): Loaded (Idle)')
-                end
-            else
-                accent(WARN, '• MoveUtils: NOT LOADED')
-                if ImGui.Button('Load MQ2MoveUtils##statBtnLoadMoveUtils') then
-                    mq.cmd('/plugin mq2moveutils'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-                end
-            end
-
-            -- Column 2: Live Navigation State
+            local col = UI.getConColorRgb(x.con)
+            local pushed = 0
+            local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
+            if Col and pcall(ImGui.PushStyleColor, Col.Text, col[1], col[2], col[3], 1.0) then pushed = 1 end
+            local _, pressed = ImGui.Selectable(x.name .. '##sel', x.id == curT)
+            if pushed > 0 then pcall(ImGui.PopStyleColor, pushed) end
+            if pressed then mq.cmdf('/target id %d', x.id) end
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', 'Click to target ' .. x.name) end
+            ImGui.TableNextColumn(); ImGui.TextDisabled(tostring(x.level))
             ImGui.TableNextColumn()
-            local navActive = false
-            pcall(function() if navOk then navActive = mq.TLO.Navigation.Active() or false end end)
-            local isMoving = false
-            pcall(function() isMoving = mq.TLO.Me.Moving() or false end)
-
-            if pursuit.meshRecoverId and pursuit.meshRecoverId ~= 0 then
-                accent(WARN, '• Nav Status: OFF-MESH RECOVERY (Stick→Remap)')
-            elseif navActive then
-                accent(GOOD, '• Nav Status: NAVIGATING')
-            elseif isMoving then
-                accent(ARC, '• Nav Status: MOVING (Manual/Stick)')
-            else
-                ImGui.TextDisabled('• Nav Status: Idle / Stopped')
-            end
-
-            -- Destination Details. navDest is the same /nav parameter string
-            -- the engine would use for that destination; MQ2Nav's PathLength /
-            -- Distance members only answer for an explicit destination.
-            local navDest = nil
-            if pursuit.lastNavTargetId and pursuit.lastNavTargetId ~= 0 then
-                local tSpawnName = nil
-                pcall(function() tSpawnName = mq.TLO.Spawn(pursuit.lastNavTargetId).CleanName() end)
-                ImGui.Text(string.format('• Destination: Mob %s (ID %s)', tSpawnName or '', tostring(pursuit.lastNavTargetId)))
-                navDest = string.format('id %d', pursuit.lastNavTargetId)
-            elseif ctrl.mode == 'Puller' and runtime.pullState == 'RETURNING' then
-                accent(ARC, '• Destination: Camp Location')
-                if ctrl.camp_loc and ctrl.camp_loc.x and ctrl.camp_loc.y then
-                    navDest = string.format('loc %.2f %.2f %.2f', ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z or 0)
-                end
-            elseif ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
-                local curWp = ctrl.waypoints[ctrl.current_waypoint_idx or 1]
-                ImGui.Text(string.format('• Destination: WP #%d (%s)', ctrl.current_waypoint_idx or 1, curWp and curWp.name or 'WP'))
-                if curWp and curWp.x and curWp.y then
-                    navDest = string.format('loc %.2f %.2f %.2f', curWp.y, curWp.x, curWp.z or 0)
-                end
-            elseif pursuit.wanderLoc then
-                ImGui.Text(string.format('• Destination: Wander (Y:%.0f, X:%.0f, Z:%.0f)',
-                    pursuit.wanderLoc.y or 0, pursuit.wanderLoc.x or 0, pursuit.wanderLoc.z or 0))
-                navDest = string.format('loc %.2f %.2f %.2f', pursuit.wanderLoc.y or 0, pursuit.wanderLoc.x or 0, pursuit.wanderLoc.z or 0)
-            else
-                ImGui.TextDisabled('• Destination: None (Idle)')
-            end
-
-            -- Path Length & Distance to that destination
-            if navActive and navDest then
-                local pathLen, pathDist = 0, 0
-                pcall(function()
-                    pathLen = tonumber(mq.TLO.Navigation.PathLength(navDest)()) or 0
-                    pathDist = tonumber(mq.TLO.Navigation.Distance(navDest)()) or 0
-                end)
-                ImGui.TextDisabled(string.format('• Path Length: %.1f ft (Dist: %.1f ft)', pathLen, pathDist))
-            end
-
-            -- Column 3: Anti-Stuck & Hazard Diagnostics
+            local r, g, b = UI.hpRgb(x.hpPct)
+            UI.drawStatusProgressBar(x.hpPct / 100.0, UI.px(104), UI.px(13), string.format('%d%%', x.hpPct), r, g, b, 1.0)
+            ImGui.TableNextColumn(); ImGui.Text(string.format('%.0f', x.dist))
             ImGui.TableNextColumn()
-            if pursuit.detourActive then
-                local remSec = math.max(0, (pursuit.detourExpiresAt or 0) - os.clock())
-                accent(WARN, string.format('• Detour: ACTIVE (%.1fs rem)', remSec))
+            if x.tot and x.tot ~= 'None' and x.tot ~= '' then
+                if myName and x.tot == myName then accent(ERR, 'YOU') else ImGui.Text(tostring(x.tot)) end
             else
-                ImGui.TextDisabled('• Detour Avoidance: Clear')
+                ImGui.TextDisabled('-')
             end
-
-            local stallCount = pursuit.navStalls or 0
-            local unreachableCount = 0
-            if pursuit.unreachableIds then
-                for _ in pairs(pursuit.unreachableIds) do unreachableCount = unreachableCount + 1 end
-            end
-            ImGui.TextDisabled(string.format('• Nav Stalls: %d | Unreachable Mobs: %d', stallCount, unreachableCount))
-
-            local stuckAttempts = stuckState.attempts or 0
-            local stuckCounter = stuckState.counter or 0
-            ImGui.TextDisabled(string.format('• Stuck Attempts: %d | Frame Counter: %d', stuckAttempts, stuckCounter))
-
-            local iso = pursuit.meshIso
-            if iso.active then
-                accent(WARN, string.format('• Mesh Isolation: RECOVERING (%s, stage %d, %.0fs)',
-                    iso.kind or '?', iso.stage or 0, os.clock() - (iso.startedAt or os.clock())))
-            elseif (iso.noPathSince or 0) > 0 and (os.clock() - (iso.lastNoPathAt or 0)) <= pursuit.MESH_ISO.SCAN_STALE then
-                accent(WARN, string.format('• Mesh Isolation: %d NPC(s) in range, none pathable (%.0fs, known ground %s)',
-                    iso.noPathCount or 0, os.clock() - iso.noPathSince,
-                    iso.refOk == true and 'reachable' or (iso.refOk == false and 'UNREACHABLE' or 'unknown')))
-            else
-                ImGui.TextDisabled(string.format('• Mesh Isolation: clear | Trail: %d good point(s)%s',
-                    #(iso.trail or {}), (iso.lastResult ~= '' and (' | Last: ' .. iso.lastResult) or '')))
-            end
-
-            local zoneHazards = (ctrl.zone_hazards and ctrl.zone_hazards[curZoneShort]) or {}
-            local hazCount = type(zoneHazards) == 'table' and #zoneHazards or 0
-            ImGui.TextDisabled(string.format('• Hazard Hotspots: %d recorded in %s', hazCount, curZoneShort))
-
-            ImGui.EndTable()
+            ImGui.PopID()
         end
+        ImGui.EndTable()
     end
+end
 
+function UI.ovSession()
+    local elapsed = os.time() - (runtime.trackStartTime or os.time())
+    local hrs = math.max(elapsed / 3600.0, 0)
+    local aaGained = (runtime.startAA and runtime.currentAA) and math.max(0, runtime.currentAA - runtime.startAA) or 0
+    local platGained = (runtime.startPlat and runtime.currentPlat) and (runtime.currentPlat - runtime.startPlat) or 0
+    local aaRate = hrs > 0.0001 and aaGained / hrs or 0
+    local platRate = hrs > 0.0001 and platGained / hrs or 0
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextDisabled('Session')
+    ImGui.SameLine(); ImGui.Text(h > 0 and string.format('%dh %dm', h, m) or string.format('%dm', m))
+    ImGui.SameLine(0, UI.px(14)); ImGui.TextDisabled('AA/hr')
+    ImGui.SameLine(); accent(GOOD, string.format('%.1f', aaRate))
+    ImGui.SameLine(); ImGui.TextDisabled(string.format('(+%.1f)', aaGained))
+    ImGui.SameLine(0, UI.px(14)); ImGui.TextDisabled('Plat/hr')
+    ImGui.SameLine(); accent(GOLD, string.format('%.0f', platRate))
+    ImGui.SameLine(); ImGui.TextDisabled(string.format('(%+d)', platGained))
+    ImGui.SameLine(0, UI.px(14))
+    if ImGui.SmallButton('Reset##ovResetTrack') then UI.resetTracker() end
+    if ImGui.IsItemHovered() then UI.setTooltip('Restart the session timer and the AA / plat counters.') end
+end
 
-    -- 5. Mode Operations & Extended Target (XTarget) Threat Monitor
-    if UI.drawCollapsingStatusHeader('xtar', 'Mode Operations & Extended Target (XTarget) Threat', 'statusXtar') then
-        -- Mode Operations Sub-Panel
-        if ctrl.mode == 'Puller' then
-            local pullTargName = nil
-            if runtime.pullTargetId and runtime.pullTargetId ~= 0 then
-                pcall(function() pullTargName = mq.TLO.Spawn(runtime.pullTargetId).CleanName() end)
-            end
-            local anchorInfo = 'No Camp Anchor (Free Roam)'
-            if ctrl.camp_loc then
-                local myX, myY, myZ = 0, 0, 0
-                pcall(function()
-                    myX = mq.TLO.Me.X() or 0
-                    myY = mq.TLO.Me.Y() or 0
-                    myZ = mq.TLO.Me.Z() or 0
-                end)
-                local dx = (ctrl.camp_loc.x or 0) - myX
-                local dy = (ctrl.camp_loc.y or 0) - myY
-                local dz = (ctrl.camp_loc.z or 0) - myZ
-                local campDist = math.sqrt(dx * dx + dy * dy + dz * dz)
-                anchorInfo = string.format('Camp Anchor (%.1f, %.1f, %.1f) - Dist: %.1f ft (Radius: %d)',
-                    ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, campDist, ctrl.hunter_radius or 1500)
-            end
-            accent(GOLD, 'Puller Operations:')
-            ImGui.Text(string.format('• Pull State: %s | Pull Target: %s (ID %s) | Style: %s',
-                runtime.pullState or 'IDLE', pullTargName or 'None', tostring(runtime.pullTargetId or 0), ctrl.pull_style or 'Melee'))
-            ImGui.TextDisabled(string.format('• Anchor: %s | Min Level: %d | Max Level: %d',
-                anchorInfo, ctrl.pull_min_level or 1, ctrl.pull_max_level or 100))
-        elseif ctrl.mode == 'Assist' then
-            local maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
-            local maDisplay = (maInfo and maInfo.hasMA) and string.format('%s (ID: %d)', maInfo.maName, maInfo.maId) or '(None Set)'
-            local maTargStr = 'No Target'
-            if maInfo and maInfo.hasTarget then
-                local clsStr = (maInfo.targetClass ~= '') and (' [' .. maInfo.targetClass .. ']') or ''
-                maTargStr = string.format('%s%s (ID: %d, %d%% HP, %.1fft)', maInfo.targetName, clsStr, maInfo.targetId, maInfo.targetHp, maInfo.targetDist)
-            end
-            accent(GOLD, 'Assist Operations:')
-            ImGui.Text(string.format('• Main Assist: %s | MA Target: %s | Assist At: %d%% HP',
-                maDisplay, maTargStr, ctrl.assist_at or 98))
-            if maInfo and maInfo.hasTarget then
-                ImGui.SameLine()
-                if ImGui.SmallButton('Target##statOpTargMA') then
-                    mq.cmdf('/target id %d', maInfo.targetId)
-                end
-                if ImGui.IsItemHovered() then UI.setTooltip(string.format('Target %s (ID %d)', maInfo.targetName, maInfo.targetId)) end
-            end
-            ImGui.TextDisabled(string.format('• Chase MA: %s (Chase Dist: %d ft) | Max XTar Chase: %d ft | Self-Defense: %s | Behind: %s',
-                ctrl.chase and 'Enabled' or 'Disabled', ctrl.chase_dist or 15, ctrl.xtar_nav_dist or 150,
-                (ctrl.assist_self_defense ~= false) and 'Enabled' or 'Disabled',
-                (ctrl.assist_behind ~= false) and 'Enabled' or 'Disabled'))
-        elseif ctrl.mode == 'Manual' then
-            accent(GOLD, 'Manual Operations:')
-            local campInfo = 'No camp set (stays put wherever fights end)'
-            if ctrl.camp_loc then
-                campInfo = string.format('Camp at (%.1f, %.1f, %.1f), Radius: %d',
-                    ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, ctrl.camp_radius or 100)
-            end
-            ImGui.Text(string.format('• Auto-Target Hostiles on XTarget: %s | Chase Dist: %d ft',
-                ctrl.manual_auto_xtarget ~= false and 'Enabled' or 'Disabled', ctrl.xtar_nav_dist or 150))
-            ImGui.Text(string.format('• Stick to Target: %s | Auto-Nav to Selected Target: %s',
-                ctrl.manual_stick ~= false and 'Enabled' or 'Disabled',
-                ctrl.manual_auto_nav and 'Enabled' or 'Disabled'))
-            ImGui.TextDisabled('• ' .. campInfo)
+-- What the current mode is set up to do, one or two readable lines.
+function UI.ovModeDetails()
+    local function yes(v) return v and 'on' or 'off' end
+    if ctrl.mode == 'Puller' then
+        local pullName = nil
+        if runtime.pullTargetId and runtime.pullTargetId ~= 0 then
+            pcall(function() pullName = mq.TLO.Spawn(runtime.pullTargetId).CleanName() end)
         end
-
-        if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
-            local dirStr = (ctrl.waypoint_direction == 1) and 'Forward' or 'Reverse'
-            local loopStr = ctrl.waypoint_loop and 'Looping' or 'One-Way'
-            accent(ARC, string.format('• Waypoint Patrol: WP #%d of %d | Direction: %s | Mode: %s',
-                ctrl.current_waypoint_idx or 1, #ctrl.waypoints, dirStr, loopStr))
-        end
-
-
-        -- Interactive Extended Target (XTarget) Table
-        accent(GOLD, 'Extended Target (XTarget) Threat Monitor:')
-
-        -- Snapshot the XTarget rows at most 4x/s. Building this every frame
-        -- cost ~20 TLO calls per slot (isHostileTarget alone re-resolves the
-        -- spawn + pet/owner checks) plus a table and closure per slot.
-        local xtNow = os.clock()
-        local xtSnap = runtime.statusXtSnapshot
-        if not xtSnap or (xtNow - xtSnap.at) >= 0.25 then
-            local xtarSlots = 13
-            pcall(function() xtarSlots = mq.TLO.Me.XTargetSlots() or 13 end)
-            local rows = {}
-            for slot = 1, xtarSlots do
-                pcall(function()
-                    local xt = mq.TLO.Me.XTarget(slot)
-                    if not (xt and xt()) then return end
-                    local xid = xt.ID() or 0
-                    if xid <= 0 then return end
-                    local stype = xt.Type() or ''
-                    if stype ~= 'NPC' and stype ~= 'Pet' then return end
-                    if xt.Dead() or not isSpawnAlive(xid) then return end
-                    if isIgnored and isIgnored(xt.CleanName()) then return end
-                    -- isHostileTarget already covers group/raid members and player pets
-                    if isHostileTarget and not isHostileTarget(xid) then return end
-                    rows[#rows + 1] = {
-                        slot = slot,
-                        id = xid,
-                        name = xt.CleanName() or 'Unknown',
-                        level = xt.Level() or 0,
-                        class = xt.Class.ShortName() or '?',
-                        dist = xt.Distance() or 0,
-                        hpPct = xt.PctHPs() or 0,
-                        con = xt.ConColor() or 'White',
-                        tot = xt.TargetOfTarget.CleanName() or 'None',
-                        aggroPct = xt.PctAggro() or 0
-                    }
-                end)
-            end
-            xtSnap = { at = xtNow, rows = rows }
-            runtime.statusXtSnapshot = xtSnap
-        end
-        local activeXtargets = xtSnap.rows
-
-        if #activeXtargets > 0 then
-            local xtTableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-            if ImGui.BeginTable('##StatusXTargetThreatTable', 7, xtTableFlags) then
-                ImGui.TableSetupColumn('Slot', ImGuiTableColumnFlags.WidthFixed, UI.px(40))
-                ImGui.TableSetupColumn('Target Name', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableSetupColumn('Lvl / Cls', ImGuiTableColumnFlags.WidthFixed, UI.px(70))
-                ImGui.TableSetupColumn('Dist', ImGuiTableColumnFlags.WidthFixed, UI.px(60))
-                ImGui.TableSetupColumn('Health', ImGuiTableColumnFlags.WidthFixed, UI.px(110))
-                ImGui.TableSetupColumn('Aggro Holder', ImGuiTableColumnFlags.WidthStretch)
-                ImGui.TableSetupColumn('Action', ImGuiTableColumnFlags.WidthFixed, UI.px(65))
-                ImGui.TableHeadersRow()
-
-                for _, x in ipairs(activeXtargets) do
-                    ImGui.TableNextRow()
-                    -- Slot
-                    ImGui.TableNextColumn()
-                    ImGui.Text(string.format('#%d', x.slot))
-
-                    -- Name
-                    ImGui.TableNextColumn()
-                    local conCol = UI.getConColorRgb(x.con)
-                    accent(conCol, x.name)
-
-                    -- Lvl / Cls
-                    ImGui.TableNextColumn()
-                    ImGui.TextDisabled(string.format('%d %s', x.level, x.class))
-
-                    -- Dist
-                    ImGui.TableNextColumn()
-                    ImGui.Text(string.format('%.1f', x.dist))
-
-                    -- Health
-                    ImGui.TableNextColumn()
-                    local r, g, b = 0.25, 0.80, 0.35
-                    if x.hpPct <= 20 then
-                        r, g, b = 0.90, 0.20, 0.20
-                    elseif x.hpPct <= 50 then
-                        r, g, b = 0.95, 0.75, 0.20
-                    end
-                    UI.drawStatusProgressBar(x.hpPct / 100.0, UI.px(100), UI.px(14), string.format('%d%%', x.hpPct), r, g, b, 1.0)
-
-                    -- Aggro Holder
-                    ImGui.TableNextColumn()
-                    if x.tot and x.tot ~= 'None' and x.tot ~= '' then
-                        if myName and x.tot == myName then
-                            accent({ 1.0, 0.35, 0.35, 1.0 }, 'YOU (' .. tostring(x.aggroPct) .. '%)')
-                        else
-                            ImGui.Text(string.format('%s (%d%%)', x.tot, x.aggroPct))
-                        end
-                    else
-                        ImGui.TextDisabled('None')
-                    end
-
-                    -- Action
-                    ImGui.TableNextColumn()
-                    if ImGui.Button(string.format('Target##statXtar%d', x.slot), UI.px(55), UI.px(18)) then
-                        mq.cmdf('/target id %d', x.id)
-                    end
-                    if ImGui.IsItemHovered() then UI.setTooltip(string.format('Target %s (ID %d)', x.name, x.id)) end
-                end
-
-                ImGui.EndTable()
-            end
-        else
-            accent(GOOD, 'No active hostile combatants on Extended Target list.')
-        end
+        ImGui.Text(string.format('Pull state %s%s, pulling with %s, levels %d-%d',
+            tostring(runtime.pullState or 'IDLE'), pullName and (' (' .. pullName .. ')') or '',
+            tostring(ctrl.pull_style or 'Melee'), ctrl.pull_min_level or 1, ctrl.pull_max_level or 100))
+    elseif ctrl.mode == 'Assist' then
+        ImGui.Text(string.format('Assist at %d%%, chase %s (%d ft), self-defense %s, stay behind %s',
+            ctrl.assist_at or 98, yes(ctrl.chase), ctrl.chase_dist or 15,
+            yes(ctrl.assist_self_defense ~= false), yes(ctrl.assist_behind ~= false)))
+    else
+        ImGui.Text(string.format('Auto-target XTarget %s, stick %s, auto-nav to target %s',
+            yes(ctrl.manual_auto_xtarget ~= false), yes(ctrl.manual_stick ~= false), yes(ctrl.manual_auto_nav)))
     end
+    if ctrl.camp_loc and UI.modeUsesCamp() then
+        local mx, my, mz = 0, 0, 0
+        pcall(function() mx, my, mz = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0 end)
+        local dx, dy, dz = (ctrl.camp_loc.x or 0) - mx, (ctrl.camp_loc.y or 0) - my, (ctrl.camp_loc.z or 0) - mz
+        ImGui.TextDisabled(string.format('Camp %.0f ft away (radius %d)', math.sqrt(dx * dx + dy * dy + dz * dz), ctrl.camp_radius or 100))
+    elseif UI.modeUsesCamp() then
+        ImGui.TextDisabled('No camp set.')
+    end
+    if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
+        ImGui.TextDisabled(string.format('Waypoint %d of %d, %s, %s', ctrl.current_waypoint_idx or 1, #ctrl.waypoints,
+            (ctrl.waypoint_direction == 1) and 'forward' or 'reverse', ctrl.waypoint_loop and 'looping' or 'one way'))
+    end
+    if ImGui.SmallButton('Edit mode settings##ovEditMode') then UI.openPage('control') end
+end
+
+-- Navigation internals for troubleshooting / bug reports.
+function UI.ovNavDiagnostics()
+    local zs = 'zone'
+    pcall(function() zs = mq.TLO.Zone.ShortName() or 'zone' end)
+    local navOk, meshOk, stickOk = navLoaded(), navMeshLoaded(), stickLoaded()
+    local navActive, moving = false, false
+    pcall(function() if navOk then navActive = mq.TLO.Navigation.Active() or false end end)
+    pcall(function() moving = mq.TLO.Me.Moving() or false end)
+    local function state(ok, okText, badText)
+        if ok then accent(GOOD, okText) else accent(WARN, badText) end
+    end
+    state(navOk, 'MQ2Nav loaded', 'MQ2Nav not loaded')
+    ImGui.SameLine(0, UI.px(14)); state(meshOk, 'mesh for ' .. zs, 'no mesh for ' .. zs)
+    ImGui.SameLine(0, UI.px(14)); state(stickOk, 'MoveUtils loaded', 'MoveUtils not loaded')
+
+    local status = 'idle'
+    if pursuit.meshRecoverId and pursuit.meshRecoverId ~= 0 then status = 'off-mesh recovery'
+    elseif navActive then status = 'navigating'
+    elseif moving then status = 'moving' end
+    local dest = 'none'
+    if pursuit.lastNavTargetId and pursuit.lastNavTargetId ~= 0 then
+        local nm = nil
+        pcall(function() nm = mq.TLO.Spawn(pursuit.lastNavTargetId).CleanName() end)
+        dest = string.format('%s (id %s)', tostring(nm or 'mob'), tostring(pursuit.lastNavTargetId))
+    elseif ctrl.mode == 'Puller' and runtime.pullState == 'RETURNING' then dest = 'camp'
+    elseif pursuit.wanderLoc then dest = 'wander point' end
+    ImGui.Text(string.format('Movement: %s, destination: %s', status, dest))
+
+    local unreachable = 0
+    for _ in pairs(pursuit.unreachableIds or {}) do unreachable = unreachable + 1 end
+    local hazards = (ctrl.zone_hazards and ctrl.zone_hazards[zs]) or {}
+    ImGui.TextDisabled(string.format('Nav stalls %d, unreachable mobs %d, stuck attempts %d, hazard spots %d',
+        pursuit.navStalls or 0, unreachable, stuckState.attempts or 0, type(hazards) == 'table' and #hazards or 0))
+    if pursuit.detourActive then
+        accent(WARN, string.format('Detour active (%.0fs left)', math.max(0, (pursuit.detourExpiresAt or 0) - os.clock())))
+    end
+    local iso = pursuit.meshIso
+    if iso and iso.active then
+        accent(WARN, string.format('Mesh isolation recovery: %s, stage %d, %.0fs', tostring(iso.kind or '?'), iso.stage or 0,
+            os.clock() - (iso.startedAt or os.clock())))
+    elseif iso and (iso.noPathSince or 0) > 0 and (os.clock() - (iso.lastNoPathAt or 0)) <= pursuit.MESH_ISO.SCAN_STALE then
+        accent(WARN, string.format('%d NPC(s) in range but none pathable for %.0fs', iso.noPathCount or 0, os.clock() - iso.noPathSince))
+    end
+end
+
+function UI.drawStatusTab()
+    local flags = (ImGuiTableFlags and ImGuiTableFlags.SizingStretchSame) or 0
+    if ImGui.BeginTable('##ovCards', 2, flags) then
+        ImGui.TableNextRow()
+        ImGui.TableNextColumn()
+        UI.ovTarget()
+        ImGui.TableNextColumn()
+        UI.ovYou()
+        ImGui.EndTable()
+    end
+    ImGui.Spacing()
+    UI.ovThreats()
+    ImGui.Spacing()
+    ImGui.Separator()
+    UI.ovSession()
+    ImGui.Spacing()
+    if UI.overviewSection('mode', 'Mode details', true) then UI.ovModeDetails() end
+    if UI.overviewSection('nav', 'Navigation diagnostics', false) then UI.ovNavDiagnostics() end
 end
 
 -- Called from several UI panels every frame; each call does Spawn / Target
