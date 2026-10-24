@@ -1,0 +1,858 @@
+---@diagnostic disable: undefined-global, undefined-field
+-- ============================================================================
+-- TAC/lua/tac/hud_group.lua — Triune Popout Group Window Plugin
+-- ============================================================================
+-- Modern, compact party vitals: auto-scaling HP / Mana / Endurance bars,
+-- leader + role badges, member pet tracking, click-to-target, Invite / Disband
+-- toolbar, and a right-click context menu for options.
+--
+-- No fiber: onTick (every 0.25 s) snapshots the group state (roles, member
+-- vitals, distance / LoS, pets, Box Network peers, current target) into a
+-- cache and onDrawUI only renders that cache; the same throttled refresh also
+-- runs from the render pass so the window stays live while the main loop is
+-- blocked (casting, mq.delay). Visibility is driven by ctrl.show_group_window
+-- so the header buttons, Mini HUD, window manager, and /ac group all keep
+-- working unchanged.
+-- ============================================================================
+
+local plugin = {
+    id                 = 'hud_group',
+    name               = 'Group Window HUD',
+    version            = '1.0.0',
+    author             = 'Triune',
+    uses               = { boxnet = 'Box Network characters shown as group rows' },
+    description        = 'Popout group window with vitals bars, role badges, member pets, invite/disband, and click-to-target.',
+    defaultEnabled     = true,
+    tickInterval       = 0.25,
+    runOutOfCombatOnly = false,
+    hasThread          = false,
+    -- Window owned by this plugin (drives the main-window header button)
+    window             = { label = 'Group', tooltip = 'Toggles the popout Group Window.', flag = 'show_group_window', key = 'group', lockFlag = 'gw_lock', desc = 'Popout Party members HP/Mana/End bars', headerButton = true, order = 70 },
+}
+
+local core = nil
+
+-- ---------------------------------------------------------------------------
+-- TLO snapshot cache (same throttle pattern as hud_unitframes.refreshVitals /
+-- hud_effects.refreshEffects). refreshGroup() is shared by onTick and
+-- onDrawUI; whichever runs first inside a REFRESH_INTERVAL window queries the
+-- ~100-150 TLOs (roles, members, pets, box peers, target) and the render pass
+-- only reads `snap`.
+-- ---------------------------------------------------------------------------
+local REFRESH_INTERVAL = 0.25
+local lastRefreshAt = 0
+local snap = {
+    members = {},
+    leaderName = '', mtName = '', maName = '', pullerName = '',
+    curTargId = 0, curTargName = '', curTargType = '',
+    myName = '', myLevel = 1, amLeader = false,
+}
+
+function plugin.onInit(coreApi)
+    core = coreApi
+    lastRefreshAt = 0
+    local ctrl = core and core.ctrl
+    if ctrl then
+        if ctrl.show_group_window == nil then ctrl.show_group_window = false end
+        if ctrl.gw_lock == nil then ctrl.gw_lock = false end
+        if ctrl.gw_alpha == nil then ctrl.gw_alpha = 0.85 end
+        if ctrl.gw_bar_height == nil then ctrl.gw_bar_height = 14 end
+        if ctrl.gw_include_self == nil then ctrl.gw_include_self = true end
+        if ctrl.gw_show_mana == nil then ctrl.gw_show_mana = true end
+        if ctrl.gw_show_endurance == nil then ctrl.gw_show_endurance = false end
+        if ctrl.gw_show_pets == nil then ctrl.gw_show_pets = true end
+        if ctrl.gw_show_roles == nil then ctrl.gw_show_roles = true end
+    end
+end
+
+function plugin.onDestroy()
+    snap.members = {}
+    lastRefreshAt = 0
+end
+
+-- ----------------------------------------------------------------------------
+-- "Come to me" (Box Network)
+-- ----------------------------------------------------------------------------
+-- A group row for one of your boxes gets a small [Come] button: it sends
+-- `/ac net <Name> cometo <me>` and the receiving box runs `/ac cometo <me>`
+-- below, navigating to that player with MQ2Nav.
+local function myCleanName()
+    local mq = core and core.mq
+    if not mq then return nil end
+    local ok, n = pcall(function() return mq.TLO.Me.CleanName() end)
+    if ok and n and tostring(n) ~= '' then return tostring(n) end
+    return nil
+end
+
+-- The Box Network peer record for a group member, or nil when that member is
+-- not one of this computer's Triune boxes.
+local function boxPeerFor(name)
+    if not core or not core.boxnet or type(core.boxnet.peer) ~= 'function' or not name then return nil end
+    local ok, p = pcall(core.boxnet.peer, name)
+    if ok and type(p) == 'table' then return p end
+    return nil
+end
+
+local function sendComeToMe(name)
+    if not core or not core.boxnet or type(core.boxnet.command) ~= 'function' then return false, 'Box Network unavailable' end
+    local me = myCleanName()
+    if not me then return false, 'own name unknown' end
+    local ok, sent, why = pcall(core.boxnet.command, name, 'cometo ' .. me)
+    if not ok then return false, tostring(sent) end
+    if not sent then return false, tostring(why or 'not sent') end
+    return true
+end
+
+-- /ac cometo <Name>  -> navigate to that player (MQ2Nav); /ac cometo stop halts.
+local function comeTo(name)
+    local mq = core and core.mq
+    if not mq then return false end
+    name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' then
+        print('\ay[Triune]\ax usage: /ac cometo <PlayerName> | stop')
+        return true
+    end
+    if name:lower() == 'stop' then
+        pcall(function() mq.cmd('/nav stop') end)
+        print('\ag[Triune]\ax Stopped navigating.')
+        return true
+    end
+    local navOk = false
+    pcall(function() navOk = mq.TLO.Navigation and mq.TLO.Navigation.MeshLoaded() == true end)
+    if not navOk then
+        print('\ar[Triune]\ax Cannot come to ' .. name .. ': MQ2Nav is not loaded or has no mesh for this zone.')
+        return true
+    end
+    local id, dist = 0, 0
+    pcall(function()
+        local sp = mq.TLO.Spawn('pc =' .. name)
+        if sp and sp() and (sp.ID() or 0) > 0 then
+            id = sp.ID() or 0
+            dist = sp.Distance() or 0
+        end
+    end)
+    if id <= 0 then
+        print('\ay[Triune]\ax Cannot come to ' .. name .. ': not in this zone.')
+        return true
+    end
+    mq.cmdf('/nav id %d distance=10', id)
+    print(string.format('\ag[Triune]\ax Coming to %s (%.0fft).', name, dist))
+    return true
+end
+
+function plugin.onCommand(cmd, args)
+    if cmd ~= 'cometo' and cmd ~= 'come' and cmd ~= 'moveto' then return false end
+    return comeTo(args and args[2])
+end
+
+plugin.help = {
+    '  \ag/ac cometo <Name> | stop\ax - Navigate to a player in this zone (what a box runs when you click [Come] on the Group window)',
+}
+
+-- Settings popup renderer (right-click anywhere in window, and Plugins tab)
+local function renderGwSettingsContent()
+    if not core or not core.ImGui or not core.ctrl then return end
+    local ImGui = core.ImGui
+    local ctrl = core.ctrl
+    local accent = core.accent
+    local GOLD = core.colors.GOLD
+
+    accent(GOLD, 'Group Window Settings')
+    ImGui.Separator()
+    local isWinOpen = (ctrl.show_group_window == true)
+    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##gwToggleWin', core.px(250), core.px(24)) then
+        ctrl.show_group_window = not isWinOpen
+        core.saveLoadout(true)
+    end
+    local lockVal = ImGui.Checkbox('Lock Window Position & Size##gwLock', ctrl.gw_lock or false)
+    if lockVal ~= (ctrl.gw_lock or false) then
+        ctrl.gw_lock = lockVal
+        core.saveLoadout(true)
+    end
+    local selfVal = ImGui.Checkbox('Include Self in Group##gwSelf', ctrl.gw_include_self ~= false)
+    if selfVal ~= (ctrl.gw_include_self ~= false) then
+        ctrl.gw_include_self = selfVal
+        core.saveLoadout(true)
+    end
+    local manaVal = ImGui.Checkbox('Show Mana Bars##gwMana', ctrl.gw_show_mana ~= false)
+    if manaVal ~= (ctrl.gw_show_mana ~= false) then
+        ctrl.gw_show_mana = manaVal
+        core.saveLoadout(true)
+    end
+    local endVal = ImGui.Checkbox('Show Endurance Bars##gwEnd', ctrl.gw_show_endurance or false)
+    if endVal ~= (ctrl.gw_show_endurance or false) then
+        ctrl.gw_show_endurance = endVal
+        core.saveLoadout(true)
+    end
+    local boxVal = ImGui.Checkbox('Show Box Network Characters##gwBoxes', ctrl.gw_show_boxes == true)
+    if boxVal ~= (ctrl.gw_show_boxes == true) then
+        ctrl.gw_show_boxes = boxVal
+        core.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then core.setTooltip('Off by default: the window lists only your group. Turn on to also list your other boxed characters (Box Network) that are not in this group, with live vitals from their heartbeat.') end
+    local petVal = ImGui.Checkbox('Show Pet Bars##gwPets', ctrl.gw_show_pets ~= false)
+    if petVal ~= (ctrl.gw_show_pets ~= false) then
+        ctrl.gw_show_pets = petVal
+        core.saveLoadout(true)
+    end
+    local roleVal = ImGui.Checkbox('Show Role Badges##gwRoles', ctrl.gw_show_roles ~= false)
+    if roleVal ~= (ctrl.gw_show_roles ~= false) then
+        ctrl.gw_show_roles = roleVal
+        core.saveLoadout(true)
+    end
+    if core.drawWindowScaleControl then core.drawWindowScaleControl('group', 'Scale', 120) end
+    ImGui.SetNextItemWidth(core.px(120))
+    local newAlpha = ImGui.SliderFloat('Opacity##gwAlpha', ctrl.gw_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if newAlpha ~= (ctrl.gw_alpha or 0.85) then
+        ctrl.gw_alpha = newAlpha
+        core.saveLoadout(true)
+    end
+    ImGui.SetNextItemWidth(core.px(120))
+    local newH = ImGui.SliderInt('Bar Height##gwHeight', ctrl.gw_bar_height or 14, 10, 24)
+    if newH ~= (ctrl.gw_bar_height or 14) then
+        ctrl.gw_bar_height = newH
+        core.saveLoadout(true)
+    end
+end
+
+function plugin.onDrawSettings()
+    renderGwSettingsContent()
+end
+
+-- Snapshot every TLO the window needs (roles, members, pets, Box Network
+-- peers, current target, own level / leadership). Shared by onTick and the
+-- render pass; the throttle makes whichever runs first do the work.
+local function refreshGroup(force)
+    if not core or not core.mq or not core.ctrl then return end
+    local ctrl = core.ctrl
+    if not ctrl.show_group_window then
+        if #snap.members > 0 then snap.members = {} end
+        return
+    end
+    local now = os.clock()
+    if not force and (now - lastRefreshAt) < REFRESH_INTERVAL then return end
+    lastRefreshAt = now
+    local mq = core.mq
+
+    -- Group roles and leadership
+    local leaderName, mtName, maName, pullerName = '', '', '', ''
+    local grpSize = 0
+    pcall(function()
+        grpSize = mq.TLO.Group.GroupSize() or 0
+        if mq.TLO.Group.Leader and mq.TLO.Group.Leader() then
+            leaderName = mq.TLO.Group.Leader.CleanName() or ''
+        end
+        if mq.TLO.Group.MainTank and mq.TLO.Group.MainTank() then
+            mtName = mq.TLO.Group.MainTank.CleanName() or ''
+        end
+        if mq.TLO.Group.MainAssist and mq.TLO.Group.MainAssist() then
+            maName = mq.TLO.Group.MainAssist.CleanName() or ''
+        end
+        if mq.TLO.Group.Puller and mq.TLO.Group.Puller() then
+            pullerName = mq.TLO.Group.Puller.CleanName() or ''
+        end
+    end)
+    snap.grpSize = grpSize
+    snap.leaderName, snap.mtName, snap.maName, snap.pullerName = leaderName, mtName, maName, pullerName
+
+    -- Own name / level / id (read once per refresh, not per member row)
+    local myName, myId, myLevel = 'Myself', 0, 1
+    pcall(function()
+        myName = mq.TLO.Me.CleanName() or 'Myself'
+        myId = mq.TLO.Me.ID() or 0
+        myLevel = mq.TLO.Me.Level() or 1
+    end)
+    snap.myName, snap.myId, snap.myLevel = myName, myId, myLevel
+
+    -- Am I the group leader? (/disband as a non-leader makes US leave.)
+    local amLeader = false
+    pcall(function()
+        if mq.TLO.Me.GroupLeader then
+            local v = mq.TLO.Me.GroupLeader()
+            if v == true then amLeader = true end
+        end
+        if not amLeader and mq.TLO.Group.Leader and mq.TLO.Group.Leader() then
+            local lid = mq.TLO.Group.Leader.ID() or 0
+            if lid > 0 and lid == myId then amLeader = true end
+        end
+        if not amLeader and leaderName ~= '' and leaderName == myName then amLeader = true end
+    end)
+    snap.amLeader = amLeader
+
+    local members = {}
+
+    -- Include Self (Member 0)
+    if ctrl.gw_include_self ~= false then
+        local myLvl, myCls = myLevel, '?'
+        local myHpPct, myCurHp, myMaxHp = 100, 0, 0
+        local myManaPct, myCurMana, myMaxMana = 0, 0, 0
+        local myEndPct, myCurEnd, myMaxEnd = 0, 0, 0
+        local myPetId, myPetName, myPetHpPct = 0, 'Pet', 0
+        pcall(function()
+            myCls = mq.TLO.Me.Class.ShortName() or '?'
+            myHpPct = mq.TLO.Me.PctHPs() or 0
+            myCurHp = mq.TLO.Me.CurrentHPs() or 0
+            myMaxHp = mq.TLO.Me.MaxHPs() or 0
+            myManaPct = mq.TLO.Me.PctMana() or 0
+            myCurMana = mq.TLO.Me.CurrentMana() or 0
+            myMaxMana = mq.TLO.Me.MaxMana() or 0
+            myEndPct = mq.TLO.Me.PctEndurance() or 0
+            myCurEnd = mq.TLO.Me.CurrentEndurance() or 0
+            myMaxEnd = mq.TLO.Me.MaxEndurance() or 0
+            if mq.TLO.Me.Pet and mq.TLO.Me.Pet() and (mq.TLO.Me.Pet.ID() or 0) > 0 then
+                myPetId = mq.TLO.Me.Pet.ID()
+                myPetName = mq.TLO.Me.Pet.CleanName() or 'Pet'
+                myPetHpPct = mq.TLO.Me.Pet.PctHPs() or 0
+            end
+        end)
+
+        table.insert(members, {
+            isSelf = true,
+            index = 0,
+            id = myId,
+            name = myName,
+            level = myLvl,
+            cls = myCls,
+            hpPct = myHpPct,
+            curHp = myCurHp,
+            maxHp = myMaxHp,
+            manaPct = myManaPct,
+            curMana = myCurMana,
+            maxMana = myMaxMana,
+            endPct = myEndPct,
+            curEnd = myCurEnd,
+            maxEnd = myMaxEnd,
+            distance = 0,
+            los = true,
+            isLeader = (leaderName ~= '' and leaderName == myName),
+            isMT = (mtName ~= '' and mtName == myName),
+            isMA = (maName ~= '' and maName == myName),
+            isPuller = (pullerName ~= '' and pullerName == myName),
+            isMerc = false,
+            offline = false,
+            otherZone = false,
+            petId = myPetId,
+            petName = myPetName,
+            petHpPct = myPetHpPct,
+        })
+    end
+
+    -- Query Other Group Members (1 .. Members)
+    local otherCount = 0
+    pcall(function() otherCount = mq.TLO.Group.Members() or 0 end)
+    for i = 1, otherCount do
+        pcall(function()
+            local m = mq.TLO.Group.Member(i)
+            if m and m() then
+                local mName = m.CleanName() or ('Member ' .. i)
+                local mId = m.ID() or 0
+                local mLvl = m.Level() or 0
+                local mCls = (m.Class and m.Class.ShortName and m.Class.ShortName()) or '?'
+                local mOtherZone = m.OtherZone() or false
+                local mOffline = m.Offline() or false
+                local mHpPct, mCurHp, mMaxHp = 0, 0, 0
+                local mManaPct, mCurMana, mMaxMana = 0, 0, 0
+                local mEndPct, mCurEnd, mMaxEnd = 0, 0, 0
+                local mDist, mLoS = 0, false
+                local mPetId, mPetName, mPetHpPct = 0, 'Pet', 0
+                if not mOffline then
+                    mHpPct = m.PctHPs() or 0
+                    mCurHp = m.CurrentHPs() or 0
+                    mMaxHp = m.MaxHPs() or 0
+                    mManaPct = m.PctMana() or 0
+                    mCurMana = m.CurrentMana() or 0
+                    mMaxMana = m.MaxMana() or 0
+                    mEndPct = m.PctEndurance() or 0
+                    mCurEnd = m.CurrentEndurance() or 0
+                    mMaxEnd = m.MaxEndurance() or 0
+                end
+                if not mOffline and not mOtherZone then
+                    mDist = m.Distance() or 0
+                    mLoS = m.LineOfSight() or false
+                    if m.Pet and m.Pet() and (m.Pet.ID() or 0) > 0 then
+                        mPetId = m.Pet.ID()
+                        mPetName = m.Pet.CleanName() or 'Pet'
+                        mPetHpPct = m.Pet.PctHPs() or 0
+                    end
+                end
+                local mMerc = m.Mercenary() or false
+                local mLeader = (leaderName ~= '' and leaderName == mName) or (m.Leader and m.Leader()) or false
+                local mMT = (mtName ~= '' and mtName == mName)
+                local mMA = (maName ~= '' and maName == mName)
+                local mPuller = (pullerName ~= '' and pullerName == mName)
+
+                table.insert(members, {
+                    isSelf = false,
+                    index = i,
+                    id = mId,
+                    name = mName,
+                    level = mLvl,
+                    cls = mCls,
+                    hpPct = mHpPct,
+                    curHp = mCurHp,
+                    maxHp = mMaxHp,
+                    manaPct = mManaPct,
+                    curMana = mCurMana,
+                    maxMana = mMaxMana,
+                    endPct = mEndPct,
+                    curEnd = mCurEnd,
+                    maxEnd = mMaxEnd,
+                    distance = mDist,
+                    los = mLoS,
+                    isLeader = mLeader,
+                    isMT = mMT,
+                    isMA = mMA,
+                    isPuller = mPuller,
+                    isMerc = mMerc,
+                    offline = mOffline,
+                    otherZone = mOtherZone,
+                    petId = mPetId,
+                    petName = mPetName,
+                    petHpPct = mPetHpPct,
+                })
+            end
+        end)
+    end
+
+    -- Box Network (opt-in, default off so the window shows only the group):
+    -- this computer's other Triune characters that are not in the group
+    -- (vitals from their heartbeat; spawn looked up locally so the row can be
+    -- targeted and shows distance).
+    if ctrl.gw_show_boxes == true and core.boxnet and type(core.boxnet.peers) == 'function' then
+        local okB, peers = pcall(core.boxnet.peers)
+        if okB and type(peers) == 'table' then
+            local seenNames = {}
+            for _, m in ipairs(members) do seenNames[tostring(m.name):lower()] = true end
+            local myZone = ''
+            pcall(function() myZone = tostring(mq.TLO.Zone.ShortName() or ''):lower() end)
+            for _, p in ipairs(peers) do
+                local hb = p.hb
+                if hb and p.name and not seenNames[tostring(p.name):lower()] then
+                    local inZone = tostring(hb.zone or ''):lower() == myZone
+                    local bId, bDist, bLoS = 0, 0, false
+                    if inZone then
+                        pcall(function()
+                            local sp = mq.TLO.Spawn('pc =' .. p.name)
+                            if sp and sp() and (sp.ID() or 0) > 0 then
+                                bId = sp.ID() or 0
+                                bDist = sp.Distance() or 0
+                                bLoS = sp.LineOfSight() or false
+                            end
+                        end)
+                    end
+                    table.insert(members, {
+                        isSelf = false,
+                        isBox = true,
+                        index = 100 + #members,
+                        id = bId,
+                        name = p.name,
+                        level = tonumber(hb.level) or 0,
+                        cls = type(hb.classes) == 'table' and table.concat(hb.classes, '/') or '?',
+                        hpPct = tonumber(hb.hp) or 0,
+                        curHp = 0, maxHp = 0,
+                        manaPct = tonumber(hb.mana) or 0,
+                        curMana = 0, maxMana = 0,
+                        endPct = tonumber(hb.endur) or 0,
+                        curEnd = 0, maxEnd = 0,
+                        distance = bDist,
+                        los = bLoS,
+                        isLeader = false,
+                        isMT = false,
+                        isMA = (maName ~= '' and maName == p.name),
+                        isPuller = false,
+                        isMerc = false,
+                        offline = false,
+                        otherZone = not inZone,
+                        petId = (type(hb.pet) == 'table' and tonumber(hb.pet.id)) or 0,
+                        petName = (type(hb.pet) == 'table' and hb.pet.name) or 'Pet',
+                        petHpPct = (type(hb.pet) == 'table' and tonumber(hb.pet.hp)) or 0,
+                        boxMode = hb.mode, boxRunning = hb.running == true,
+                    })
+                end
+            end
+        end
+    end
+
+    -- Which rows are one of this computer's boxes (drives the [Come] button)
+    for _, m in ipairs(members) do
+        m.isPeer = (not m.isSelf) and (boxPeerFor(m.name) ~= nil) or false
+    end
+
+    -- Current target in EverQuest
+    local curTargId, curTargName, curTargType = 0, '', ''
+    pcall(function()
+        curTargId = mq.TLO.Target.ID() or 0
+        curTargName = mq.TLO.Target.CleanName() or ''
+        curTargType = mq.TLO.Target.Type() or ''
+    end)
+    snap.curTargId, snap.curTargName, snap.curTargType = curTargId, curTargName, curTargType
+    snap.members = members
+end
+
+function plugin.onTick()
+    refreshGroup(false)
+end
+
+function plugin.onDrawUI()
+    if not core or not core.ImGui or not core.ctrl then return end
+    local ImGui = core.ImGui
+    local ctrl = core.ctrl
+    local mq = core.mq
+    local accent = core.accent
+    local GOLD, ARC, MUTED, WARN, ERR = core.colors.GOLD, core.colors.ARC, core.colors.MUTED, core.colors.WARN, core.colors.ERR
+    if not ctrl.show_group_window then return end
+    core.pushTheme()
+
+    if ctrl.gw_alpha then
+        ImGui.SetNextWindowBgAlpha(core.windowBgAlpha and core.windowBgAlpha('group', ctrl.gw_alpha) or ctrl.gw_alpha)
+    end
+    ImGui.SetNextWindowSize(core.px(280), core.px(320), ImGuiCond.FirstUseEver)
+
+    local winFlags = 0
+    if ctrl.gw_lock then
+        winFlags = bit.bor(ImGuiWindowFlags.NoMove, ImGuiWindowFlags.NoResize)
+    end
+
+    core.preBeginWindow('group')
+    -- Pushed after preBeginWindow so this tight chrome wins over the scaled theme padding.
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, core.px(4), core.px(4))
+    ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(3), core.px(2))
+    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
+    local show
+    ctrl.show_group_window, show = ImGui.Begin('Triune Group v' .. (core.VERSION or '') .. '###triuneGroupWindow', ctrl.show_group_window, core.windowFlags and core.windowFlags('group', winFlags) or winFlags)
+    if not ctrl.show_group_window then
+        if core.preEndWindow then core.preEndWindow('group', true) end
+        ImGui.End()
+        ImGui.PopStyleVar(3)
+        core.popTheme()
+        return
+    end
+
+    if show then
+        core.postBeginWindow('group')
+        local barH = core.px(ctrl.gw_bar_height or 14)
+
+        -- Right-click anywhere in window for options
+        if ImGui.BeginPopupContextWindow('##gwContextMenu') then
+            if core.applyWindowScale then core.applyWindowScale('group') end
+            if core.drawWindowMenuItems then
+                core.drawWindowMenuItems('group', { header = false, lock = false, scale = false, layout = false, close = false })
+                ImGui.Separator()
+            end
+            renderGwSettingsContent()
+            ImGui.EndPopup()
+        end
+
+        -- Throttled; normally a no-op because onTick already refreshed this cycle.
+        refreshGroup(false)
+        local members = snap.members
+        local curTargId, curTargName, curTargType = snap.curTargId, snap.curTargName, snap.curTargType
+
+        -- Determine currently selected group member
+        local selectedMember = nil
+        for _, m in ipairs(members) do
+            if curTargId > 0 and m.id == curTargId then
+                selectedMember = m
+                break
+            elseif curTargName ~= '' and m.name == curTargName then
+                selectedMember = m
+                break
+            end
+        end
+        if not selectedMember and ctrl.gw_selected_member_id then
+            for _, m in ipairs(members) do
+                if (m.id and m.id == ctrl.gw_selected_member_id) or (m.name and m.name == ctrl.gw_selected_member_name) then
+                    selectedMember = m
+                    break
+                end
+            end
+        end
+
+        -- Invite & Disband Toolbar
+        local availW = ImGui.GetContentRegionAvail()
+        local halfW = math.max(60, math.floor((availW - 4) / 2))
+        local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
+
+        -- 1. Invite Button: invites current target to the group
+        local invPushed = 0
+        if Col then
+            if pcall(ImGui.PushStyleColor, Col.Button, 0.12, 0.38, 0.22, 0.85) then invPushed = invPushed + 1 end
+            if pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.18, 0.52, 0.30, 0.95) then invPushed = invPushed + 1 end
+            if pcall(ImGui.PushStyleColor, Col.Text, 0.75, 0.98, 0.75, 1.0) then invPushed = invPushed + 1 end
+        end
+        if ImGui.Button('Invite##gwInvite', halfW, 20) then
+            if curTargId > 0 then
+                mq.cmdf('/target id %d', curTargId)
+            end
+            if curTargName ~= '' and (curTargType == 'PC' or curTargType == 'Mercenary') then
+                mq.cmdf('/invite %s', curTargName)
+            else
+                mq.cmd('/invite')
+            end
+        end
+        if invPushed > 0 then pcall(ImGui.PopStyleColor, invPushed) end
+        if ImGui.IsItemHovered() then
+            if curTargName ~= '' then
+                core.setTooltip('%s', string.format('Invite current target %s (ID %d) to group (/invite)', curTargName, curTargId))
+            else
+                core.setTooltip('Invite currently targeted player to group (/invite)')
+            end
+        end
+
+        -- 2. Disband Button: removes the selected group member, or self.
+        -- Hidden for Box Network rows that are not group members (nothing to kick).
+        if not (selectedMember and selectedMember.isBox) then
+            ImGui.SameLine()
+            local disPushed = 0
+            if Col then
+                if pcall(ImGui.PushStyleColor, Col.Button, 0.42, 0.16, 0.16, 0.85) then disPushed = disPushed + 1 end
+                if pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.58, 0.22, 0.22, 0.95) then disPushed = disPushed + 1 end
+                if pcall(ImGui.PushStyleColor, Col.Text, 1.0, 0.75, 0.75, 1.0) then disPushed = disPushed + 1 end
+            end
+            local disLabel = selectedMember and (selectedMember.isSelf and 'Disband (Self)' or string.format('Disband: %s', selectedMember.name)) or 'Disband'
+            if ImGui.Button(disLabel .. '##gwDisband', halfW, 20) then
+                if selectedMember and not selectedMember.isSelf then
+                    -- Other members are only ever removed by name. /target + /disband in
+                    -- the same frame races the target change, and /disband with any
+                    -- other target (or as a non-leader) makes US leave the group.
+                    if selectedMember.name and selectedMember.name ~= '' then
+                        mq.cmdf('/kickgroup %s', selectedMember.name)
+                    end
+                elseif not selectedMember or curTargId == 0 or curTargId == (selectedMember.id or -1) then
+                    -- Self (or nothing selected): /disband leaves the group. When a
+                    -- target is set it must be confirmed to be this row (ourselves),
+                    -- never a stale selection with another member targeted.
+                    mq.cmd('/disband')
+                end
+            end
+            if disPushed > 0 then pcall(ImGui.PopStyleColor, disPushed) end
+            if ImGui.IsItemHovered() then
+                if selectedMember then
+                    if selectedMember.isSelf then
+                        core.setTooltip('Leave group (/disband)')
+                    else
+                        core.setTooltip('%s', string.format('Remove %s from group (/kickgroup %s)', selectedMember.name, selectedMember.name))
+                    end
+                else
+                    core.setTooltip('Leave group (/disband)')
+                end
+            end
+        end
+
+        ImGui.Separator()
+
+        if #members == 0 then
+            accent(MUTED, 'Not currently in a group.')
+        else
+            for idx, mem in ipairs(members) do
+                if idx > 1 then
+                    ImGui.Separator()
+                end
+
+                -- Con Color calculation
+                local conR, conG, conB = 1.0, 1.0, 1.0  -- luacheck: ignore 311
+                if mem.offline then
+                    conR, conG, conB = 0.5, 0.5, 0.5
+                elseif mem.otherZone then
+                    conR, conG, conB = 0.85, 0.65, 0.25
+                else
+                    local delta = (mem.level or 1) - (snap.myLevel or 1)
+                    if delta >= 3 then
+                        conR, conG, conB = 1.0, 0.25, 0.25
+                    elseif delta >= 1 then
+                        conR, conG, conB = 1.0, 0.85, 0.25
+                    elseif delta >= -3 then
+                        conR, conG, conB = 1.0, 1.0, 1.0
+                    elseif delta >= -8 then
+                        conR, conG, conB = 0.25, 0.60, 1.0
+                    else
+                        conR, conG, conB = 0.35, 0.85, 0.35
+                    end
+                end
+
+                -- Member header button: click targets and selects member
+                local isSelected = (selectedMember and selectedMember.name == mem.name)
+                local tag = string.format('[Lvl %d] %s', mem.level or 0, mem.name)
+                local pushedCols = 0
+                if Col then
+                    if isSelected then
+                        if pcall(ImGui.PushStyleColor, Col.Button, 0.18, 0.35, 0.52, 0.90) then pushedCols = pushedCols + 1 end
+                    else
+                        if pcall(ImGui.PushStyleColor, Col.Button, 0.15, 0.15, 0.18, 0.50) then pushedCols = pushedCols + 1 end
+                    end
+                    if pcall(ImGui.PushStyleColor, Col.Text, conR, conG, conB, 1.0) then pushedCols = pushedCols + 1 end
+                end
+                if ImGui.SmallButton(tag .. '##gwTgt' .. idx) then
+                    ctrl.gw_selected_member_id = mem.id
+                    ctrl.gw_selected_member_name = mem.name
+                    if mem.id and mem.id > 0 then
+                        mq.cmdf('/target id %d', mem.id)
+                    elseif mem.name then
+                        mq.cmdf('/target %s', mem.name)
+                    end
+                end
+                if pushedCols > 0 then pcall(ImGui.PopStyleColor, pushedCols) end
+                if ImGui.IsItemHovered() then
+                    core.setTooltip('%s', string.format('Click to target %s\nLevel: %d\nClass: %s\nID: %d%s%s',
+                        mem.name, mem.level or 0, mem.cls or '?', mem.id or 0,
+                        mem.offline and '\nStatus: OFFLINE' or '',
+                        mem.otherZone and '\nStatus: OTHER ZONE' or ''))
+                end
+
+                if isSelected then
+                    ImGui.SameLine()
+                    accent(ARC, '[SEL]')
+                    if ImGui.IsItemHovered() then core.setTooltip('Selected member') end
+                end
+
+                -- Badges (Leader, Roles, Merc)
+                if ctrl.gw_show_roles ~= false then
+                    if mem.isLeader then
+                        ImGui.SameLine()
+                        accent(GOLD, '[L]')
+                        if ImGui.IsItemHovered() then core.setTooltip('Group Leader') end
+                    end
+                    if mem.isMT then
+                        ImGui.SameLine()
+                        accent(ARC, '[MT]')
+                        if ImGui.IsItemHovered() then core.setTooltip('Main Tank') end
+                    end
+                    if mem.isMA then
+                        ImGui.SameLine()
+                        accent(ARC, '[MA]')
+                        if ImGui.IsItemHovered() then core.setTooltip('Main Assist') end
+                    end
+                    if mem.isPuller then
+                        ImGui.SameLine()
+                        accent(ARC, '[Puller]')
+                        if ImGui.IsItemHovered() then core.setTooltip('Group Puller') end
+                    end
+                    if mem.isMerc then
+                        ImGui.SameLine()
+                        accent(MUTED, '[Merc]')
+                        if ImGui.IsItemHovered() then core.setTooltip('Mercenary') end
+                    end
+                end
+                if mem.isBox then
+                    ImGui.SameLine()
+                    accent(GOLD, '[Box]')
+                    if ImGui.IsItemHovered() then
+                        core.setTooltip('%s', string.format('One of your boxes (Box Network, not in this group)\nTrio: %s\nMode: %s (%s)',
+                            mem.cls or '?', tostring(mem.boxMode or '?'), mem.boxRunning and 'running' or 'paused'))
+                    end
+                end
+
+                -- Distance (if not self and in zone)
+                if not mem.isSelf and not mem.offline and not mem.otherZone then
+                    ImGui.SameLine()
+                    accent(ARC, string.format('%.0fft', mem.distance or 0))
+                    -- [Come]: only for members that are one of this computer's boxes
+                    if mem.isPeer then
+                        ImGui.SameLine()
+                        if ImGui.SmallButton('Come##gwCome' .. idx) then
+                            local okSend, why = sendComeToMe(mem.name)
+                            if not okSend then print('\ay[Triune]\ax Come request to ' .. tostring(mem.name) .. ' not sent: ' .. tostring(why)) end
+                        end
+                        if ImGui.IsItemHovered() then
+                            core.setTooltip('%s', string.format('Tell %s to navigate to you\n(/ac net %s cometo %s)', mem.name, mem.name, snap.myName or 'me'))
+                        end
+                    end
+                elseif mem.offline then
+                    ImGui.SameLine()
+                    accent(ERR, '[OFFLINE]')
+                elseif mem.otherZone then
+                    ImGui.SameLine()
+                    accent(WARN, '[ZONE]')
+                end
+
+                -- Member Health Bar
+                local hr, hg, hb = 0.25, 0.80, 0.35
+                if mem.offline then
+                    hr, hg, hb = 0.40, 0.40, 0.40
+                elseif mem.otherZone then
+                    hr, hg, hb = 0.70, 0.55, 0.25
+                elseif (mem.hpPct or 0) <= 25 then
+                    hr, hg, hb = 0.90, 0.20, 0.20
+                elseif (mem.hpPct or 0) <= 50 then
+                    hr, hg, hb = 0.95, 0.75, 0.20
+                end
+
+                local hpText
+                if mem.offline then
+                    hpText = string.format('%s: OFFLINE', mem.name)
+                elseif mem.otherZone then
+                    hpText = string.format('%s: OTHER ZONE', mem.name)
+                else
+                    hpText = string.format('HP: %d%%', mem.hpPct or 0)
+                end
+                local hpFrac = (mem.offline or mem.otherZone) and 0.0 or ((mem.hpPct or 0) / 100.0)
+                core.drawStatusProgressBar(hpFrac, -1, barH, hpText, hr, hg, hb, 1.0)
+                if ImGui.IsItemClicked() then
+                    ctrl.gw_selected_member_id = mem.id
+                    ctrl.gw_selected_member_name = mem.name
+                    if mem.id and mem.id > 0 then
+                        mq.cmdf('/target id %d', mem.id)
+                    elseif mem.name then
+                        mq.cmdf('/target %s', mem.name)
+                    end
+                end
+                if ImGui.IsItemHovered() then
+                    core.setTooltip('%s', string.format('%s\nHealth: %d%%\nCurrent: %s / Max: %s\nClick bar to target',
+                        mem.name, mem.hpPct or 0,
+                        (mem.curHp and mem.curHp > 0) and tostring(mem.curHp) or '?',
+                        (mem.maxHp and mem.maxHp > 0) and tostring(mem.maxHp) or '?'))
+                end
+
+                -- Mana Bar (if enabled & caster/hybrid)
+                local isCaster = (mem.maxMana and mem.maxMana > 0) or (mem.manaPct and mem.manaPct > 0)
+                if ctrl.gw_show_mana ~= false and isCaster and not mem.offline and not mem.otherZone then
+                    local manaText = string.format('Mana: %d%%', mem.manaPct or 0)
+                    core.drawStatusProgressBar((mem.manaPct or 0) / 100.0, -1, math.max(8, barH - 3), manaText, 0.25, 0.60, 0.95, 1.0)
+                    if ImGui.IsItemClicked() then
+                        if mem.id and mem.id > 0 then mq.cmdf('/target id %d', mem.id) end
+                    end
+                end
+
+                -- Endurance Bar (if enabled)
+                if ctrl.gw_show_endurance == true and (mem.maxEnd or 0) > 0 and not mem.offline and not mem.otherZone then
+                    local endText = string.format('End: %d%%', mem.endPct or 0)
+                    core.drawStatusProgressBar((mem.endPct or 0) / 100.0, -1, math.max(8, barH - 3), endText, 0.95, 0.60, 0.25, 1.0)
+                    if ImGui.IsItemClicked() then
+                        if mem.id and mem.id > 0 then mq.cmdf('/target id %d', mem.id) end
+                    end
+                end
+
+                -- Pet Bar (if enabled & has pet)
+                if ctrl.gw_show_pets ~= false and mem.petId and mem.petId > 0 and not mem.offline and not mem.otherZone then
+                    local petR, petG, petB = 0.25, 0.80, 0.35
+                    local pHp = mem.petHpPct or 0
+                    if pHp <= 25 then
+                        petR, petG, petB = 0.90, 0.20, 0.20
+                    elseif pHp <= 50 then
+                        petR, petG, petB = 0.95, 0.75, 0.20
+                    end
+                    local petText = string.format('Pet (%s): %d%%', mem.petName or 'Pet', pHp)
+                    core.drawStatusProgressBar(pHp / 100.0, -1, math.max(8, barH - 3), petText, petR, petG, petB, 1.0)
+                    if ImGui.IsItemClicked() then
+                        mq.cmdf('/target id %d', mem.petId)
+                    end
+                    if ImGui.IsItemHovered() then
+                        core.setTooltip('%s', string.format('Pet: %s\nOwner: %s\nHP: %d%%\nClick to target pet',
+                            mem.petName or 'Pet', mem.name, pHp))
+                    end
+                end
+            end
+        end
+    end
+
+    if core.preEndWindow then core.preEndWindow('group', true) end
+
+    ImGui.End()
+    ImGui.PopStyleVar(3)
+    core.popTheme()
+end
+
+-- Exposed for tests
+plugin._ = { comeTo = comeTo, sendComeToMe = sendComeToMe, boxPeerFor = boxPeerFor }
+
+return plugin

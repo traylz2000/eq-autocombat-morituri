@@ -1,0 +1,4262 @@
+---@diagnostic disable: undefined-global, undefined-field, need-check-nil
+-- ============================================================================
+-- TAC/lua/tac/gamedb.lua — Triune Game Database Plugin (items / NPCs / spells)
+-- ============================================================================
+-- An offline, in-game copy of the Project Triune database: every item with
+-- its stats, effects and tiers (Base / Enchanted / Legendary), where it drops
+-- (NPC, zone, server-accurate chance), which quest NPCs reward or take it,
+-- and the tradeskill recipes that make or use it; every NPC with its stats,
+-- spawn zones, loot, spells, faction and vendor list; every spell with its
+-- classes, costs, decoded effects and the items / NPCs that carry it.
+--
+-- No network, no plugins, no LuaRocks. The data is plain text under
+-- resources/gamedb/, built from the server's SQL dump and quest scripts by
+-- tools/build_gamedb.py:
+--   <kind>.idx      one line per searchable entry (id, chunk:offset, name;
+--                   items v2 also a filter field: classes, races, slots,
+--                   type, required level, flags, base / top tier ac, hp, mana)
+--   <kind>.N.dat    one "key=value|key=value" line per record
+-- The index is read into memory in slices across ticks (no hitch), search is
+-- one plain string.find over a lowercased name blob, and opening a record is
+-- one seek + one line read. Cross-reference lists carry ids only; names come
+-- from the loaded indexes.
+--
+-- Window: ctrl.show_gamedb (header button "Database", /ac db, Window Layout).
+-- Item filters: the Items pane narrows by class / race / slot / type / level /
+-- effect / tradeable / minimum stats and sorts by AC, HP, mana or level from
+-- the items.idx v2 filter field (DB.itemFilter, DB.sortItems); a v1 index
+-- searches by name only.
+-- Commands: /ac db [text] | /ac item <text> | /ac npc <text> | /ac spell <text>
+-- Other plugins: plugin.open(kind, id), plugin.search(kind, text),
+-- plugin.popout(kind, id) for a floating card (chat item links, targets),
+-- plugin.lookupCursor(), plugin.lookupTarget(), plugin.npcIdForSpawn(id),
+-- plugin.itemSummary(id) -> tooltip lines (tiers, top drop, quests, recipes),
+-- plugin.spellIdByName(name, level), plugin.spellSummary(id) (effects, scrolls),
+-- plugin.itemLink(id) / plugin.spellLink(id) (the client's \x12 chat link text),
+-- plugin.linkToChat(kind, id, channel) (into the Chat Windows input line, or
+-- straight to a channel).
+-- Chat links: every item and spell card has a Link to chat button that drops
+-- the link into the Chat Windows input line like the game's own input line
+-- takes a dragged item (right-click: send to a channel); /ac linkitem,
+-- /ac linkspell, /ac linknpc, /ac linkcursor and /ac linktarget do the same
+-- from the command line. Item links are the client's own; a spell or NPC
+-- link is plain "[Spell Name]" / "[NPC Name (Zone)]" text that the Chat
+-- Windows plugin renders as a link for Triune users.
+-- Loot Advisor: while the loot window is open, a small window lists the
+-- corpse's items with drop chance on that NPC, value and quest / recipe notes.
+-- Spell Info: the game's Spell Display window (right-click on a gem, buff or
+-- spellbook page) is replaced by the spell's card (/ac spellwindow toggles;
+-- plugin.inspectSpell(idOrName) opens one directly, core.inspectSpell wraps
+-- it with the game window as the fallback).
+-- Combat loop: the plugin installs core.castTracker.knownImmunity so mez /
+-- slow / snare / charm / fear / stun / dispel casts are skipped on NPCs whose
+-- special abilities make them immune, before the first wasted cast.
+-- ============================================================================
+
+local plugin = {
+    id                 = 'gamedb',
+    name               = 'Game Database',
+    version            = '1.0.0',
+    author             = 'Triune',
+    description        = 'Offline item, NPC and spell database: stats, tiers, drops, quests, recipes, spawns, loot and spell effects.',
+    defaultEnabled     = true,
+    tickInterval       = 0.02,
+    runOutOfCombatOnly = false,
+    hasThread          = false,
+    window             = { label = 'Database', tooltip = 'Toggles the Game Database window (items, NPCs, spells).', flag = 'show_gamedb', desc = 'Item / NPC / spell lookup (offline database)', headerButton = true, order = 22 },
+    uses               = { map = 'Map button on NPC spawn rows (opens the Zone Atlas on that zone)', chat = 'Link to chat puts item and spell links in the Chat Windows input line' },
+}
+
+-- Populated by refresh() on every entry point; typed so the language server
+-- does not treat them as permanently nil.
+local core = nil  ---@type table
+local ctrl, ImGui, mq = nil, nil, nil  ---@type table, table, table
+
+local function refresh()
+    ctrl = core.ctrl
+    ImGui = core.ImGui
+    mq = core.mq
+end
+
+local function echo(msg)
+    print('\ag[Triune DB]\ax ' .. tostring(msg))
+end
+
+-- ----------------------------------------------------------------------------
+-- Encoding (mirror of tools/build_gamedb.py)
+-- ----------------------------------------------------------------------------
+local ENC = {}
+local UNESC = { ['\\'] = '\\', p = '|', s = ';', t = '~', c = ',', k = ':', n = '\n' }
+
+function ENC.unescape(s)
+    if not s or s == '' then return '' end
+    if not s:find('\\', 1, true) then return s end
+    return (s:gsub('\\(.)', UNESC))
+end
+
+-- Splits on a raw separator (escaped separators never appear raw).
+function ENC.split(s, sep)
+    local out = {}
+    if not s or s == '' then return out end
+    local start = 1
+    while true do
+        local i = s:find(sep, start, true)
+        if not i then
+            out[#out + 1] = s:sub(start)
+            break
+        end
+        out[#out + 1] = s:sub(start, i - 1)
+        start = i + 1
+    end
+    return out
+end
+
+-- "k=v|k=v" -> { k = v } (values still escaped; use ENC.str / ENC.num)
+function ENC.parseRecord(line)
+    local rec = {}
+    if not line then return rec end
+    for k, v in line:gmatch('([%w_]+)=([^|]*)') do rec[k] = v end
+    return rec
+end
+
+function ENC.num(rec, k, default)
+    local v = rec and rec[k]
+    if v == nil then return default or 0 end
+    return tonumber(v) or default or 0
+end
+
+function ENC.str(rec, k)
+    local v = rec and rec[k]
+    if not v then return '' end
+    return ENC.unescape(v)
+end
+
+-- List field: entries split on ';', fields on '~'. Leaves are unescaped.
+-- A trailing "+N" entry (overflow marker) is returned as list.more = N.
+function ENC.list(rec, k)
+    local out = {}
+    local raw = rec and rec[k]
+    if not raw or raw == '' then return out end
+    for _, entry in ipairs(ENC.split(raw, ';')) do
+        local more = entry:match('^%+(%d+)$')
+        if more then
+            out.more = tonumber(more)
+        else
+            local fields = ENC.split(entry, '~')
+            for i = 1, #fields do fields[i] = ENC.unescape(fields[i]) end
+            out[#out + 1] = fields
+        end
+    end
+    return out
+end
+
+-- Nested list inside one '~' field: "a:b:c,a:b:c" -> { {a,b,c}, ... }
+function ENC.nested(field)
+    local out = {}
+    if not field or field == '' then return out end
+    for _, entry in ipairs(ENC.split(field, ',')) do
+        local parts = ENC.split(entry, ':')
+        for i = 1, #parts do parts[i] = ENC.unescape(parts[i]) end
+        out[#out + 1] = parts
+    end
+    return out
+end
+
+-- ----------------------------------------------------------------------------
+-- Decode tables
+-- ----------------------------------------------------------------------------
+local D = {}
+
+-- { [start] = list[1], [start+1] = list[2], ... } - avoids Lua's mixed
+-- constructor trap where positional entries ignore explicit keys.
+local function seq(start, list, extra)
+    local t = {}
+    for i, v in ipairs(list) do t[start + i - 1] = v end
+    for k, v in pairs(extra or {}) do t[k] = v end
+    return t
+end
+
+D.CLASSES = { 'WAR', 'CLR', 'PAL', 'RNG', 'SHD', 'DRU', 'MNK', 'BRD', 'ROG', 'SHM', 'NEC', 'WIZ', 'MAG', 'ENC', 'BST', 'BER' }
+D.CLASS_NAMES = { 'Warrior', 'Cleric', 'Paladin', 'Ranger', 'Shadow Knight', 'Druid', 'Monk', 'Bard', 'Rogue', 'Shaman', 'Necromancer', 'Wizard', 'Magician', 'Enchanter', 'Beastlord', 'Berserker' }
+D.RACES = { 'HUM', 'BAR', 'ERU', 'ELF', 'HIE', 'DEF', 'HEF', 'DWF', 'TRL', 'OGR', 'HFL', 'GNM', 'IKS', 'VAH', 'FRG', 'DRK' }
+D.SLOTS = { 'Charm', 'Ear', 'Head', 'Face', 'Ear', 'Neck', 'Shoulders', 'Arms', 'Back', 'Wrist', 'Wrist', 'Range', 'Hands', 'Primary', 'Secondary', 'Finger', 'Finger', 'Chest', 'Legs', 'Feet', 'Waist', 'Power Source', 'Ammo' }
+D.SIZES = seq(0, { 'Tiny', 'Small', 'Medium', 'Large', 'Giant' })
+
+D.ITEM_TYPES = seq(0, { '1H Slashing', '2H Slashing', 'Piercing', '1H Blunt', '2H Blunt', 'Archery' }, {
+    [7] = 'Throwing', [8] = 'Shield', [10] = 'Armor', [11] = 'Misc', [12] = 'Lockpicks', [14] = 'Food', [15] = 'Drink', [16] = 'Light',
+    [17] = 'Combinable', [18] = 'Bandage', [19] = 'Throwing', [20] = 'Scroll', [21] = 'Potion', [22] = 'Fletched Arrow', [23] = 'Wind Instrument',
+    [24] = 'Stringed Instrument', [25] = 'Brass Instrument', [26] = 'Percussion Instrument', [27] = 'Arrow', [29] = 'Jewelry', [30] = 'Skull',
+    [31] = 'Book', [32] = 'Note', [33] = 'Key', [34] = 'Coin', [35] = '2H Piercing', [36] = 'Fishing Pole', [37] = 'Fishing Bait', [38] = 'Alcohol',
+    [39] = 'Key', [40] = 'Compass', [42] = 'Poison', [45] = 'Martial', [52] = 'Charm', [53] = 'Augmentation Distiller', [54] = 'Augmentation',
+    [55] = 'Augmentation Sealer', [56] = 'Charm', [58] = 'Collectible', [59] = 'Powersource', [60] = 'Mount', [62] = 'Illusion', [63] = 'Familiar',
+    [64] = 'Mount', [68] = 'Bandolier',
+})
+
+D.SKILLS = seq(0, {
+    '1H Blunt', '1H Slashing', '2H Blunt', '2H Slashing', 'Abjuration', 'Alteration', 'Apply Poison', 'Archery', 'Backstab', 'Bind Wound',
+    'Bash', 'Block', 'Brass Instruments', 'Channeling', 'Conjuration', 'Defense', 'Disarm', 'Disarm Traps', 'Divination', 'Dodge',
+    'Double Attack', 'Dragon Punch', 'Dual Wield', 'Eagle Strike', 'Evocation', 'Feign Death', 'Flying Kick', 'Forage', 'Hand to Hand', 'Hide',
+    'Kick', 'Meditate', 'Mend', 'Offense', 'Parry', 'Pick Lock', '1H Piercing', 'Riposte', 'Round Kick', 'Safe Fall',
+    'Sense Heading', 'Singing', 'Sneak', 'Specialize Abjure', 'Specialize Alteration', 'Specialize Conjuration', 'Specialize Divination', 'Specialize Evocation', 'Pick Pockets', 'Stringed Instruments',
+    'Swimming', 'Throwing', 'Tiger Claw', 'Tracking', 'Wind Instruments', 'Fishing', 'Make Poison', 'Tinkering', 'Research', 'Alchemy',
+    'Baking', 'Tailoring', 'Sense Traps', 'Blacksmithing', 'Fletching', 'Brewing', 'Alcohol Tolerance', 'Begging', 'Jewelry Making', 'Pottery',
+    'Percussion Instruments', 'Intimidation', 'Berserking', 'Taunt', 'Frenzy', 'Remove Traps', 'Triple Attack', '2H Piercing',
+}, { [100] = 'Quest Combine' })
+
+D.AUG_TYPES = {
+    'General: Single Stat', 'General: Multiple Stat', 'General: Spell Effect', 'Weapon: General', 'Weapon: Elem Damage', 'Weapon: Base Damage',
+    'General: Group', 'General: Raid', 'General: Dragons Points', 'Crafted: Common', 'Crafted: Group', 'Crafted: Raid', 'Energeiac: Group',
+    'Energeiac: Raid', 'Emblem', 'Crafted: Group / Raid', 'Ornamentation', 'Special Ornamentation', 'Type 19', 'Type 20', 'Type 21', 'Type 22',
+    'Type 23', 'Type 24', 'Type 25', 'Type 26', 'Type 27', 'Type 28', 'Type 29', 'Type 30',
+}
+
+D.DEITIES = { 'Agnostic', 'Bertoxxulous', 'Brell Serilis', 'Cazic Thule', 'Erollisi Marr', 'Bristlebane', 'Innoruuk', 'Karana', 'Mithaniel Marr',
+    'Prexus', 'Quellious', 'Rallos Zek', 'Rodcet Nife', 'Solusek Ro', 'The Tribunal', 'Tunare', 'Veeshan' }
+
+D.CLICK_TYPES = seq(0, { '', 'Any slot', 'Any slot', 'Expendable', 'Must equip', 'Class/Race/Level', 'Bard', 'Any slot' })
+
+D.BODY_TYPES = seq(1, {
+    'Humanoid', 'Lycanthrope', 'Undead', 'Giant', 'Construct', 'Extraplanar', 'Magical', 'Summoned Undead', 'Raid Giant', 'Raid Coldain',
+    'Untargetable', 'Vampire', 'Atenha Ra', 'Greater Akheva', 'Khati Sha', 'Seru', 'Grieg Veneficus', 'Draz Nurakk', 'Zek', 'Luggald',
+    'Animal', 'Insect', 'Monster', 'Summoned', 'Plant', 'Dragon', 'Summoned 2', 'Summoned 3', 'Dragon 2', 'Velious Dragon',
+}, { [32] = 'Dragon 3', [33] = 'Boxes', [34] = 'Muramite', [60] = 'Untargetable', [63] = 'Swarm Pet', [64] = 'Monster Summon', [65] = 'Trap',
+     [66] = 'Timer', [67] = 'Trigger', [100] = 'Invisible Man', [101] = 'Special', [102] = 'Herbivore', [103] = 'Carnivore' })
+
+D.NPC_CLASSES = seq(20, {
+    'Warrior GM', 'Cleric GM', 'Paladin GM', 'Ranger GM', 'Shadow Knight GM', 'Druid GM', 'Monk GM', 'Bard GM', 'Rogue GM', 'Shaman GM',
+    'Necromancer GM', 'Wizard GM', 'Magician GM', 'Enchanter GM', 'Beastlord GM', 'Berserker GM',
+}, { [40] = 'Banker', [41] = 'Merchant', [59] = 'Discord Merchant', [60] = 'Adventure Recruiter', [61] = 'Adventure Merchant', [63] = 'Tribute Master',
+     [64] = 'Guild Tribute Master', [66] = 'Guild Banker', [67] = 'Radiant Crystal Merchant', [68] = 'Ebon Crystal Merchant', [69] = 'Fellowship Master',
+     [70] = 'Alternate Currency Merchant', [71] = 'Mercenary Liaison', [72] = 'Real Estate', [73] = 'Norrath\'s Keepers', [74] = 'Dark Reign' })
+
+D.RACE_NAMES = seq(1, {
+    'Human', 'Barbarian', 'Erudite', 'Wood Elf', 'High Elf', 'Dark Elf', 'Half Elf', 'Dwarf', 'Troll', 'Ogre', 'Halfling', 'Gnome', 'Aviak',
+    'Werewolf', 'Brownie', 'Centaur', 'Golem', 'Giant', 'Trakanon', 'Venril Sathir', 'Evil Eye', 'Beetle', 'Kerran', 'Fish', 'Fairy', 'Froglok',
+    'Froglok Ghoul', 'Fungusman', 'Gargoyle', 'Gasbag', 'Gelatinous Cube', 'Ghost', 'Ghoul', 'Giant Bat', 'Giant Eel', 'Giant Rat', 'Giant Snake',
+    'Giant Spider', 'Gnoll', 'Goblin', 'Gorilla', 'Harpy', 'Hill Giant', 'Imp', 'Zombie', 'Qeynos Citizen', 'Unknown',
+})
+for id, name in pairs({
+    [14] = 'Werewolf', [15] = 'Brownie', [16] = 'Centaur', [17] = 'Golem', [18] = 'Giant', [24] = 'Fish', [26] = 'Froglok', [27] = 'Froglok Ghoul',
+    [45] = 'Zombie', [46] = 'Qeynos Citizen', [48] = 'Kobold', [49] = 'Lava Dragon', [50] = 'Lion', [51] = 'Lizard Man', [52] = 'Mimic', [53] = 'Minotaur',
+    [54] = 'Orc', [55] = 'Human Beggar', [56] = 'Pixie', [57] = 'Drachnid', [58] = 'Solusek Ro', [59] = 'Goblin', [60] = 'Skeleton', [61] = 'Shark',
+    [62] = 'Tunare', [63] = 'Tiger', [64] = 'Treant', [65] = 'Vampire', [66] = 'Rallos Zek', [67] = 'Highpass Citizen', [68] = 'Tentacle Terror',
+    [69] = 'Will-O-Wisp', [70] = 'Zombie', [71] = 'Qeynos Citizen', [72] = 'Ship', [73] = 'Launch', [74] = 'Piranha', [75] = 'Elemental', [76] = 'Puma',
+    [77] = 'Neriak Citizen', [78] = 'Erudite Citizen', [79] = 'Bixie', [80] = 'Reanimated Hand', [81] = 'Rivervale Citizen', [82] = 'Scarecrow',
+    [83] = 'Skunk', [84] = 'Snake Elemental', [85] = 'Spectre', [86] = 'Sphinx', [87] = 'Armadillo', [88] = 'Clockwork Gnome', [89] = 'Drake',
+    [90] = 'Halas Citizen', [91] = 'Alligator', [92] = 'Grobb Citizen', [93] = 'Oggok Citizen', [94] = 'Kaladim Citizen', [95] = 'Cazic Thule',
+    [96] = 'Cockatrice', [97] = 'Daisy Man', [98] = 'Elf Vampire', [99] = 'Denizen', [100] = 'Dervish', [101] = 'Efreeti', [102] = 'Froglok Tadpole',
+    [103] = 'Kedge', [104] = 'Leech', [105] = 'Swordfish', [106] = 'Felguard', [107] = 'Mammoth', [108] = 'Eye of Zomm', [109] = 'Wasp', [110] = 'Mermaid',
+    [111] = 'Harpie', [112] = 'Fayguard', [113] = 'Drixie', [114] = 'Ghost Ship', [115] = 'Clam', [116] = 'Sea Horse', [117] = 'Dwarf Ghost',
+    [118] = 'Erudite Ghost', [119] = 'Sabertooth Cat', [120] = 'Wolf Elemental', [121] = 'Gorgon', [122] = 'Dragon Skeleton', [123] = 'Innoruuk',
+    [124] = 'Unicorn', [125] = 'Pegasus', [126] = 'Djinn', [127] = 'Invisible Man', [128] = 'Iksar', [129] = 'Scorpion', [130] = 'Vah Shir',
+    [131] = 'Sarnak', [132] = 'Draglock', [133] = 'Drolvarg', [134] = 'Mosquito', [135] = 'Rhino', [136] = 'Xalgoz', [137] = 'Kunark Goblin',
+    [138] = 'Yeti', [139] = 'Iksar Citizen', [140] = 'Forest Giant', [141] = 'Boat', [144] = 'Burynai', [145] = 'Goo', [146] = 'Spectral Sarnak',
+    [147] = 'Spectral Iksar', [148] = 'Kunark Fish', [149] = 'Iksar Scorpion', [150] = 'Erollisi', [151] = 'Tribunal', [152] = 'Bertoxxulous',
+    [153] = 'Bristlebane', [154] = 'Fay Drake', [155] = 'Sarnak Skeleton', [156] = 'Ratman', [157] = 'Wyvern', [158] = 'Wurm', [159] = 'Devourer',
+    [160] = 'Iksar Golem', [161] = 'Iksar Skeleton', [162] = 'Man-Eating Plant', [163] = 'Raptor', [164] = 'Sarnak Golem', [165] = 'Water Dragon',
+    [166] = 'Iksar Hand', [167] = 'Succulent', [168] = 'Flying Monkey', [169] = 'Brontotherium', [170] = 'Snow Dervish', [171] = 'Dire Wolf',
+    [172] = 'Manticore', [173] = 'Totem', [174] = 'Cold Spectre', [175] = 'Enchanted Armor', [176] = 'Snow Bunny', [177] = 'Walrus', [178] = 'Rock-Gem Men',
+    [181] = 'Yak Man', [183] = 'Coldain', [184] = 'Velious Dragon', [185] = 'Hag', [186] = 'Hippogriff', [187] = 'Siren', [188] = 'Frost Giant',
+    [189] = 'Storm Giant', [190] = 'Otterman', [191] = 'Walrus Man', [192] = 'Clockwork Dragon', [193] = 'Abhorrent', [194] = 'Sea Turtle',
+    [195] = 'Black and White Dragon', [196] = 'Ghost Dragon', [197] = 'Ronnie Test', [198] = 'Prismatic Dragon', [199] = 'Shik\'Nar', [200] = 'Rockhopper',
+    [201] = 'Underbulk', [202] = 'Grimling', [203] = 'Vacuum Worm', [204] = 'Evan Test', [205] = 'Kahli Shah', [206] = 'Owlbear', [207] = 'Rhino Beetle',
+    [208] = 'Vampyre', [209] = 'Earth Elemental', [210] = 'Air Elemental', [211] = 'Water Elemental', [212] = 'Fire Elemental', [213] = 'Wetfang Minnow',
+    [214] = 'Thought Horror', [215] = 'Tegi', [216] = 'Horse', [217] = 'Shissar', [218] = 'Fungal Fiend', [219] = 'Vampire Volatalis', [220] = 'Stonegrabber',
+    [221] = 'Scarlet Cheetah', [222] = 'Zelniak', [223] = 'Lightcrawler', [224] = 'Shade', [225] = 'Sunflower', [226] = 'Sun Revenant', [227] = 'Shrieker',
+    [228] = 'Galorian', [229] = 'Netherbian', [230] = 'Akheva', [231] = 'Grieg Veneficus', [232] = 'Sonic Wolf', [233] = 'Ground Shaker', [234] = 'Vah Shir Skeleton',
+    [235] = 'Wretch', [236] = 'Seru', [237] = 'Recuso', [238] = 'Vah Shir King', [239] = 'Vah Shir Guard', [240] = 'Teleport Man', [241] = 'Werewolf',
+    [242] = 'Nymph', [243] = 'Dryad', [244] = 'Treant', [245] = 'Fly', [246] = 'Tarew Marr', [247] = 'Solusek Ro', [248] = 'Clockwork Golem', [249] = 'Clockwork Brain',
+    [250] = 'Banshee', [251] = 'Guard of Justice', [252] = 'Mini POM', [253] = 'Diseased Fiend', [254] = 'Solusek Ro Guard', [255] = 'Bertoxxulous',
+    [256] = 'The Tribunal', [257] = 'Terris Thule', [258] = 'Vegerog', [259] = 'Crocodile', [260] = 'Bat', [261] = 'Hraquis', [262] = 'Tranquilion',
+    [263] = 'Tin Soldier', [264] = 'Nightmare Wraith', [265] = 'Malarian', [266] = 'Knight of Pestilence', [267] = 'Lepertoloth', [268] = 'Bubonian',
+    [269] = 'Bubonian Underling', [270] = 'Pusling', [271] = 'Water Mephit', [272] = 'Stormrider', [273] = 'Junk Beast', [274] = 'Broken Clockwork',
+    [275] = 'Giant Clockwork', [276] = 'Clockwork Beetle', [277] = 'Nightmare Goblin', [278] = 'Karana', [279] = 'Blood Raven', [280] = 'Nightmare Gargoyle',
+    [281] = 'Mouth of Insanity', [282] = 'Skeletal Horse', [283] = 'Saryrn', [284] = 'Fennin Ro', [285] = 'Tormentor', [286] = 'Soul Devourer', [287] = 'Nightmare',
+    [288] = 'Rallos Zek', [289] = 'Vallon Zek', [290] = 'Tallon Zek', [291] = 'Air Mephit', [292] = 'Earth Mephit', [293] = 'Fire Mephit', [294] = 'Nightmare Mephit',
+    [295] = 'Zebuxoruk', [296] = 'Mithaniel Marr', [297] = 'Undead Knight', [298] = 'The Rathe', [299] = 'Xegony', [300] = 'Fiend', [301] = 'Test Object',
+    [302] = 'Crab', [303] = 'Phoenix', [304] = 'Dragon', [305] = 'Bear', [306] = 'Earth Golem', [307] = 'Iron Golem', [308] = 'Storm Golem', [309] = 'Air Golem',
+    [310] = 'Wood Golem', [311] = 'Fire Golem', [312] = 'Water Golem', [313] = 'War Wraith', [314] = 'Wrulon', [315] = 'Kraken', [316] = 'Poison Frog',
+    [317] = 'Nilborien', [318] = 'Valorian', [319] = 'War Boar', [320] = 'Efreeti', [321] = 'War Boar', [322] = 'Black Knight', [323] = 'Animated Armor',
+    [324] = 'Undead Footman', [325] = 'Rallos Zek Minion', [326] = 'Arcanist of Hate', [327] = 'Wyvern', [328] = 'Wyvern', [329] = 'Wyvern', [330] = 'Froglok',
+    [331] = 'Werewolf', [332] = 'Ghoul', [333] = 'Zombie', [334] = 'Innoruuk', [335] = 'Scarecrow', [336] = 'Shade', [337] = 'Sarnak', [338] = 'Zombie',
+    [339] = 'Human', [340] = 'Human', [341] = 'Human', [342] = 'Mad Toon', [343] = 'Stone Worker', [344] = 'Kerran', [345] = 'Kerran', [346] = 'Kerran',
+    [347] = 'Tricorn', [348] = 'Kerran', [349] = 'Kerran', [350] = 'Kerran', [351] = 'Kerran', [352] = 'Yeti', [353] = 'Sarnak Ghost', [354] = 'Chimera',
+    [355] = 'Dragorn', [356] = 'Murkglider', [357] = 'Rat', [358] = 'Bat', [359] = 'Gelidran', [360] = 'Discordling', [361] = 'Girplan', [362] = 'Minotaur',
+    [363] = 'Dragorn Box', [364] = 'Runed Orb', [365] = 'Dragon Bones', [366] = 'Muramite Armor Pile', [367] = 'Crystal Shard', [368] = 'Portal', [369] = 'Coin Purse',
+    [370] = 'Rock Pile', [371] = 'Murkglider Egg Sack', [372] = 'Drake', [373] = 'Dervish', [374] = 'Drake', [375] = 'Goblin', [376] = 'Kirin', [377] = 'Dragon',
+    [378] = 'Basilisk', [379] = 'Dragon', [380] = 'Dragon', [381] = 'Puma', [382] = 'Spider', [383] = 'Spider Queen', [384] = 'Animated Statue', [385] = 'Unknown',
+    [386] = 'Unknown', [387] = 'Dragon Egg', [388] = 'Dragon Statue', [389] = 'Lava Rock', [390] = 'Animated Statue', [391] = 'Spider Egg Sack', [392] = 'Lava Spider',
+    [393] = 'Lava Spider Queen', [394] = 'Dragon', [395] = 'Giant', [396] = 'Golem', [397] = 'Dragon', [398] = 'Drakkin', [399] = 'Unknown', [400] = 'Hynid',
+    [401] = 'Turepta', [402] = 'Cragbeast', [403] = 'Stonemite', [404] = 'Ulthork', [405] = 'Dragon', [406] = 'Bear', [407] = 'Mortabus', [408] = 'Ogre',
+    [409] = 'Vampire', [410] = 'Kirin', [411] = 'Nightmare', [412] = 'Wolf', [413] = 'Wolf', [414] = 'Wyvern', [415] = 'Snake', [416] = 'Dark Elf',
+    [417] = 'Elemental', [418] = 'Elemental', [419] = 'Pyrilen', [420] = 'Chimera', [421] = 'Rhino', [422] = 'Tortoise', [423] = 'Tortoise', [424] = 'Undead',
+    [425] = 'Bloodgorge', [426] = 'Lightcrawler', [427] = 'Manticore', [428] = 'Gnome', [429] = 'Human', [430] = 'Dwarf', [431] = 'Sarnak', [432] = 'Shade',
+    [433] = 'Blob', [434] = 'Alligator', [435] = 'Golem', [436] = 'Snake', [437] = 'Dragon', [438] = 'Weapon Rack', [439] = 'Tunare', [440] = 'Skeleton',
+    [441] = 'Trophy', [442] = 'Elf', [443] = 'Corathus', [444] = 'Coral', [445] = 'Drachnid', [446] = 'Drachnid Cocoon', [447] = 'Fungus Patch', [448] = 'Gargoyle',
+    [449] = 'Witheran', [450] = 'Dark Lord', [451] = 'Shiliskin', [452] = 'Snake', [453] = 'Evil Eye', [454] = 'Minotaur', [455] = 'Zombie', [456] = 'Clockwork Boar',
+    [457] = 'Fairy', [458] = 'Witheran', [459] = 'Air Elemental', [460] = 'Earth Elemental', [461] = 'Fire Elemental', [462] = 'Water Elemental', [463] = 'Alligator',
+    [464] = 'Bear', [465] = 'Scaled Wolf', [466] = 'Wolf', [467] = 'Spirit Wolf', [468] = 'Skeleton', [469] = 'Spectre', [470] = 'Bolvirk', [471] = 'Banshee',
+    [472] = 'Banshee', [473] = 'Elddar', [474] = 'Forest Giant', [475] = 'Bone Golem', [476] = 'Horse', [477] = 'Pegasus', [478] = 'Shambling Mound', [479] = 'Scrykin',
+    [480] = 'Treant', [481] = 'Vampire', [482] = 'Ayonae Ro', [483] = 'Sullon Zek', [484] = 'Banner', [485] = 'Flag', [486] = 'Rowboat', [487] = 'Bear Trap',
+    [488] = 'Clockwork Bomb', [489] = 'Dynamite Keg', [490] = 'Pressure Plate', [491] = 'Puffer Spore', [492] = 'Stone Ring', [493] = 'Root Trap', [494] = 'Book',
+    [495] = 'Skeleton', [496] = 'Rat', [497] = 'Human', [498] = 'Snail', [499] = 'Wraith', [500] = 'Ogre', [501] = 'Snake', [502] = 'Human', [503] = 'Chimera',
+    [504] = 'Unknown', [505] = 'Efreeti', [506] = 'Unknown', [507] = 'Dragon', [508] = 'Bugbear', [509] = 'Dragon', [510] = 'Scrykin', [511] = 'Snake',
+    [512] = 'Spider', [513] = 'Human', [514] = 'Fairy', [515] = 'Human', [516] = 'Nymph', [517] = 'Dragon', [518] = 'Spider', [519] = 'Drakkin', [520] = 'Scrykin',
+    [521] = 'Efreeti', [522] = 'Brownie', [523] = 'Half Elf', [524] = 'Unknown', [525] = 'Human', [526] = 'Human', [527] = 'Unknown', [528] = 'Goblin',
+    [529] = 'Bear', [530] = 'Ratman', [531] = 'Gnoll', [532] = 'Gnome', [533] = 'Skeleton', [534] = 'Aviak', [535] = 'Elf', [536] = 'Human', [537] = 'Vampire',
+    [538] = 'Snake', [539] = 'Basilisk', [540] = 'Wurm', [541] = 'Ogre', [542] = 'Dragon', [543] = 'Wraith', [544] = 'Brownie', [545] = 'Lion', [546] = 'Rockhopper',
+    [547] = 'Ratman', [548] = 'Fungus Patch', [549] = 'Tree', [550] = 'Fairy', [551] = 'Aviak', [552] = 'Blob', [553] = 'Ogre', [554] = 'Dwarf', [555] = 'Golem',
+    [556] = 'Scrykin', [557] = 'Human', [558] = 'Sabertooth', [559] = 'Bear', [560] = 'Puma', [561] = 'Dragon', [562] = 'Gnoll', [563] = 'Elemental', [564] = 'Boar',
+    [565] = 'Dark Elf', [566] = 'Beetle', [567] = 'Human', [568] = 'Ogre', [569] = 'Human', [570] = 'Nightmare', [571] = 'Griffin', [572] = 'Wolf', [573] = 'Human',
+    [574] = 'Wolf', [575] = 'Bear', [576] = 'Ogre', [577] = 'Dragon', [578] = 'Human', [579] = 'Beetle', [580] = 'Human', [581] = 'Dryad', [582] = 'Cliknar',
+    [583] = 'Spider', [584] = 'Human', [585] = 'Aviak', [586] = 'Human', [587] = 'Werewolf', [588] = 'Goblin', [589] = 'Human', [590] = 'Golem', [591] = 'Wolf',
+    [592] = 'Ratman', [593] = 'Unknown', [594] = 'Coldain', [595] = 'Skeleton', [596] = 'Human', [597] = 'Frost Giant', [598] = 'Alaran', [599] = 'Bear', [600] = 'Skeleton',
+}) do D.RACE_NAMES[id] = name end
+
+D.TARGET_TYPES = {
+    [1] = 'Line of Sight', [3] = 'Group v1', [4] = 'PB AE', [5] = 'Single', [6] = 'Self', [8] = 'Targeted AE', [9] = 'Animal', [10] = 'Undead',
+    [11] = 'Summoned', [13] = 'Lifetap', [14] = 'Pet', [15] = 'Corpse', [16] = 'Plant', [17] = 'Uber Giants', [18] = 'Uber Dragons', [20] = 'Targeted AE Lifetap',
+    [24] = 'AE Undead', [25] = 'AE Summoned', [32] = 'AE Caster', [33] = 'NPC Hate List', [34] = 'Dungeon Object', [35] = 'Muramite', [36] = 'AE PC',
+    [37] = 'AE NPC', [38] = 'Summoned 3', [39] = 'Group No Pets', [40] = 'AE PC v2', [41] = 'Group v2', [42] = 'Directional', [43] = 'Group With Pets',
+    [44] = 'Beam', [45] = 'Ring', [46] = 'Target of Target', [47] = 'Pet Owner', [50] = 'AE Undead 2', [52] = 'Single in Group',
+}
+D.RESIST_TYPES = seq(0, { 'None', 'Magic', 'Fire', 'Cold', 'Poison', 'Disease', 'Chromatic', 'Prismatic', 'Physical', 'Corruption' })
+D.NPC_SPELL_TYPES = { [1] = 'Nuke', [2] = 'Heal', [4] = 'Root', [8] = 'Buff', [16] = 'Escape', [32] = 'Pet', [64] = 'Lifetap', [128] = 'Snare',
+    [256] = 'DoT', [512] = 'Dispel', [1024] = 'In-Combat Buff', [2048] = 'Mez', [4096] = 'Charm', [8192] = 'Slow', [16384] = 'Debuff', [32768] = 'Cure',
+    [65536] = 'Resurrect', [131072] = 'Hate Reduction', [262144] = 'In-Combat Buff Song', [524288] = 'Fear', [1048576] = 'Stun' }
+
+D.SPECIAL_ABILITIES = seq(1, {
+    'Summons', 'Enrages', 'Rampages', 'AE Rampages', 'Flurries', 'Triple Attacks', 'Quad Attacks', 'Dual Wields', 'Bane Attack', 'Magical Attack',
+    'Ranged Attack', 'Unslowable', 'Unmezzable', 'Uncharmable', 'Unstunable', 'Unsnareable', 'Unfearable', 'Immune to Dispel', 'Immune to Melee',
+    'Immune to Magic', 'Immune to Fleeing', 'Immune to Melee (except Bane)', 'Immune to Melee (except Magical)', 'Immune to Aggro', 'Immune to Being Aggroed',
+    'Resists Ranged Spells', 'Sees Through Feign Death', 'Immune to Taunt', 'Tunnel Vision', 'Does Not Buff/Heal Friends', 'Immune to Pacify', 'Leashed',
+    'Tethered', 'Destructible Object', 'No Harm From Players', 'Always Flees', 'Flee Percent', 'Allows Beneficial', 'Disables Melee', 'Chase Distance',
+    'Allow Tank', 'Ignore Root Aggro', 'Casting Resist Diff', 'Counter Avoid Damage', 'Proximity Aggro', 'Immune to Ranged Attacks', 'Immune to Client Damage',
+    'Immune to NPC Damage', 'Immune to Client Aggro', 'Immune to NPC Aggro', 'Modify Avoid Damage', 'Immune to Fading Memories', 'Immune to Open',
+    'Immune to Assassinate', 'Immune to Headshot', 'Immune to Bot Damage', 'Immune to Bot Aggro', 'Immune to Bots',
+})
+
+-- ----------------------------------------------------------------------------
+-- Decoders (pure functions, unit-tested)
+-- ----------------------------------------------------------------------------
+local function hasBit(mask, bitIndex) -- bitIndex 0-based, no `bit` library needed
+    return math.floor((mask or 0) / (2 ^ bitIndex)) % 2 >= 1
+end
+
+function D.maskNames(mask, names, allText)
+    mask = tonumber(mask) or 0
+    local out = {}
+    local all = true
+    for i, n in ipairs(names) do
+        if hasBit(mask, i - 1) then
+            out[#out + 1] = n
+        else
+            all = false
+        end
+    end
+    if all and #names > 0 then return allText or 'ALL' end
+    if #out == 0 then return 'NONE' end
+    return table.concat(out, ' ')
+end
+
+function D.classesText(mask) return D.maskNames(mask, D.CLASSES, 'ALL') end
+function D.racesText(mask) return D.maskNames(mask, D.RACES, 'ALL') end
+
+function D.slotsText(mask)
+    mask = tonumber(mask) or 0
+    local out, seen = {}, {}
+    for i, n in ipairs(D.SLOTS) do
+        if hasBit(mask, i - 1) and not seen[n] then
+            seen[n] = true
+            out[#out + 1] = n
+        end
+    end
+    return table.concat(out, ' ')
+end
+
+function D.augTypesText(mask)
+    mask = tonumber(mask) or 0
+    local out = {}
+    for i = 1, 30 do
+        if hasBit(mask, i - 1) then out[#out + 1] = tostring(i) end
+    end
+    return table.concat(out, ', ')
+end
+
+function D.itemTypeName(t) return D.ITEM_TYPES[tonumber(t) or -1] or ('Type ' .. tostring(t)) end
+function D.skillName(s) return D.SKILLS[tonumber(s) or -1] or ('Skill ' .. tostring(s)) end
+-- tradeskill_recipe.tradeskill: the EQEmu data files quest combines under
+-- 75 (Remove Traps in the client skill enum, which no item references);
+-- tools/build_gamedb.py TRADESKILLS carries the same mapping.
+function D.tradeskillName(s)
+    local id = tonumber(s) or -1
+    if id == 75 or id == 100 then return 'Quest Combine' end
+    return D.skillName(id)
+end
+function D.sizeName(s) return D.SIZES[tonumber(s) or -1] or tostring(s) end
+function D.raceName(r) return D.RACE_NAMES[tonumber(r) or -1] or ('Race ' .. tostring(r)) end
+function D.bodyTypeName(b) return D.BODY_TYPES[tonumber(b) or -1] or ('Body ' .. tostring(b)) end
+function D.targetTypeName(t) return D.TARGET_TYPES[tonumber(t) or -1] or ('Target ' .. tostring(t)) end
+function D.resistTypeName(r) return D.RESIST_TYPES[tonumber(r) or -1] or ('Resist ' .. tostring(r)) end
+-- items.deity is a bitmask (bit 0 Agnostic, bit 1 Bertoxxulous, ... bit 16 Veeshan)
+function D.deityName(mask)
+    mask = tonumber(mask) or 0
+    if mask == 0 then return 'All' end
+    local out = {}
+    for i, n in ipairs(D.DEITIES) do
+        if hasBit(mask, i - 1) then out[#out + 1] = n end
+    end
+    if #out == #D.DEITIES then return 'All' end
+    if #out == 0 then return 'Deity ' .. mask end
+    return table.concat(out, ', ')
+end
+
+function D.className(c)
+    c = tonumber(c) or 0
+    return D.CLASS_NAMES[c] or D.NPC_CLASSES[c] or ('Class ' .. c)
+end
+
+-- "1,1^10,1" -> { 'Summons', 'Magical Attack' }
+function D.specialAbilitiesText(s)
+    local out = {}
+    if not s or s == '' then return out end
+    for part in (s .. '^'):gmatch('([^%^]*)%^') do
+        local id = tonumber(part:match('^(%d+)'))
+        if id then
+            local name = D.SPECIAL_ABILITIES[id] or ('Ability ' .. id)
+            local params = part:match('^%d+,(.*)$')
+            if id == 37 and params then name = name .. ' ' .. params:match('^(%d+)') .. '%' end
+            if id == 40 and params then name = name .. ' ' .. params:match('^(%d+)') end
+            out[#out + 1] = name
+        end
+    end
+    return out
+end
+
+function D.npcSpellTypes(mask)
+    mask = tonumber(mask) or 0
+    local out = {}
+    for bitv, name in pairs(D.NPC_SPELL_TYPES) do
+        local idx = math.floor(math.log(bitv) / math.log(2) + 0.5)
+        if hasBit(mask, idx) then out[#out + 1] = name end
+    end
+    table.sort(out)
+    return table.concat(out, ', ')
+end
+
+-- copper -> "12pp 3gp 4sp 5cp"
+function D.moneyText(copper)
+    copper = tonumber(copper) or 0
+    if copper <= 0 then return '' end
+    local pp = math.floor(copper / 1000); copper = copper % 1000
+    local gp = math.floor(copper / 100); copper = copper % 100
+    local sp = math.floor(copper / 10); copper = copper % 10
+    local out = {}
+    if pp > 0 then out[#out + 1] = pp .. 'pp' end
+    if gp > 0 then out[#out + 1] = gp .. 'gp' end
+    if sp > 0 then out[#out + 1] = sp .. 'sp' end
+    if copper > 0 then out[#out + 1] = copper .. 'cp' end
+    return table.concat(out, ' ')
+end
+
+function D.secondsText(sec)
+    sec = tonumber(sec) or 0
+    if sec <= 0 then return '0s' end
+    if sec < 60 then return string.format('%ds', sec) end
+    if sec < 3600 then return string.format('%dm %ds', math.floor(sec / 60), sec % 60) end
+    if sec < 86400 then return string.format('%dh %dm', math.floor(sec / 3600), math.floor((sec % 3600) / 60)) end
+    return string.format('%dd %dh', math.floor(sec / 86400), math.floor((sec % 86400) / 3600))
+end
+
+function D.weightText(w)
+    w = tonumber(w) or 0
+    return string.format('%.1f', w / 10)
+end
+
+-- Item tier suffix. Enchanted = +1,000,000, Legendary = +2,000,000.
+function D.tierOf(id)
+    id = tonumber(id) or 0
+    if id >= 2000000 then return 'L', id - 2000000 end
+    if id >= 1000000 then return 'E', id - 1000000 end
+    return 'B', id
+end
+D.TIER_NAMES = { B = 'Base', E = 'Enchanted', L = 'Legendary' }
+D.TIER_OFFSET = { B = 0, E = 1000000, L = 2000000 }
+
+-- ----------------------------------------------------------------------------
+-- Spell effect (SPA) text. Covers the common effects; the rest print raw.
+-- ----------------------------------------------------------------------------
+local SPA = {}
+local function incdec(v) return (tonumber(v) or 0) < 0 and 'Decrease' or 'Increase' end
+local function absv(v) return math.abs(tonumber(v) or 0) end
+local function stat(name)
+    return function(b, _, m)
+        local s = string.format('%s %s by %d', incdec(b), name, absv(b))
+        if (tonumber(m) or 0) > 0 and absv(m) ~= absv(b) then s = s .. string.format(' (up to %d)', absv(m)) end
+        return s
+    end
+end
+local function pct(name)
+    return function(b, _, m)
+        local s = string.format('%s %s by %d%%', incdec(b), name, absv(b))
+        if (tonumber(m) or 0) > 0 and absv(m) ~= absv(b) then s = s .. string.format(' (up to %d%%)', absv(m)) end
+        return s
+    end
+end
+local function fixed(text) return function() return text end end
+
+SPA[0] = function(b, _, m)
+    b = tonumber(b) or 0
+    local s = (b < 0) and string.format('Decrease Hitpoints by %d', -b) or string.format('Increase Hitpoints by %d', b)
+    if (tonumber(m) or 0) > 0 and absv(m) ~= absv(b) then s = s .. string.format(' (up to %d)', absv(m)) end
+    return s
+end
+SPA[1] = stat('AC'); SPA[2] = stat('ATK'); SPA[3] = pct('Movement Speed'); SPA[4] = stat('STR'); SPA[5] = stat('DEX'); SPA[6] = stat('AGI')
+SPA[7] = stat('STA'); SPA[8] = stat('INT'); SPA[9] = stat('WIS'); SPA[10] = stat('CHA')
+SPA[11] = function(b) b = tonumber(b) or 0; if b >= 100 then return string.format('Increase Attack Speed by %d%%', b - 100) end return string.format('Decrease Attack Speed by %d%%', 100 - b) end
+SPA[12] = fixed('Invisibility'); SPA[13] = fixed('See Invisible'); SPA[14] = fixed('Water Breathing'); SPA[15] = stat('Mana')
+SPA[18] = fixed('Pacify'); SPA[19] = stat('Faction'); SPA[20] = fixed('Blindness'); SPA[21] = function(b) return string.format('Stun (%.1fs)', (tonumber(b) or 0) / 1000) end
+SPA[22] = function(_, _, m) return string.format('Charm (up to level %d)', tonumber(m) or 0) end
+SPA[23] = function(_, _, m) return string.format('Fear (up to level %d)', tonumber(m) or 0) end
+SPA[24] = stat('Endurance'); SPA[25] = fixed('Bind Affinity'); SPA[26] = fixed('Gate'); SPA[27] = function(b) return string.format('Cancel Magic (%d)', tonumber(b) or 0) end
+SPA[28] = fixed('Invisibility vs Undead'); SPA[29] = fixed('Invisibility vs Animals'); SPA[30] = function(b, _, m) return string.format('Reaction Radius (%d / %d)', tonumber(b) or 0, tonumber(m) or 0) end
+SPA[31] = function(_, _, m) return string.format('Mesmerize (up to level %d)', tonumber(m) or 0) end
+SPA[32] = function(b, _, m) return string.format('Summon Item: [item %d] x%d', tonumber(b) or 0, math.max(tonumber(m) or 1, 1)) end
+SPA[33] = fixed('Summon Pet'); SPA[35] = stat('Disease Counter'); SPA[36] = stat('Poison Counter'); SPA[40] = fixed('Invulnerability')
+SPA[41] = fixed('Destroy'); SPA[42] = fixed('Shadowstep'); SPA[44] = fixed('Delayed Heal Marker'); SPA[46] = stat('Fire Resist'); SPA[47] = stat('Cold Resist')
+SPA[48] = stat('Poison Resist'); SPA[49] = stat('Disease Resist'); SPA[50] = stat('Magic Resist'); SPA[52] = fixed('Sense Undead'); SPA[53] = fixed('Sense Summoned')
+SPA[54] = fixed('Sense Animals'); SPA[55] = function(b) return string.format('Absorb Damage: %d (Rune)', tonumber(b) or 0) end; SPA[56] = fixed('True North')
+SPA[57] = fixed('Levitate'); SPA[58] = function(b) return string.format('Illusion: %s', D.raceName(b)) end; SPA[59] = function(b) return string.format('Damage Shield (%d)', -(tonumber(b) or 0)) end
+SPA[61] = fixed('Identify'); SPA[63] = function(b) return string.format('Memory Blur (%d%%)', tonumber(b) or 0) end; SPA[64] = function(b) return string.format('Spin Stun (%.1fs)', (tonumber(b) or 0) / 1000) end
+SPA[65] = fixed('Infravision'); SPA[66] = fixed('Ultravision'); SPA[67] = fixed('Eye of Zomm'); SPA[68] = fixed('Reclaim Energy'); SPA[69] = stat('Max Hitpoints')
+SPA[71] = fixed('Summon Undead Pet'); SPA[73] = fixed('Bind Sight'); SPA[74] = fixed('Feign Death'); SPA[75] = fixed('Voice Graft'); SPA[76] = fixed('Sentinel')
+SPA[77] = fixed('Locate Corpse'); SPA[78] = function(b) return string.format('Absorb Spell Damage: %d', tonumber(b) or 0) end
+SPA[79] = function(b, _, m) b = tonumber(b) or 0; local s = (b < 0) and string.format('Decrease Hitpoints by %d (instant)', -b) or string.format('Increase Hitpoints by %d (instant)', b); if (tonumber(m) or 0) > 0 and absv(m) ~= absv(b) then s = s .. string.format(' (up to %d)', absv(m)) end return s end
+SPA[81] = function(b) return string.format('Resurrect (%d%% exp)', tonumber(b) or 0) end; SPA[82] = fixed('Summon Player'); SPA[83] = fixed('Teleport')
+SPA[85] = function(b) return string.format('Add Proc: [spell %d]', tonumber(b) or 0) end; SPA[86] = function(b) return string.format('Reaction Radius (%d)', tonumber(b) or 0) end
+SPA[87] = pct('Magnification'); SPA[88] = fixed('Evacuate'); SPA[89] = pct('Player Size'); SPA[91] = fixed('Summon Corpse'); SPA[92] = stat('Hate')
+SPA[93] = fixed('Stop Rain'); SPA[94] = fixed('Make Fragile'); SPA[95] = fixed('Sacrifice'); SPA[96] = fixed('Silence'); SPA[97] = stat('Max Mana')
+SPA[98] = SPA[11]; SPA[99] = fixed('Root'); SPA[100] = function(b) return string.format('%s Hitpoints by %d per tick', incdec(b), absv(b)) end
+SPA[101] = fixed('Complete Heal (with duration)'); SPA[102] = fixed('Fearless'); SPA[103] = fixed('Call Pet'); SPA[104] = fixed('Translocate'); SPA[105] = fixed('Anti-Gate')
+SPA[106] = fixed('Summon Warder'); SPA[108] = fixed('Summon Familiar'); SPA[109] = function(b, _, m) return string.format('Summon Item into Bag: [item %d] x%d', tonumber(b) or 0, math.max(tonumber(m) or 1, 1)) end
+SPA[111] = stat('All Resists'); SPA[112] = stat('Casting Level'); SPA[113] = fixed('Summon Mount'); SPA[114] = pct('Hate Generated'); SPA[115] = fixed('Food / Water')
+SPA[116] = stat('Curse Counter'); SPA[117] = fixed('Make Weapons Magical'); SPA[118] = stat('Singing Skill'); SPA[119] = SPA[11]; SPA[120] = pct('Healing Taken')
+SPA[121] = function(b) return string.format('Reverse Damage Shield (%d)', -(tonumber(b) or 0)) end; SPA[123] = fixed('Screech'); SPA[124] = pct('Spell Damage')
+SPA[125] = pct('Spell Healing'); SPA[126] = pct('Spell Resist Rate'); SPA[127] = pct('Spell Haste'); SPA[128] = pct('Spell Duration'); SPA[129] = pct('Spell Range')
+SPA[130] = pct('Spell Hate'); SPA[131] = pct('Chance of Using Reagent'); SPA[132] = pct('Spell Mana Cost'); SPA[134] = function(b) return string.format('Limit: Max Level %d', tonumber(b) or 0) end
+SPA[135] = function(b) return string.format('Limit: Resist %s', D.resistTypeName(b)) end; SPA[136] = function(b) return string.format('Limit: Target %s', D.targetTypeName(absv(b))) end
+SPA[137] = function(b) return string.format('Limit: Effect %d', tonumber(b) or 0) end; SPA[138] = function(b) return (tonumber(b) or 0) == 0 and 'Limit: Detrimental Only' or 'Limit: Beneficial Only' end
+SPA[139] = function(b) b = tonumber(b) or 0; return string.format('Limit: %s [spell %d]', b < 0 and 'Exclude' or 'Spell', math.abs(b)) end
+SPA[140] = function(b) return string.format('Limit: Min Duration %ds', (tonumber(b) or 0) * 6) end; SPA[141] = fixed('Limit: Instant Only'); SPA[142] = function(b) return string.format('Limit: Min Level %d', tonumber(b) or 0) end
+SPA[143] = function(b) return string.format('Limit: Min Cast Time %.1fs', (tonumber(b) or 0) / 1000) end; SPA[144] = function(b) return string.format('Limit: Max Cast Time %.1fs', (tonumber(b) or 0) / 1000) end
+SPA[147] = function(b, _, m) return string.format('Heal %d%% (up to %d)', tonumber(b) or 0, tonumber(m) or 0) end; SPA[148] = function(b, _, m) return string.format('Stacking: Block SPA %d (%d)', tonumber(m) or 0, tonumber(b) or 0) end
+SPA[149] = function(b, _, m) return string.format('Stacking: Overwrite SPA %d (%d)', tonumber(m) or 0, tonumber(b) or 0) end; SPA[150] = fixed('Death Save'); SPA[151] = fixed('Suspend Pet')
+SPA[152] = function(b) return string.format('Summon Temporary Pets (%d)', tonumber(b) or 0) end; SPA[153] = fixed('Balance Group HP'); SPA[154] = function(b) return string.format('Dispel Detrimental (%d)', tonumber(b) or 0) end
+SPA[156] = fixed('Illusion: Other'); SPA[157] = function(b) return string.format('Spell Damage Shield (%d)', -(tonumber(b) or 0)) end; SPA[158] = function(b) return string.format('Spell Reflect (%d%%)', tonumber(b) or 0) end
+SPA[159] = stat('All Stats'); SPA[160] = fixed('Make Drunk'); SPA[161] = function(b, _, m) return string.format('Mitigate Spell Damage %d%% (up to %d)', tonumber(b) or 0, tonumber(m) or 0) end
+SPA[162] = function(b, _, m) return string.format('Mitigate Melee Damage %d%% (up to %d)', tonumber(b) or 0, tonumber(m) or 0) end; SPA[163] = function(b) return string.format('Negate Attacks (%d)', tonumber(b) or 0) end
+SPA[167] = stat('Pet Power'); SPA[168] = pct('Melee Mitigation'); SPA[169] = pct('Critical Hit Chance'); SPA[170] = pct('Spell Critical Chance'); SPA[171] = pct('Crippling Blow Chance')
+SPA[172] = pct('Avoidance'); SPA[173] = pct('Riposte'); SPA[174] = pct('Dodge'); SPA[175] = pct('Parry'); SPA[176] = pct('Dual Wield'); SPA[177] = pct('Double Attack')
+SPA[178] = pct('Melee Lifetap'); SPA[179] = stat('All Instrument Modifiers'); SPA[180] = pct('Resist Spell Chance'); SPA[181] = pct('Fear Resist'); SPA[182] = pct('Weapon Delay')
+SPA[184] = pct('Hit Chance'); SPA[185] = pct('Damage Modifier'); SPA[186] = stat('Minimum Damage'); SPA[187] = fixed('Balance Group Mana'); SPA[188] = pct('Block Chance')
+SPA[189] = stat('Endurance per tick'); SPA[190] = stat('Max Endurance'); SPA[191] = fixed('Amnesia'); SPA[192] = stat('Hate (instant)'); SPA[193] = function(b) return string.format('Skill Attack (%d)', tonumber(b) or 0) end
+SPA[194] = fixed('Fade'); SPA[195] = pct('Stun Resist'); SPA[196] = pct('Strikethrough'); SPA[197] = pct('Skill Damage Taken'); SPA[198] = stat('Endurance (instant)')
+SPA[199] = fixed('Taunt'); SPA[200] = pct('Proc Chance'); SPA[201] = fixed('Ranged Proc'); SPA[202] = fixed('Illusion: Other'); SPA[203] = fixed('Mass Group Buff')
+SPA[204] = fixed('Group Fear Immunity'); SPA[205] = fixed('Rampage'); SPA[206] = fixed('AE Taunt'); SPA[207] = fixed('Flesh to Bone'); SPA[209] = function(b) return string.format('Dispel Beneficial (%d)', tonumber(b) or 0) end
+SPA[210] = fixed('Pet Shield'); SPA[211] = fixed('AE Melee'); SPA[213] = pct('Pet Max HP'); SPA[214] = pct('Max HP'); SPA[215] = pct('Pet Avoidance'); SPA[216] = pct('Accuracy')
+SPA[217] = fixed('Headshot'); SPA[218] = pct('Pet Critical Melee'); SPA[219] = pct('Slay Undead'); SPA[220] = stat('Skill Damage'); SPA[221] = pct('Weight Reduction')
+SPA[222] = pct('Block Behind'); SPA[223] = pct('Double Riposte'); SPA[224] = pct('Additional Riposte'); SPA[225] = pct('Double Attack (give)'); SPA[227] = pct('Skill Timer Reduction')
+SPA[228] = pct('Fall Damage Reduction'); SPA[229] = fixed('Cast Through Stun'); SPA[230] = stat('Shielding Distance'); SPA[231] = pct('Stun Bash Chance'); SPA[232] = fixed('Divine Save')
+SPA[233] = pct('Metabolism'); SPA[235] = pct('Channeling'); SPA[236] = fixed('Free Pet'); SPA[237] = fixed('Pet Affinity'); SPA[238] = fixed('Permanent Illusion'); SPA[239] = fixed('Stonewall')
+SPA[243] = pct('Charm Break Chance'); SPA[244] = pct('Root Break Chance'); SPA[246] = stat('Lung Capacity'); SPA[247] = stat('Skill Cap'); SPA[250] = pct('Spell Proc Chance')
+SPA[252] = pct('Frontal Backstab Chance'); SPA[253] = fixed('Frontal Backstab Min Damage'); SPA[255] = stat('Shield Duration'); SPA[256] = fixed('Shroud of Stealth')
+SPA[258] = pct('Triple Backstab'); SPA[259] = stat('AC Soft Cap'); SPA[262] = stat('Stat Cap'); SPA[263] = stat('Tradeskill Mastery'); SPA[264] = pct('AA Timer Reduction')
+SPA[265] = fixed('No Fizzle'); SPA[266] = pct('Extra Attack Chance (2H)'); SPA[268] = pct('Tradeskill Failure Reduction'); SPA[269] = pct('Bandage'); SPA[270] = pct('Song Range')
+SPA[271] = pct('Base Run Speed'); SPA[273] = pct('Critical DoT Chance'); SPA[274] = pct('Critical Heal Chance'); SPA[275] = pct('Critical Mend'); SPA[276] = pct('Dual Wield Amount')
+SPA[278] = pct('Finishing Blow'); SPA[279] = pct('Flurry Chance'); SPA[280] = pct('Pet Flurry Chance'); SPA[281] = fixed('Pet Feign Death'); SPA[282] = pct('Bandage Amount')
+SPA[286] = stat('Spell Damage (flat)'); SPA[287] = stat('Spell Duration (ticks)'); SPA[289] = function(b) return string.format('Cast on Fade: [spell %d]', tonumber(b) or 0) end
+SPA[291] = function(b) return string.format('Purify (%d)', tonumber(b) or 0) end; SPA[292] = pct('Strikethrough v2'); SPA[293] = pct('Frontal Stun Resist'); SPA[294] = pct('Critical Spell Damage')
+SPA[296] = pct('Spell Damage Taken'); SPA[297] = stat('Spell Damage Taken (flat)'); SPA[298] = pct('Pet Size'); SPA[299] = fixed('Wake the Dead'); SPA[300] = fixed('Doppelganger')
+SPA[301] = pct('Ranged Damage'); SPA[302] = pct('Critical Damage'); SPA[303] = stat('Critical Damage (flat)'); SPA[305] = pct('Damage Shield Taken'); SPA[309] = fixed('Gate to Bind')
+SPA[310] = pct('Reuse Timer Reduction'); SPA[311] = fixed('Limit: Combat Skills'); SPA[312] = fixed('Sanctuary'); SPA[313] = pct('Forage'); SPA[314] = fixed('Improved Invisibility')
+SPA[315] = fixed('Improved Invisibility vs Undead'); SPA[316] = fixed('Improved Invisibility vs Animals'); SPA[319] = pct('Critical HoT'); SPA[320] = pct('Shield Block')
+SPA[321] = stat('Target Hate Reduction'); SPA[322] = fixed('Gate to Home City'); SPA[323] = function(b) return string.format('Defensive Proc: [spell %d]', tonumber(b) or 0) end
+SPA[324] = stat('HP for Mana'); SPA[326] = stat('Spell Slots'); SPA[327] = stat('Buff Slots'); SPA[329] = pct('Mana Absorb'); SPA[330] = pct('Critical Damage Modifier')
+SPA[331] = pct('Salvage Chance'); SPA[332] = fixed('Summon to Corpse'); SPA[333] = function(b) return string.format('Cast on Rune Fade: [spell %d]', tonumber(b) or 0) end
+SPA[335] = fixed('Block Next Spell'); SPA[337] = pct('Pet Critical Damage'); SPA[339] = function(b, _, m) return string.format('Trigger on Cast: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end
+SPA[340] = function(b, _, m) return string.format('Chance to Cast: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end; SPA[342] = fixed('Immune to Fleeing'); SPA[343] = fixed('Interrupt Casting')
+SPA[344] = pct('Channeling Chance'); SPA[345] = stat('Assassinate Level Cap'); SPA[346] = stat('Headshot Level Cap'); SPA[347] = pct('Double Ranged Attack'); SPA[348] = function(b) return string.format('Limit: Min Mana %d', tonumber(b) or 0) end
+SPA[349] = pct('Shield Damage'); SPA[350] = fixed('Mana Burn'); SPA[351] = fixed('Persistent Effect'); SPA[353] = stat('Aura Slots'); SPA[358] = stat('Mana (instant)'); SPA[359] = fixed('Sense Trap')
+SPA[360] = function(b, _, m) return string.format('Proc on Kill: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end; SPA[361] = function(b, _, m) return string.format('Proc on Death: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end
+SPA[364] = pct('Triple Attack'); SPA[365] = function(b, _, m) return string.format('Proc on Spell Kill: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end; SPA[366] = fixed('Group Shielding')
+SPA[367] = function(b) return string.format('Body Type: %s', D.bodyTypeName(b)) end; SPA[368] = stat('Faction'); SPA[369] = stat('Corruption Counter'); SPA[370] = stat('Corruption Resist')
+SPA[371] = pct('Melee Slow'); SPA[373] = function(b) return string.format('Cast on Fade: [spell %d]', tonumber(b) or 0) end; SPA[374] = function(b, _, m) return string.format('Trigger Spell: [spell %d] (%d%%)', tonumber(m) or 0, tonumber(b) or 0) end
+SPA[375] = pct('Critical DoT Damage'); SPA[376] = fixed('Fling'); SPA[377] = function(b) return string.format('Cast on Fade (Doom): [spell %d]', tonumber(b) or 0) end; SPA[378] = pct('Spell Effect Resist')
+SPA[379] = fixed('Shadowstep (directional)'); SPA[380] = fixed('Knockback'); SPA[381] = fixed('Fling to Self'); SPA[382] = function(b) return string.format('Negate SPA %d', tonumber(b) or 0) end
+SPA[383] = function(b, _, m) return string.format('Sympathetic Proc: [spell %d] (%d)', tonumber(m) or 0, tonumber(b) or 0) end; SPA[384] = fixed('Leap'); SPA[385] = function(b) return string.format('Limit: Spell Group %d', tonumber(b) or 0) end
+SPA[386] = function(b) return string.format('Cast on Curer: [spell %d]', tonumber(b) or 0) end; SPA[387] = function(b) return string.format('Cast on Cure: [spell %d]', tonumber(b) or 0) end; SPA[388] = fixed('Summon All Corpses')
+SPA[389] = fixed('Reset Reuse Timer'); SPA[391] = function(b) return string.format('Limit: Max Mana %d', tonumber(b) or 0) end; SPA[392] = stat('Healing (flat)'); SPA[393] = pct('Healing Taken'); SPA[394] = stat('Healing Taken (flat)')
+SPA[395] = pct('Critical Heal'); SPA[396] = stat('Healing (flat)'); SPA[397] = stat('Pet AC'); SPA[398] = stat('Pet Duration'); SPA[399] = pct('Twincast Chance'); SPA[400] = fixed('Heal Group from Mana')
+SPA[403] = function(b) return string.format('Limit: Spell Class %d', tonumber(b) or 0) end; SPA[404] = function(b) return string.format('Limit: Spell Subclass %d', tonumber(b) or 0) end; SPA[405] = pct('Staff Block')
+SPA[406] = function(b) return string.format('Cast on Numhits Fade: [spell %d]', tonumber(b) or 0) end; SPA[407] = function(b) return string.format('Cast on Focus: [spell %d]', tonumber(b) or 0) end
+SPA[408] = function(b) return string.format('Limit HP %d%%', tonumber(b) or 0) end; SPA[409] = function(b) return string.format('Limit Mana %d%%', tonumber(b) or 0) end; SPA[410] = function(b) return string.format('Limit Endurance %d%%', tonumber(b) or 0) end
+SPA[411] = function(b) return string.format('Limit: Class %s', D.classesText(b)) end; SPA[412] = function(b) return string.format('Limit: Race %s', D.racesText(b)) end
+SPA[413] = pct('Base Effects (Song)'); SPA[414] = function(b) return string.format('Limit: Casting Skill %s', D.skillName(b)) end; SPA[416] = stat('AC v2'); SPA[417] = stat('Mana per tick v2')
+SPA[418] = stat('Skill Damage v2'); SPA[419] = function(b) return string.format('Add Melee Proc: [spell %d]', tonumber(b) or 0) end; SPA[420] = function(b) return string.format('Limit: Use %d', tonumber(b) or 0) end
+SPA[421] = stat('Numhits'); SPA[424] = fixed('Gravitate'); SPA[425] = fixed('Fly'); SPA[427] = function(b) return string.format('Skill Proc: [spell %d]', tonumber(b) or 0) end
+SPA[428] = function(b) return string.format('Limit: Skill %s', D.skillName(b)) end; SPA[429] = function(b) return string.format('Skill Proc (success): [spell %d]', tonumber(b) or 0) end
+SPA[434] = pct('Critical Heal v2'); SPA[435] = pct('Critical HoT v2'); SPA[436] = fixed('Beneficial Countdown Hold'); SPA[437] = fixed('Teleport to Anchor'); SPA[438] = fixed('Translocate to Anchor')
+SPA[439] = pct('Assassinate'); SPA[440] = stat('Finishing Blow Level'); SPA[441] = fixed('Distance Removal'); SPA[442] = function(b) return string.format('Trigger on Target Value: [spell %d]', tonumber(b) or 0) end
+SPA[444] = pct('Improved Taunt'); SPA[450] = function(b) return string.format('DoT Guard (%d)', tonumber(b) or 0) end; SPA[451] = function(b) return string.format('Melee Threshold Guard (%d)', tonumber(b) or 0) end
+SPA[452] = function(b) return string.format('Spell Threshold Guard (%d)', tonumber(b) or 0) end; SPA[455] = pct('Hate'); SPA[456] = pct('Hate over Time'); SPA[457] = fixed('Resource Tap')
+SPA[458] = pct('Faction'); SPA[459] = pct('Skill Damage v2'); SPA[461] = pct('Spell Damage v2'); SPA[462] = pct('Healing v2'); SPA[467] = stat('Damage Shield v2')
+SPA[469] = function(b) return string.format('Trigger Best in Spell Group: [spell %d]', tonumber(b) or 0) end; SPA[470] = function(b) return string.format('Trigger Best in Spell Group v2: [spell %d]', tonumber(b) or 0) end
+SPA[471] = pct('Repeat Melee Round'); SPA[494] = stat('Pet Attack'); SPA[495] = function(b) return string.format('Limit: Max Duration %d ticks', tonumber(b) or 0) end
+SPA[496] = pct('Critical Melee Damage'); SPA[498] = stat('Base Damage'); SPA[499] = stat('Resistance (all)')
+
+-- Immunity rules: NPC special ability id -> the SPAs it makes pointless.
+-- 20 (Immune to Magic) blocks every detrimental spell.
+D.IMMUNITY_RULES = {
+    { ability = 20, spas = nil,          reason = 'Immune to Magic' },
+    { ability = 13, spas = { 31 },       reason = 'Unmezzable' },
+    { ability = 12, spas = { 11, 371 },  reason = 'Unslowable' },
+    { ability = 16, spas = { 3 },        reason = 'Unsnareable' },
+    { ability = 14, spas = { 22 },       reason = 'Uncharmable' },
+    { ability = 17, spas = { 23 },       reason = 'Unfearable' },
+    { ability = 15, spas = { 21, 64 },   reason = 'Unstunable' },
+    { ability = 18, spas = { 27, 209 },  reason = 'Immune to Dispel' },
+    { ability = 31, spas = { 18, 86 },   reason = 'Immune to Pacify' },
+    { ability = 52, spas = { 63 },       reason = 'Immune to Fading Memories' },
+}
+
+-- abilities: set { [abilityId] = param }; hasSPA(spa) -> boolean for the
+-- (detrimental) spell being considered. Returns the reason the cast would
+-- be wasted, or nil.
+function D.immunityReason(abilities, hasSPA)
+    if type(abilities) ~= 'table' then return nil end
+    for _, rule in ipairs(D.IMMUNITY_RULES) do
+        if abilities[rule.ability] then
+            if not rule.spas then return rule.reason end
+            for _, spa in ipairs(rule.spas) do
+                if hasSPA(spa) then return rule.reason end
+            end
+        end
+    end
+    return nil
+end
+
+-- Returns the display line for one effect slot.
+function D.spaText(spaId, base, limit, max)
+    local fn = SPA[tonumber(spaId) or -1]
+    if fn then
+        local ok, txt = pcall(fn, base, limit, max)
+        if ok and txt then return txt end
+    end
+    local s = string.format('SPA %s: base %s', tostring(spaId), tostring(base))
+    if (tonumber(limit) or 0) ~= 0 then s = s .. ', limit ' .. tostring(limit) end
+    if (tonumber(max) or 0) ~= 0 then s = s .. ', max ' .. tostring(max) end
+    return s
+end
+
+-- ----------------------------------------------------------------------------
+-- Data layer
+-- ----------------------------------------------------------------------------
+local DB = {
+    dir      = nil,
+    kinds    = {},   -- kind -> index state
+    handles  = {},   -- "kind.chunk" -> file handle
+    cache    = {},   -- "kind:ref" -> parsed record
+    cacheN   = 0,
+    loadQueue = {},
+    loading  = nil,
+    error    = nil,
+    manifest = nil,
+    cards    = {},   -- decoded card data per kind:id:tier (see cardFor)
+    cardsN   = 0,
+}
+-- Index loading is sliced per *frame* (onDrawUI runs every frame; the core
+-- only ticks plugins every 150-200 ms, which would make a load crawl): a
+-- small slice in the background from plugin init, a bigger one while the
+-- window is open and someone is waiting on the progress bar.
+DB.BUDGET_IDLE = 0.002
+DB.BUDGET_OPEN = 0.009
+DB.BUDGET = DB.BUDGET_IDLE
+DB.MAX_RESULTS = 300
+-- Occurrences of the first query word looked at per search pass, accepted
+-- or not: a filtered query ("a" + a zone) must not walk every line.
+DB.MAX_SCAN = 20000
+
+-- Names live in two blobs, `orig` (as written) and `lower` (for matching),
+-- both '\n'-joined with the same `starts` offsets (string.lower keeps byte
+-- length), so a 150k-entry index costs two strings rather than 150k of them.
+local function newIndex(kind)
+    return { kind = kind, loaded = false, count = 0, n = 0, ids = {}, refs = {}, byId = {}, pieces = {}, starts = {}, pos = 1, lower = nil, orig = nil,
+             extra = {},            -- items: tier letters; spells: "class:level,..." string
+             refE = {}, refL = {},  -- items: enchanted / legendary record refs (false when absent)
+             version = 1,           -- index format from the header line
+             -- items v2, packed per entry (see PACK / unpack helpers):
+             mask = {},             -- classes * 2^17 + races
+             attr = {},             -- slots * 2^23 + reqlevel * 2^15 + itemtype * 2^8 + flags
+             statB = {}, statT = {},-- ac * 2^36 + hp * 2^18 + mana, base tier / top tier
+             lvl = {}, zone = {} }  -- npcs
+end
+
+function DB.setDir(dir)
+    if dir and dir ~= '' and dir:sub(-1) ~= '/' and dir:sub(-1) ~= '\\' then dir = dir .. '/' end
+    DB.dir = dir
+    DB.kinds = {}
+    DB.cache = {}
+    DB.cacheN = 0
+    DB.cards = {}
+    DB.cardsN = 0
+    for _, f in pairs(DB.handles) do pcall(function() f:close() end) end
+    DB.handles = {}
+    DB.loadQueue = {}
+    if DB.loading and DB.loading.file then
+        local lf = DB.loading.file
+        pcall(function() lf:close() end)
+        DB.loading.file = nil
+    end
+    DB.loading = nil
+    DB.error = nil
+    DB.manifest = nil
+end
+
+function DB.resolveDir()
+    if DB.dir then return DB.dir end
+    local base = nil
+    pcall(function()
+        if mq and mq.TLO and mq.TLO.MacroQuest and mq.TLO.MacroQuest.Path then
+            local p = mq.TLO.MacroQuest.Path('resources')
+            base = p and p() or nil
+            if (not base or base == '') and mq.TLO.MacroQuest.Path() then
+                local root = mq.TLO.MacroQuest.Path()()
+                if root and root ~= '' then base = root .. '/resources' end
+            end
+        end
+    end)
+    if not base or base == '' then base = 'resources' end
+    base = base:gsub('\\', '/')
+    -- Only the path is set here: setDir() would also drop the index tables
+    -- and the load queue, which the caller (the loader itself) is using.
+    DB.dir = base .. '/gamedb/'
+    return DB.dir
+end
+
+function DB.readManifest()
+    if DB.manifest then return DB.manifest end
+    local f = io.open(DB.resolveDir() .. 'manifest.txt', 'r')
+    local m = {}
+    if f then
+        for line in f:lines() do
+            local k, v = line:match('^(%w+)=(.*)$')
+            if k then m[k] = v end
+        end
+        f:close()
+        m.present = true
+    else
+        m.present = false
+    end
+    DB.manifest = m
+    return m
+end
+
+function DB.index(kind)
+    local ix = DB.kinds[kind]
+    if not ix then
+        ix = newIndex(kind)
+        DB.kinds[kind] = ix
+    end
+    return ix
+end
+
+function DB.isLoaded(kind)
+    local ix = DB.kinds[kind]
+    return ix ~= nil and ix.loaded
+end
+
+-- Queue an index for loading (no-op if loaded / queued).
+function DB.ensure(kind)
+    local ix = DB.index(kind)
+    if ix.loaded or ix.failed then return end
+    if DB.loading == ix then return end
+    for _, q in ipairs(DB.loadQueue) do
+        if q == ix then return end
+    end
+    DB.loadQueue[#DB.loadQueue + 1] = ix
+end
+
+-- "chunk:offset" -> one number (chunk * 2^32 + offset, exact in a double)
+local REF_BASE = 4294967296
+local function packRef(ref)
+    if not ref or ref == '' then return false end
+    local chunk, off = ref:match('^(%d+):(%d+)$')
+    if not chunk then return false end
+    return tonumber(chunk) * REF_BASE + tonumber(off)
+end
+
+local function addEntry(ix, id, ref, name)
+    local n = ix.n + 1
+    ix.n = n
+    ix.ids[n] = id
+    ix.refs[n] = packRef(ref)
+    ix.byId[id] = n
+    ix.pieces[n] = name
+    ix.starts[n] = ix.pos
+    ix.pos = ix.pos + #name + 1
+    return n
+end
+
+-- Original-case name of entry n.
+function DB.nameAt(ix, n)
+    local starts = ix.starts
+    local s = starts[n]
+    if not s then return '' end
+    local blob = ix.orig
+    if not blob then
+        -- still loading: the pieces array holds the names
+        return ix.pieces and ix.pieces[n] or ''
+    end
+    local e = (starts[n + 1] or (#blob + 2)) - 2
+    return blob:sub(s, e)
+end
+
+-- Item filter packing (items.idx v2). Three numbers per entry keep the
+-- 150k-entry index at a few tables instead of a dozen; every field stays
+-- exact in a double (34, 46 and 52 bits).
+local PACK = {
+    CLASSES = 131072,          -- 2^17: classes field (bit 16 is set on "all" rows)
+    SLOTS = 8388608,           -- 2^23
+    REQ = 32768,               -- 2^15
+    TYPE = 256,                -- 2^8
+    AC = 68719476736,          -- 2^36
+    HP = 262144,               -- 2^18
+    STAT_MAX = 262143,         -- hp / mana cap (18 bits); ac caps at 65535
+}
+-- flags bits (tools/build_gamedb.py ITEM_FLAG_BITS)
+local FLAG = { NODROP = 1, MAGIC = 2, LORE = 4, CLICK = 8, PROC = 16, WORN = 32, FOCUS = 64, QUEST = 128 }
+
+local function clampStat(v, cap)
+    v = tonumber(v) or 0
+    if v < 0 then return 0 end
+    if v > cap then return cap end
+    return v
+end
+
+local function packStat(ac, hp, mana)
+    return clampStat(ac, 65535) * PACK.AC + clampStat(hp, PACK.STAT_MAX) * PACK.HP + clampStat(mana, PACK.STAT_MAX)
+end
+
+-- Fills the packed filter arrays of entry n from the v2 filter field.
+local function parseItemFilter(ix, n, filt)
+    local c, r, sl, t, q, fl, a1, h1, m1, a2, h2, m2 = filt:match('^(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+)$')
+    if not c then
+        ix.mask[n], ix.attr[n], ix.statB[n], ix.statT[n] = 0, 0, 0, 0
+        return
+    end
+    ix.mask[n] = (tonumber(c) % PACK.CLASSES) * PACK.CLASSES + (tonumber(r) % PACK.CLASSES)
+    ix.attr[n] = (tonumber(sl) % PACK.SLOTS) * PACK.SLOTS + math.min(tonumber(q), 255) * PACK.REQ + (tonumber(t) % 128) * PACK.TYPE + (tonumber(fl) % 256)
+    ix.statB[n] = packStat(a1, h1, m1)
+    ix.statT[n] = packStat(a2, h2, m2)
+end
+
+local PARSERS = {}
+PARSERS.items = function(ix, line)
+    local id, tiers, rb, re_, rl, filt, name
+    if ix.version >= 2 then
+        id, tiers, rb, re_, rl, filt, name = line:match('^(%d+)|(%a*)|([^|]*)|([^|]*)|([^|]*)|([%d,%-]*)|(.*)$')
+    else
+        id, tiers, rb, re_, rl, name = line:match('^(%d+)|(%a*)|([^|]*)|([^|]*)|([^|]*)|(.*)$')
+    end
+    if not id then return end
+    -- refs[n] is the base row, or the enchanted / legendary row when no base exists
+    local n = addEntry(ix, tonumber(id), rb ~= '' and rb or (re_ ~= '' and re_ or rl), ENC.unescape(name))
+    ix.extra[n] = tiers
+    ix.refE[n] = packRef(re_)
+    ix.refL[n] = packRef(rl)
+    if filt then parseItemFilter(ix, n, filt) end
+end
+PARSERS.npcs = function(ix, line)
+    local id, ref, lvl, zone, name = line:match('^(%d+)|([^|]*)|(%-?%d+)|([^|]*)|(.*)$')
+    if not id then return end
+    name = ENC.unescape(name)
+    local n = addEntry(ix, tonumber(id), ref, name)
+    ix.lvl[n] = tonumber(lvl) or 0
+    ix.zone[n] = ENC.unescape(zone)
+    -- name -> entries, for resolving a live spawn to its database NPC
+    ix.byName = ix.byName or {}
+    local low = name:lower()
+    local list = ix.byName[low]
+    if not list then
+        ix.byName[low] = n
+    elseif type(list) == 'number' then
+        ix.byName[low] = { list, n }
+    else
+        list[#list + 1] = n
+    end
+end
+PARSERS.spells = function(ix, line)
+    local id, ref, classes, name = line:match('^(%d+)|([^|]*)|([^|]*)|(.*)$')
+    if not id then return end
+    local n = addEntry(ix, tonumber(id), ref, ENC.unescape(name))
+    ix.extra[n] = classes
+end
+PARSERS.zones = function(ix, line)
+    local short, long = line:match('^([^|]*)|(.*)$')
+    if not short then return end
+    addEntry(ix, ENC.unescape(short), '', ENC.unescape(long))
+end
+
+local function finishLoad(ix)
+    ix.orig = table.concat(ix.pieces, '\n')
+    ix.lower = ix.orig:lower()
+    ix.pieces = nil
+    ix.loaded = true
+    ix.count = ix.n
+    -- cards decoded before this index was in hold placeholder names
+    DB.cards = {}
+    DB.cardsN = 0
+end
+
+-- One slice of index loading; returns true while there is more to do.
+function DB.stepLoad(budget)
+    budget = budget or DB.BUDGET
+    local deadline = os.clock() + budget
+    while true do
+        local ix = DB.loading
+        if not ix then
+            local dir = DB.resolveDir()
+            ix = table.remove(DB.loadQueue, 1)
+            if not ix then return false end
+            local path = dir .. ix.kind .. '.idx'
+            local f = io.open(path, 'rb')
+            if not f then
+                ix.failed = true
+                DB.error = DB.error or ('missing ' .. path)
+                return #DB.loadQueue > 0
+            end
+            local header = f:read('*l') or ''
+            ix.expected = tonumber(header:match('count=(%d+)')) or 0
+            ix.version = tonumber(header:match(' v(%d+) ')) or 1
+            ix.file = f
+            DB.loading = ix
+        end
+        local parse = PARSERS[ix.kind]
+        local f = ix.file
+        local lines = 0
+        while true do
+            local line = f:read('*l')
+            if not line then
+                f:close()
+                ix.file = nil
+                finishLoad(ix)
+                DB.loading = nil
+                break
+            end
+            if line:sub(-1) == '\r' then line = line:sub(1, -2) end
+            if line:sub(1, 1) ~= '#' then parse(ix, line) end
+            lines = lines + 1
+            if lines % 512 == 0 and os.clock() >= deadline then
+                return true
+            end
+        end
+        if os.clock() >= deadline then return DB.loading ~= nil or #DB.loadQueue > 0 end
+    end
+end
+
+-- Blocking load (tests / command-line use); in game the tick slices it.
+function DB.loadNow(kind)
+    DB.ensure(kind)
+    while DB.stepLoad(1000) do end
+    return DB.isLoaded(kind)
+end
+
+function DB.progress()
+    local ix = DB.loading
+    if not ix then return nil end
+    local total = ix.expected or 0
+    if total <= 0 then return ix.kind, 0 end
+    return ix.kind, math.min(1, ix.n / total)
+end
+
+-- Largest i with starts[i] <= pos.
+local function entryAt(ix, pos)
+    local starts = ix.starts
+    local lo, hi = 1, ix.n
+    while lo < hi do
+        local mid = math.floor((lo + hi + 1) / 2)
+        if starts[mid] <= pos then lo = mid else hi = mid - 1 end
+    end
+    return lo
+end
+
+-- Search an index by name. Returns array of entry numbers, best first:
+-- exact name, then names starting with the query, then a word starting with
+-- it, then any substring. `filter(ix, n)` may reject entries; `limit` caps
+-- the result count. Ranks come from match positions alone, so scanning every
+-- match of a common word stays cheap; only small rank buckets are name-sorted.
+function DB.search(kind, query, filter, limit)
+    local ix = DB.kinds[kind]
+    if not ix or not ix.loaded then return {} end
+    limit = limit or DB.MAX_RESULTS
+    query = (query or ''):lower():gsub('_', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+    local out = {}
+    local idNum = tonumber(query)
+    if idNum and ix.byId[idNum] then
+        local n = ix.byId[idNum]
+        if not filter or filter(ix, n) then out[1] = n end
+        return out
+    end
+    if query == '' then
+        if not filter then return out end
+        for n = 1, ix.n do
+            if filter(ix, n) then
+                out[#out + 1] = n
+                if #out >= limit then break end
+            end
+        end
+        return out
+    end
+    local words = {}
+    for w in query:gmatch('%S+') do words[#words + 1] = w end
+    local first = words[1]
+    local lower = ix.lower
+    local starts = ix.starts
+    local buckets = { {}, {}, {}, {} }
+    local seen = {}
+    local qlen = #query
+    local maxCollect = limit * 4
+    local maxScan = DB.MAX_SCAN
+    local scanned = 0
+    -- Accepts entry n (after word / filter checks) into a rank bucket.
+    -- Every call counts toward the scan budget, accepted or not.
+    local function accept(n, lineStart, lineEnd, s)
+        scanned = scanned + 1
+        if seen[n] then return end
+        seen[n] = true
+        local lname = nil
+        if #words > 1 then
+            lname = lower:sub(lineStart, lineEnd)
+            for wi = 2, #words do
+                if not lname:find(words[wi], 1, true) then return end
+            end
+        end
+        if filter and not filter(ix, n) then return end
+        local rank
+        if #words > 1 then
+            if lname == query then rank = 1
+            elseif lname:sub(1, qlen) == query then rank = 2
+            elseif s == lineStart then rank = 3
+            else rank = 4 end
+        elseif s == lineStart then
+            rank = (lineEnd - lineStart + 1 == qlen) and 1 or 2
+        elseif lower:sub(s - 1, s - 1) == ' ' then
+            rank = 3
+        else
+            rank = 4
+        end
+        local b = buckets[rank]
+        b[#b + 1] = n
+        return true
+    end
+    -- Pass 1: matches at the start of a name (exact / prefix ranks). Few hits
+    -- even for common words, so this pass sees the whole index.
+    local collected = 0
+    if lower:sub(1, #first) == first then
+        if accept(1, 1, (starts[2] or (#lower + 2)) - 2, 1) then collected = collected + 1 end
+    end
+    local needle = '\n' .. first
+    local init = 1
+    while collected < maxCollect and scanned < maxScan do
+        local s = lower:find(needle, init, true)
+        if not s then break end
+        s = s + 1
+        local n = entryAt(ix, s)
+        local lineEnd = (starts[n + 1] or (#lower + 2)) - 2
+        if accept(n, starts[n], lineEnd, s) then collected = collected + 1 end
+        -- lineEnd + 1 is the '\n' that the needle for the next name starts with
+        init = lineEnd + 1
+        if init > #lower then break end
+    end
+    -- Pass 2: substring matches anywhere, bounded so a one-letter query
+    -- cannot stall the frame.
+    collected = 0
+    init = 1
+    while collected < maxCollect and scanned < maxScan do
+        local s = lower:find(first, init, true)
+        if not s then break end
+        local n = entryAt(ix, s)
+        local lineStart = starts[n]
+        local lineEnd = (starts[n + 1] or (#lower + 2)) - 2
+        if accept(n, lineStart, lineEnd, s) then collected = collected + 1 end
+        init = lineEnd + 2
+        if init > #lower then break end
+    end
+    local nameCache = {}
+    local function nameOf(x)
+        local v = nameCache[x]
+        if not v then
+            v = DB.nameAt(ix, x)
+            nameCache[x] = v
+        end
+        return v
+    end
+    for r = 1, 4 do
+        local b = buckets[r]
+        if #out >= limit then break end
+        if #b <= 2000 then
+            table.sort(b, function(x, y)
+                local nx, ny = nameOf(x), nameOf(y)
+                if nx ~= ny then return nx < ny end
+                return x < y
+            end)
+        end
+        for i = 1, #b do
+            out[#out + 1] = b[i]
+            if #out >= limit then break end
+        end
+    end
+    return out
+end
+
+-- Raw record line for a packed ref (see packRef) or a "chunk:offset" string.
+function DB.readLine(kind, ref)
+    if type(ref) == 'string' then ref = packRef(ref) end
+    if not ref then return nil end
+    local chunk = math.floor(ref / REF_BASE)
+    local off = ref - chunk * REF_BASE
+    local key = kind .. '.' .. chunk
+    local f = DB.handles[key]
+    if not f then
+        f = io.open(DB.resolveDir() .. key .. '.dat', 'rb')
+        if not f then return nil end
+        DB.handles[key] = f
+    end
+    if not f:seek('set', off) then return nil end
+    local line = f:read('*l')
+    if line and line:sub(-1) == '\r' then line = line:sub(1, -2) end
+    return line
+end
+
+function DB.record(kind, ref)
+    if not ref or ref == '' then return nil end
+    local key = kind .. ':' .. tostring(ref)
+    local rec = DB.cache[key]
+    if rec then return rec end
+    local line = DB.readLine(kind, ref)
+    if not line then return nil end
+    rec = ENC.parseRecord(line)
+    if DB.cacheN >= 200 then
+        DB.cache = {}
+        DB.cacheN = 0
+    end
+    DB.cache[key] = rec
+    DB.cacheN = DB.cacheN + 1
+    return rec
+end
+
+-- ---- item filters (items.idx v2) ------------------------------------------
+-- True once the items index is in and carries the filter field.
+function DB.hasItemFilters()
+    local ix = DB.kinds.items
+    return ix ~= nil and ix.loaded and ix.version >= 2
+end
+
+local function maskHas(mask, bitValue)
+    return math.floor(mask / bitValue) % 2 >= 1
+end
+
+-- classes, races, slots, itemtype, reqlevel, flags of item entry n.
+function DB.itemAttrs(ix, n)
+    local m, a = ix.mask[n] or 0, ix.attr[n] or 0
+    return math.floor(m / PACK.CLASSES), m % PACK.CLASSES,
+           math.floor(a / PACK.SLOTS), math.floor(a / PACK.TYPE) % 128, math.floor(a / PACK.REQ) % 256, a % 256
+end
+
+-- ac, hp, mana of item entry n: the base row, or the top tier row (L / E)
+-- when `top` is set.
+function DB.itemStats(ix, n, top)
+    local st = (top and ix.statT or ix.statB)[n] or 0
+    return math.floor(st / PACK.AC), math.floor(st / PACK.HP) % PACK.HP, st % PACK.HP
+end
+
+local EFFECT_BITS = { FLAG.CLICK, FLAG.PROC, FLAG.WORN, FLAG.FOCUS }
+-- Effect filter choices: { label, bits any of which must be set, bits all of which must be clear }.
+DB.EFFECT_FILTERS = {
+    { 'Any effect',  nil },
+    { 'Has effect',  FLAG.CLICK + FLAG.PROC + FLAG.WORN + FLAG.FOCUS },
+    { 'Click',       FLAG.CLICK },
+    { 'Proc',        FLAG.PROC },
+    { 'Worn',        FLAG.WORN },
+    { 'Focus',       FLAG.FOCUS },
+    { 'No effect',   nil, FLAG.CLICK + FLAG.PROC + FLAG.WORN + FLAG.FOCUS },
+}
+
+-- Builds the search filter for the item pane's settings, or nil when none
+-- is set: class / race (1-16), slots (bitmask, 0 = any), types (set of
+-- itemtype ids, nil = any), minLvl / maxLvl on the required level, tradeable
+-- (no NO DROP), effect (index into DB.EFFECT_FILTERS), minAC / minHP /
+-- minMana, topTier (stats of the item's highest tier).
+function DB.itemFilter(f)
+    local classBit = (f.class or 0) > 0 and 2 ^ (f.class - 1) or nil
+    local raceBit = (f.race or 0) > 0 and 2 ^ (f.race - 1) or nil
+    -- wanted slot bits as values (a slot choice is one or two bits)
+    local slotBits = nil
+    if (f.slots or 0) > 0 then
+        slotBits = {}
+        local rest, bit = f.slots, 1
+        while rest > 0 do
+            if rest % 2 >= 1 then slotBits[#slotBits + 1] = bit end
+            rest, bit = math.floor(rest / 2), bit * 2
+        end
+    end
+    local types = f.types
+    local minL, maxL = f.minLvl or 0, f.maxLvl or 0
+    local eff = DB.EFFECT_FILTERS[f.effect or 1] or DB.EFFECT_FILTERS[1]
+    local effAny, effNone = eff[2], eff[3]
+    local minAC, minHP, minMana = f.minAC or 0, f.minHP or 0, f.minMana or 0
+    local anyStat = minAC > 0 or minHP > 0 or minMana > 0
+    if not (classBit or raceBit or slotBits or types or minL > 0 or maxL > 0 or f.tradeable or effAny or effNone or anyStat) then
+        return nil
+    end
+    local top = f.topTier == true
+    local CLASSES, SLOTS, REQ, TYPE, AC, HP = PACK.CLASSES, PACK.SLOTS, PACK.REQ, PACK.TYPE, PACK.AC, PACK.HP
+    return function(ix, n)
+        if ix.version < 2 then return true end
+        if classBit or raceBit then
+            local m = ix.mask[n] or 0
+            if classBit and not maskHas(math.floor(m / CLASSES), classBit) then return false end
+            if raceBit and not maskHas(m % CLASSES, raceBit) then return false end
+        end
+        local a = ix.attr[n] or 0
+        if slotBits then
+            local sl = math.floor(a / SLOTS)
+            local hit = false
+            for i = 1, #slotBits do
+                if maskHas(sl, slotBits[i]) then hit = true; break end
+            end
+            if not hit then return false end
+        end
+        if types and not types[math.floor(a / TYPE) % 128] then return false end
+        if minL > 0 or maxL > 0 then
+            local q = math.floor(a / REQ) % 256
+            if minL > 0 and q < minL then return false end
+            if maxL > 0 and q > maxL then return false end
+        end
+        if f.tradeable or effAny or effNone then
+            local fl = a % 256
+            if f.tradeable and fl % 2 >= 1 then return false end
+            if effAny then
+                local hit = false
+                for i = 1, #EFFECT_BITS do
+                    local bit = EFFECT_BITS[i]
+                    if maskHas(effAny, bit) and maskHas(fl, bit) then hit = true; break end
+                end
+                if not hit then return false end
+            end
+            if effNone then
+                for i = 1, #EFFECT_BITS do
+                    if maskHas(fl, EFFECT_BITS[i]) then return false end
+                end
+            end
+        end
+        if anyStat then
+            local st = (top and ix.statT or ix.statB)[n] or 0
+            if minAC > 0 and math.floor(st / AC) < minAC then return false end
+            if minHP > 0 and math.floor(st / HP) % HP < minHP then return false end
+            if minMana > 0 and st % HP < minMana then return false end
+        end
+        return true
+    end
+end
+
+-- Sort keys for item results (descending); 'match' keeps DB.search order.
+DB.ITEM_SORTS = { { 'match', 'Best match' }, { 'ac', 'AC' }, { 'hp', 'HP' }, { 'mana', 'Mana' }, { 'level', 'Req. level' } }
+
+-- Reorders `results` (entry numbers) by a numeric key, highest first, and
+-- cuts the list to `limit`; entries sharing a key keep their search order.
+-- Groups by distinct key so a 100k-row filter sorts a few thousand keys,
+-- not the rows. Returns the new list and the pre-cut count.
+function DB.sortItems(results, key, top, limit)
+    local ix = DB.kinds.items
+    if not ix or not ix.loaded or key == 'match' or not key then return results, #results end
+    local keyOf
+    if key == 'level' then
+        local attr, REQ = ix.attr, PACK.REQ
+        keyOf = function(n) return math.floor((attr[n] or 0) / REQ) % 256 end
+    else
+        local stat = top and ix.statT or ix.statB
+        local AC, HP = PACK.AC, PACK.HP
+        if key == 'ac' then keyOf = function(n) return math.floor((stat[n] or 0) / AC) end
+        elseif key == 'hp' then keyOf = function(n) return math.floor((stat[n] or 0) / HP) % HP end
+        else keyOf = function(n) return (stat[n] or 0) % HP end end
+    end
+    local groups, keys = {}, {}
+    for i = 1, #results do
+        local n = results[i]
+        local k = keyOf(n)
+        local g = groups[k]
+        if not g then
+            g = {}
+            groups[k] = g
+            keys[#keys + 1] = k
+        end
+        g[#g + 1] = n
+    end
+    table.sort(keys, function(a, b) return a > b end)
+    local out = {}
+    for _, k in ipairs(keys) do
+        for _, n in ipairs(groups[k]) do
+            out[#out + 1] = n
+            if limit and #out >= limit then return out, #results end
+        end
+    end
+    return out, #results
+end
+
+-- ---- lookups by id --------------------------------------------------------
+function DB.itemEntry(id)
+    local ix = DB.kinds.items
+    if not ix or not ix.loaded then return nil end
+    local _, base = D.tierOf(id)
+    local n = ix.byId[base]
+    return n, ix
+end
+
+function DB.itemName(id)
+    local tier, base = D.tierOf(id)
+    local n, ix = DB.itemEntry(base)
+    if not n then return 'Item ' .. tostring(id) end
+    local name = DB.nameAt(ix, n)
+    if tier == 'E' then return name .. ' (Enchanted)' end
+    if tier == 'L' then return name .. ' (Legendary)' end
+    return name
+end
+
+function DB.itemTiers(id)
+    local n, ix = DB.itemEntry(id)
+    if not n then return '' end
+    return ix.extra[n] or ''
+end
+
+-- Record of one tier of an item; falls back to nil when the tier is missing.
+function DB.itemRecord(baseId, tier)
+    local n, ix = DB.itemEntry(baseId)
+    if not n then return nil end
+    tier = tier or 'B'
+    local ref
+    if tier == 'E' then ref = ix.refE[n]
+    elseif tier == 'L' then ref = ix.refL[n]
+    else ref = (ix.extra[n] or ''):find('B', 1, true) and ix.refs[n] or nil end
+    if not ref then return nil end
+    return DB.record('items', ref)
+end
+
+function DB.npcName(id)
+    local ix = DB.kinds.npcs
+    local n = ix and ix.loaded and ix.byId[tonumber(id) or -1]
+    if not n then return 'NPC ' .. tostring(id) end
+    return DB.nameAt(ix, n)
+end
+
+function DB.npcInfo(id)
+    local ix = DB.kinds.npcs
+    local n = ix and ix.loaded and ix.byId[tonumber(id) or -1]
+    if not n then return nil end
+    return { name = DB.nameAt(ix, n), lvl = ix.lvl[n], zone = ix.zone[n], ref = ix.refs[n] }
+end
+
+function DB.npcRecord(id)
+    local info = DB.npcInfo(id)
+    return info and DB.record('npcs', info.ref) or nil
+end
+
+function DB.spellName(id)
+    local ix = DB.kinds.spells
+    local n = ix and ix.loaded and ix.byId[tonumber(id) or -1]
+    if not n then
+        local nm = nil
+        pcall(function() nm = mq and mq.TLO and mq.TLO.Spell(tonumber(id)).Name() end)
+        if nm and nm ~= '' and nm ~= 'NULL' then return nm end
+        return 'Spell ' .. tostring(id)
+    end
+    return DB.nameAt(ix, n)
+end
+
+function DB.spellRecord(id)
+    local ix = DB.kinds.spells
+    local n = ix and ix.loaded and ix.byId[tonumber(id) or -1]
+    if not n then return nil end
+    return DB.record('spells', ix.refs[n])
+end
+
+function DB.spellClasses(n)
+    local ix = DB.kinds.spells
+    return ix and ix.extra[n] or ''
+end
+
+-- Database NPC for a live spawn: same name (case-insensitive, underscores as
+-- spaces, no leading '#'), preferring an entry in `zone` and then the closest
+-- level. Returns the NPC id or nil.
+function DB.npcIdFor(name, zone, level)
+    local ix = DB.kinds.npcs
+    if not ix or not ix.loaded or not ix.byName or not name then return nil end
+    local key = tostring(name):gsub('^#', ''):gsub('_', ' '):lower()
+    local hit = ix.byName[key]
+    if not hit then return nil end
+    if type(hit) == 'number' then return ix.ids[hit] end
+    zone = (zone or ''):lower()
+    level = tonumber(level) or 0
+    local best, bestScore = nil, -1
+    for _, n in ipairs(hit) do
+        local score = 0
+        if zone ~= '' and ix.zone[n]:lower() == zone then score = score + 1000 end
+        if level > 0 then score = score + math.max(0, 100 - math.abs(ix.lvl[n] - level)) end
+        if score > bestScore then best, bestScore = n, score end
+    end
+    return best and ix.ids[best] or nil
+end
+
+-- Special ability ids of an NPC record as a set { [id] = param }.
+function DB.npcAbilities(npcId)
+    local rec = DB.npcRecord(npcId)
+    if not rec then return nil end
+    local out = {}
+    local raw = ENC.str(rec, 'special_abilities')
+    for part in (raw .. '^'):gmatch('([^%^]*)%^') do
+        local id, param = part:match('^(%d+),?(%d*)')
+        if id and param ~= '0' then out[tonumber(id)] = tonumber(param) or 1 end
+    end
+    return out, rec
+end
+
+function DB.zoneName(short)
+    if not short or short == '' then return '' end
+    local ix = DB.kinds.zones
+    local n = ix and ix.loaded and ix.byId[short]
+    if not n then return short end
+    return DB.nameAt(ix, n)
+end
+
+-- ----------------------------------------------------------------------------
+-- UI state and navigation
+-- ----------------------------------------------------------------------------
+local S = {
+    tab      = 'items',
+    items    = { query = '', results = {}, labels = {}, sel = nil, tier = 'B', dirty = false, dirtyAt = 0, scroll = false,
+                 -- filters (items.idx v2): see DB.itemFilter / ITEM_FILTER_DEFAULTS
+                 class = 0, race = 0, slot = 0, itype = 0, minLvl = 0, maxLvl = 0, effect = 1, tradeable = false,
+                 minAC = 0, minHP = 0, minMana = 0, topTier = false, sort = 1, total = 0, filtersOpen = false },
+    npcs     = { query = '', results = {}, labels = {}, sel = nil, zone = '', minLvl = 0, maxLvl = 0, dirty = false, dirtyAt = 0 },
+    spells   = { query = '', results = {}, labels = {}, sel = nil, class = 0, minLvl = 0, maxLvl = 0, dirty = false, dirtyAt = 0 },
+    history  = {},
+    histPos  = 0,
+    pendingTab = nil,
+    status   = '',
+    lastCursorId = 0,
+    popouts  = {},   -- floating item cards: { key, kind, sel, tier, title }
+    popoutSeq = 0,
+    linkOpensWindow = false,
+    -- Loot Advisor: rows for the corpse being looted
+    lootAdvisor = true,
+    loot = { open = false, corpseId = 0, npcId = nil, npcName = '', rows = {}, lastScan = 0 },
+    -- Spell Info replacement: the game's Spell Display window is closed as
+    -- it opens and the spell's card is shown instead (see watchSpellWindow)
+    spellWindow = true,
+    spellWnd = { wasOpen = false, lastKey = nil },
+}
+local MAX_POPOUTS = 8
+
+local KINDS = { 'items', 'npcs', 'spells' }
+local KIND_LABELS = { items = 'Items', npcs = 'NPCs', spells = 'Spells' }
+
+-- Item filter widgets. Slots with two bits (Ear, Wrist, Finger) are one
+-- choice covering both; item types sharing a name (Throwing, Key, Charm,
+-- Mount) are one choice matching every id.
+local ITEM_FILTER_DEFAULTS = { class = 0, race = 0, slot = 0, itype = 0, minLvl = 0, maxLvl = 0, effect = 1, tradeable = false,
+                               minAC = 0, minHP = 0, minMana = 0, sort = 1 }
+local SLOT_CHOICES = {}   -- { name, mask }
+do
+    local at = {}
+    for i, name in ipairs(D.SLOTS) do
+        local c = at[name]
+        if not c then
+            c = { name, 0 }
+            at[name] = c
+            SLOT_CHOICES[#SLOT_CHOICES + 1] = c
+        end
+        c[2] = c[2] + 2 ^ (i - 1)
+    end
+end
+local TYPE_CHOICES = {}   -- { name, { [id] = true } }, name order
+do
+    local at = {}
+    for id, name in pairs(D.ITEM_TYPES) do
+        local c = at[name]
+        if not c then
+            c = { name, {} }
+            at[name] = c
+            TYPE_CHOICES[#TYPE_CHOICES + 1] = c
+        end
+        c[2][id] = true
+    end
+    table.sort(TYPE_CHOICES, function(a, b) return a[1] < b[1] end)
+end
+
+-- Number of item filters set away from their defaults.
+local function itemFiltersActive(st)
+    local n = 0
+    for k, v in pairs(ITEM_FILTER_DEFAULTS) do
+        if k ~= 'sort' and st[k] ~= v then n = n + 1 end
+    end
+    return n
+end
+
+local function queueAll()
+    DB.ensure('zones')
+    for _, k in ipairs(KINDS) do DB.ensure(k) end
+end
+
+-- Search text / filter change from the window: the search itself runs on
+-- the tick once the input has been quiet for SEARCH_DEBOUNCE seconds.
+local SEARCH_DEBOUNCE = 0.15
+local function markDirty(st)
+    st.dirty = true
+    st.dirtyAt = os.clock()
+end
+
+local function stepLoading()
+    if DB.loading or #DB.loadQueue > 0 then
+        DB.stepLoad(ctrl and ctrl.show_gamedb and DB.BUDGET_OPEN or DB.BUDGET_IDLE)
+    end
+end
+
+
+local function pushHistory(kind, id)
+    -- drop forward entries, append, cap
+    for i = #S.history, S.histPos + 1, -1 do table.remove(S.history, i) end
+    S.history[#S.history + 1] = { kind = kind, id = id }
+    if #S.history > 100 then table.remove(S.history, 1) end
+    S.histPos = #S.history
+end
+
+local function showEntry(kind, id, noHistory)
+    if not KIND_LABELS[kind] then return false end
+    id = tonumber(id)
+    if not id then return false end
+    S.tab = kind
+    S.pendingTab = kind
+    if kind == 'items' then
+        local tier, base = D.tierOf(id)
+        S.items.sel = base
+        S.items.tier = tier
+        local tiers = DB.itemTiers(base)
+        if tiers ~= '' and not tiers:find(tier, 1, true) then S.items.tier = tiers:sub(1, 1) end
+    else
+        S[kind].sel = id
+    end
+    if not noHistory then pushHistory(kind, id) end
+    if S.linkOpensWindow and ctrl then ctrl.show_gamedb = true end
+    return true
+end
+
+-- A floating card for one item (chat links, other plugins). Returns the
+-- popout entry, or nil when the item is unknown. Re-opening an item that
+-- already has a card just brings that card to the front.
+local function openPopout(kind, id)
+    if not KIND_LABELS[kind] then return nil end
+    id = tonumber(id)
+    if not id then return nil end
+    local tier = 'B'
+    if kind == 'items' then
+        local base
+        tier, base = D.tierOf(id)
+        if not DB.itemEntry(base) then return nil end
+        local tiers = DB.itemTiers(base)
+        if tiers ~= '' and not tiers:find(tier, 1, true) then tier = tiers:sub(1, 1) end
+        id = base
+    elseif kind == 'npcs' then
+        if not DB.npcInfo(id) then return nil end
+    elseif not DB.spellRecord(id) then
+        return nil
+    end
+    for _, pop in ipairs(S.popouts) do
+        if pop.kind == kind and pop.sel == id then
+            pop.tier = tier
+            pop.focus = true
+            return pop
+        end
+    end
+    while #S.popouts >= MAX_POPOUTS do table.remove(S.popouts, 1) end
+    S.popoutSeq = S.popoutSeq + 1
+    local pop = { key = S.popoutSeq, kind = kind, sel = id, tier = tier, focus = true, showSources = false }
+    S.popouts[#S.popouts + 1] = pop
+    return pop
+end
+
+local function spellClassesText(classes)
+    local out = {}
+    for c, l in (classes or ''):gmatch('(%d+):(%d+)') do
+        out[#out + 1] = string.format('%s %s', D.CLASSES[tonumber(c)] or ('C' .. c), l)
+    end
+    return table.concat(out, '  ')
+end
+
+-- Result row label, built once per search (drawResults used to format it
+-- for every row on every frame).
+local function resultLabel(kind, ix, n)
+    local label = DB.nameAt(ix, n)
+    if kind == 'npcs' then
+        local z = ix.zone[n]
+        label = string.format('%s  (%d, %s)', label, ix.lvl[n], z ~= '' and z or '-')
+    elseif kind == 'spells' then
+        local cls = ix.extra[n] or ''
+        local first = cls:match('^(%d+):(%d+)')
+        if first then
+            local cnt = select(2, cls:gsub(':', ''))
+            label = string.format('%s  (%s)', label, cnt > 3 and (cnt .. ' classes') or spellClassesText(cls))
+        end
+    elseif kind == 'items' then
+        local tiers = ix.extra[n] or ''
+        if tiers:find('L', 1, true) then label = label .. '  [B/E/L]' elseif tiers:find('E', 1, true) then label = label .. '  [B/E]' end
+    end
+    return label
+end
+
+-- Builds the row labels once a search has its final results.
+local function setResultLabels(kind, st)
+    local ix = DB.kinds[kind]
+    local labels = {}
+    if ix and ix.loaded then
+        for i, n in ipairs(st.results) do labels[i] = resultLabel(kind, ix, n) end
+    end
+    st.labels = labels
+end
+
+-- One slice of a sorted, filter-only item listing (see runSearch). The
+-- filter has to see every entry (~150k), so the walk is spread over ticks /
+-- frames instead of stalling one; results land when it is complete.
+local function stepScanJob(kind, budget)
+    local st = S[kind]
+    local job = st.scanJob
+    if not job then return end
+    local ix = DB.kinds[kind]
+    if ix ~= job.ix or not ix.loaded then
+        st.scanJob = nil
+        return
+    end
+    local deadline = os.clock() + (budget or DB.BUDGET_OPEN)
+    local filter, all, last = job.filter, job.all, ix.n
+    local n = job.n
+    while n <= last do
+        if filter(ix, n) then all[#all + 1] = n end
+        n = n + 1
+        if n % 2048 == 0 and os.clock() >= deadline then break end
+    end
+    job.n = n
+    if n <= last then return end
+    st.scanJob = nil
+    st.results, st.total = DB.sortItems(all, job.key, job.top, DB.MAX_RESULTS)
+    setResultLabels(kind, st)
+end
+
+local function runSearch(kind)
+    local st = S[kind]
+    st.dirty = false
+    st.scanJob = nil
+    local filter = nil
+    local sortKey = nil
+    if kind == 'items' then
+        if DB.hasItemFilters() then
+            local slotChoice, typeChoice = SLOT_CHOICES[st.slot or 0], TYPE_CHOICES[st.itype or 0]
+            filter = DB.itemFilter({
+                class = st.class, race = st.race, slots = slotChoice and slotChoice[2] or 0, types = typeChoice and typeChoice[2] or nil,
+                minLvl = st.minLvl, maxLvl = st.maxLvl, effect = st.effect, tradeable = st.tradeable,
+                minAC = st.minAC, minHP = st.minHP, minMana = st.minMana, topTier = st.topTier,
+            })
+            local sort = DB.ITEM_SORTS[st.sort or 1]
+            if sort and sort[1] ~= 'match' then sortKey = sort[1] end
+        end
+    elseif kind == 'npcs' then
+        local zone = (st.zone or ''):lower()
+        local minL, maxL = st.minLvl or 0, st.maxLvl or 0
+        if zone ~= '' or minL > 0 or maxL > 0 then
+            filter = function(ix, n)
+                local z, l = ix.zone[n], ix.lvl[n]
+                if zone ~= '' and not (z:lower():find(zone, 1, true) or DB.zoneName(z):lower():find(zone, 1, true)) then return false end
+                if minL > 0 and l < minL then return false end
+                if maxL > 0 and l > maxL then return false end
+                return true
+            end
+        end
+    elseif kind == 'spells' then
+        local cls, minL, maxL = st.class or 0, st.minLvl or 0, st.maxLvl or 0
+        if cls > 0 or minL > 0 or maxL > 0 then
+            filter = function(ix, n)
+                local classes = ix.extra[n] or ''
+                if classes == '' then return false end
+                if cls > 0 then
+                    local lvl = tonumber(classes:match('%f[%d]' .. cls .. ':(%d+)'))
+                    if not lvl then return false end
+                    if minL > 0 and lvl < minL then return false end
+                    if maxL > 0 and lvl > maxL then return false end
+                    return true
+                end
+                for lvlStr in classes:gmatch(':(%d+)') do
+                    local lvl = tonumber(lvlStr)
+                    if (minL == 0 or lvl >= minL) and (maxL == 0 or lvl <= maxL) then return true end
+                end
+                return false
+            end
+        end
+    end
+    if sortKey and filter and (tostring(st.query or ''):gsub('[_%s]', '')) == '' and DB.isLoaded(kind) then
+        -- sorted with no words: every entry goes through the filter, sliced
+        -- (the first slice runs now, so a small index finishes at once)
+        st.scanJob = { ix = DB.kinds[kind], filter = filter, key = sortKey, top = st.topTier, n = 1, all = {} }
+        stepScanJob(kind)
+        return
+    elseif sortKey then
+        -- sorted: collect every match (a word query is bounded by
+        -- DB.MAX_SCAN), order by the key and keep the top of the list
+        local all = DB.search(kind, st.query, filter, math.huge)
+        st.results, st.total = DB.sortItems(all, sortKey, st.topTier, DB.MAX_RESULTS)
+    else
+        st.results = DB.search(kind, st.query, filter, DB.MAX_RESULTS)
+        st.total = #st.results
+    end
+    setResultLabels(kind, st)
+end
+
+-- Tick side of markDirty: one search per kind once its index is in and
+-- the input has settled.
+local function runPendingSearches()
+    local now = os.clock()
+    for _, kind in ipairs(KINDS) do
+        local st = S[kind]
+        if st.dirty and DB.isLoaded(kind) and (now - (st.dirtyAt or 0)) >= SEARCH_DEBOUNCE then
+            runSearch(kind)
+        elseif st.scanJob then
+            stepScanJob(kind)
+        end
+    end
+end
+
+-- Public entry points -------------------------------------------------------
+function plugin.open(kind, id)
+    if not core then return false end
+    refresh()
+    queueAll()
+    ctrl.show_gamedb = true
+    return showEntry(kind, id)
+end
+
+function plugin.search(kind, text)
+    if not core then return false end
+    refresh()
+    kind = KIND_LABELS[kind] and kind or 'items'
+    queueAll()
+    S.tab = kind
+    S.pendingTab = kind
+    S[kind].query = tostring(text or '')
+    S[kind].dirty = true
+    S[kind].dirtyAt = 0
+    ctrl.show_gamedb = true
+    return true
+end
+
+-- Opens a floating card for an item id (tier offsets honoured). Loads the
+-- indexes if needed; until they are ready the card shows a loading note.
+function plugin.popout(kind, id)
+    if not core then return false end
+    refresh()
+    queueAll()
+    kind = KIND_LABELS[kind] and kind or 'items'
+    if not DB.isLoaded(kind) then
+        -- remember it; the card resolves once the index is in
+        id = tonumber(id)
+        if not id or id <= 0 then return false end
+        S.popoutSeq = S.popoutSeq + 1
+        while #S.popouts >= MAX_POPOUTS do table.remove(S.popouts, 1) end
+        S.popouts[#S.popouts + 1] = { key = S.popoutSeq, kind = kind, sel = id, tier = 'B', pending = id, focus = true, showSources = false }
+        return true
+    end
+    return openPopout(kind, id) ~= nil
+end
+
+function plugin.closePopouts()
+    S.popouts = {}
+end
+
+-- Live spawn -> database NPC id (nil when the NPC index is not loaded or the
+-- spawn is unknown). Hits are cached per spawn id until the zone changes
+-- (spawn ids are per zone instance) together with the spawn's name, which is
+-- re-checked on every lookup so a reused spawn id never inherits the old
+-- NPC; misses only for a few seconds, and a spawn that could not be read at
+-- all (out of range) is not cached.
+local spawnNpcCache = { hits = {}, misses = {}, n = 0 }
+local SPAWN_MISS_TTL = 10.0
+function plugin.npcIdForSpawn(spawnId)
+    spawnId = tonumber(spawnId)
+    if not spawnId or spawnId <= 0 or not mq then return nil end
+    local name, level = nil, 0
+    pcall(function()
+        local sp = mq.TLO.Spawn(spawnId)
+        if sp and sp() then
+            name = sp.CleanName() or sp.Name()
+            level = sp.Level() or 0
+        end
+    end)
+    if not name or name == '' then return nil end
+    local hit = spawnNpcCache.hits[spawnId]
+    if hit then
+        if hit.name == name then return hit.id end
+        spawnNpcCache.hits[spawnId] = nil
+        spawnNpcCache.misses[spawnId] = nil
+    end
+    local now = os.clock()
+    local miss = spawnNpcCache.misses[spawnId]
+    if miss then
+        if miss.name == name and (now - miss.at) < SPAWN_MISS_TTL then return nil end
+        spawnNpcCache.misses[spawnId] = nil
+    end
+    if not DB.isLoaded('npcs') then
+        -- first lookup starts the (sliced) load
+        DB.ensure('zones')
+        DB.ensure('npcs')
+        return nil
+    end
+    local zone = ''
+    pcall(function() zone = mq.TLO.Zone.ShortName() or '' end)
+    local id = DB.npcIdFor(name, zone, level)
+    if spawnNpcCache.n > 500 then spawnNpcCache = { hits = {}, misses = {}, n = 0 } end
+    spawnNpcCache.n = spawnNpcCache.n + 1
+    if id then
+        spawnNpcCache.hits[spawnId] = { id = id, name = name }
+    else
+        spawnNpcCache.misses[spawnId] = { at = now, name = name }
+    end
+    return id
+end
+
+local function clearSpawnCache()
+    spawnNpcCache = { hits = {}, misses = {}, n = 0 }
+end
+
+-- Cast tracker hook: reason a detrimental spell is wasted on this spawn, or
+-- nil. Installed on core.castTracker.knownImmunity while the plugin runs.
+function plugin.immunityReason(spellName, spawnId)
+    local npcId = plugin.npcIdForSpawn(spawnId)
+    if not npcId then return nil end
+    local abilities = DB.npcAbilities(npcId)
+    if not abilities or not next(abilities) then return nil end
+    local function hasSPA(spa)
+        local hit = false
+        pcall(function()
+            local res = mq.TLO.Spell(spellName).HasSPA(spa)
+            if res == true or res == 1 then hit = true end
+        end)
+        return hit
+    end
+    return D.immunityReason(abilities, hasSPA)
+end
+
+-- Short "what the game does not tell you" lines for an item id, for other
+-- plugins' tooltips (Inventory). Cached per base id. nil until the indexes
+-- are loaded or when the item is unknown.
+local summaryCache, summaryCount = {}, 0
+function plugin.itemSummary(id)
+    local _, base = D.tierOf(tonumber(id) or 0)
+    if base <= 0 then return nil end
+    if not DB.isLoaded('items') or not DB.isLoaded('npcs') then
+        -- first lookup starts the (sliced) load; nil until it is in
+        DB.ensure('zones')
+        DB.ensure('items')
+        DB.ensure('npcs')
+        return nil
+    end
+    local cached = summaryCache[base]
+    if cached ~= nil then return cached or nil end
+    local rec = DB.itemRecord(base, 'B')
+    local lines = nil
+    if rec then
+        lines = {}
+        local tiers = DB.itemTiers(base)
+        if #tiers > 1 then
+            local names = {}
+            for t in tiers:gmatch('%a') do names[#names + 1] = D.TIER_NAMES[t] end
+            lines[#lines + 1] = 'Tiers: ' .. table.concat(names, ' / ')
+        end
+        local drops = ENC.list(rec, 'drops')
+        if #drops > 0 then
+            local nid = tonumber(drops[1][1]) or 0
+            local info = DB.npcInfo(nid)
+            local total = #drops + (drops.more or 0)
+            lines[#lines + 1] = string.format('Drops from: %s (%s) %s%%%s', info and info.name or ('NPC ' .. nid),
+                info and DB.zoneName(info.zone) or '?', drops[1][2] or '?', total > 1 and string.format(', +%d more', total - 1) or '')
+        end
+        local quests = ENC.list(rec, 'quests')
+        for i, q in ipairs(quests) do
+            if i > 2 then
+                lines[#lines + 1] = string.format('  +%d more quest NPCs', #quests - 2)
+                break
+            end
+            local nid = tonumber(q[1]) or 0
+            local who = nid > 0 and DB.npcName(nid) or (q[2] ~= '' and q[2] or 'Unknown NPC')
+            lines[#lines + 1] = string.format('%s: %s (%s)', q[4] == 'R' and 'Quest reward from' or 'Quest turn-in to', who,
+                q[3] == 'global' and 'Global' or DB.zoneName(q[3]))
+        end
+        local made = ENC.list(rec, 'made')
+        local usedin = ENC.list(rec, 'usedin')
+        if #made > 0 or #usedin > 0 then
+            local parts = {}
+            if #made > 0 then
+                parts[#parts + 1] = string.format('made by %s (trivial %s)', D.tradeskillName(tonumber(made[1][3]) or 0), made[1][5] ~= '' and made[1][5] or '?')
+            end
+            if #usedin > 0 then parts[#parts + 1] = string.format('used in %d recipe%s', #usedin + (usedin.more or 0), (#usedin + (usedin.more or 0)) == 1 and '' or 's') end
+            lines[#lines + 1] = 'Tradeskill: ' .. table.concat(parts, '; ')
+        end
+        local sold = ENC.list(rec, 'sold')
+        if #sold > 0 then lines[#lines + 1] = string.format('Sold by %d vendor%s', #sold + (sold.more or 0), (#sold + (sold.more or 0)) == 1 and '' or 's') end
+        if #lines == 0 then lines[#lines + 1] = 'No known drop, quest or tradeskill source' end
+    end
+    if summaryCount >= 300 then
+        summaryCache = {}
+        summaryCount = 0
+    end
+    summaryCache[base] = lines or false
+    summaryCount = summaryCount + 1
+    return lines
+end
+
+-- Spell id for a spell name (exact, case-insensitive); when several spells
+-- share the name, prefers one a class learns at `level`. nil when unknown.
+function plugin.spellIdByName(name, level)
+    if not name or name == '' then return nil end
+    local ix = DB.kinds.spells
+    if not ix or not ix.loaded then
+        DB.ensure('spells')
+        return nil
+    end
+    local hits = DB.search('spells', name, nil, 20)
+    local want = tostring(name):lower()
+    level = tonumber(level) or 0
+    local best = nil
+    for _, n in ipairs(hits) do
+        if DB.nameAt(ix, n):lower() == want then
+            if level > 0 and (ix.extra[n] or ''):find(':' .. level .. '%f[%D]') then return ix.ids[n] end
+            best = best or ix.ids[n]
+        end
+    end
+    return best
+end
+
+-- Database id for a command argument: a numeric id (tier offsets kept), or
+-- the best name match (exact first, as DB.search ranks). An item name may
+-- carry the tier the client shows, "Foo (Enchanted)". nil when nothing
+-- matches or the index is not loaded yet (the load is queued).
+function plugin.lookupId(kind, text)
+    kind = KIND_LABELS[kind] and kind or 'items'
+    text = tostring(text or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    if text == '' then return nil end
+    local ix = DB.kinds[kind]
+    if not ix or not ix.loaded then
+        DB.ensure(kind)
+        return nil
+    end
+    local num = tonumber(text)
+    if num then
+        if kind == 'items' then return DB.itemEntry(num) and num or nil end
+        return ix.byId[num] and num or nil
+    end
+    if kind == 'npcs' then
+        -- Same-named NPCs: the one in your zone first.
+        local here = nil
+        pcall(function() here = mq.TLO.Zone.ShortName() end)
+        local id = DB.npcIdFor(text, here)
+        if id then return id end
+    end
+    local offset = 0
+    if kind == 'items' then
+        local base, tier = text:match('^(.-)%s*%((%a+)%)$')
+        if base and tier then
+            local t = tier:lower()
+            if t == 'enchanted' then text, offset = base, D.TIER_OFFSET.E
+            elseif t == 'legendary' then text, offset = base, D.TIER_OFFSET.L end
+        end
+    end
+    -- A wider net than one: the exact name must not lose to the first few
+    -- prefix matches the scan happens to meet first.
+    local hits = DB.search(kind, text, nil, 20)
+    if not hits[1] then return nil end
+    local id = ix.ids[hits[1]]
+    if offset > 0 and not (ix.extra[hits[1]] or ''):find(offset == D.TIER_OFFSET.E and 'E' or 'L', 1, true) then offset = 0 end
+    return id + offset
+end
+
+-- Spell Info: opens the card for a spell id or name when the replacement is
+-- on and the spell is in the database. Returns false otherwise so the caller
+-- can fall back to the game's own Spell Display window (core.inspectSpell
+-- does exactly that). A numeric id is trusted while the index is still
+-- loading (client and database ids are the same on this server); the card
+-- resolves once the index is in.
+-- Spell id for a name as the client shows it: exact, then with rank / gem
+-- decorations stripped (core.cleanSpellName). `level` defaults to yours.
+local function spellIdForName(name, level)
+    name = name ~= nil and tostring(name) or ''
+    if name == '' then return nil end
+    if not level then pcall(function() level = mq.TLO.Me.Level() end) end
+    local id = plugin.spellIdByName(name, level)
+    if not id and core.cleanSpellName then
+        local clean = core.cleanSpellName(name)
+        if clean ~= '' and clean ~= name then id = plugin.spellIdByName(clean, level) end
+    end
+    return id
+end
+
+function plugin.inspectSpell(spell, level)
+    if not core or not S.spellWindow then return false end
+    refresh()
+    local id = tonumber(spell)
+    if id and id > 0 then
+        if not DB.isLoaded('spells') then return plugin.popout('spells', id) end
+        if not DB.spellRecord(id) then id = nil end
+    else
+        id = spellIdForName(spell, level)
+    end
+    if not id then return false end
+    return plugin.popout('spells', id)
+end
+
+-- Tooltip lines for a spell: decoded effects (up to six) and where its
+-- scrolls come from (through itemSummary). Cached per spell id.
+local spellSummaryCache, spellSummaryCount = {}, 0
+function plugin.spellSummary(id)
+    id = tonumber(id)
+    if not id then return nil end
+    if not DB.isLoaded('spells') or not DB.isLoaded('items') or not DB.isLoaded('npcs') then
+        DB.ensure('zones')
+        DB.ensure('spells')
+        DB.ensure('items')
+        DB.ensure('npcs')
+        return nil
+    end
+    local cached = spellSummaryCache[id]
+    if cached ~= nil then return cached or nil end
+    local rec = DB.spellRecord(id)
+    local lines = nil
+    if rec then
+        lines = {}
+        local effects = ENC.list(rec, 'effects')
+        for i, e in ipairs(effects) do
+            if i > 6 then
+                lines[#lines + 1] = string.format('  +%d more effects', #effects - 6)
+                break
+            end
+            local text = D.spaText(tonumber(e[2]) or 0, e[3], e[4], e[5])
+            text = text:gsub('%[spell (%d+)%]', function(sid) return DB.spellName(tonumber(sid)) end)
+            text = text:gsub('%[item (%d+)%]', function(iid) return DB.itemName(tonumber(iid)) end)
+            lines[#lines + 1] = text
+        end
+        local scrolls = 0
+        for _, it in ipairs(ENC.list(rec, 'items')) do
+            if it[1] == 'scroll' then
+                scrolls = scrolls + 1
+                if scrolls > 3 then break end
+                local iid = tonumber(it[2]) or 0
+                lines[#lines + 1] = 'Scroll: ' .. DB.itemName(iid)
+                for _, l in ipairs(plugin.itemSummary(iid) or {}) do
+                    if not l:find('^Tiers') then lines[#lines + 1] = '  ' .. l end
+                end
+            end
+        end
+        if scrolls == 0 then lines[#lines + 1] = 'No scroll item teaches this spell' end
+    end
+    if spellSummaryCount >= 300 then
+        spellSummaryCache = {}
+        spellSummaryCount = 0
+    end
+    spellSummaryCache[id] = lines or false
+    spellSummaryCount = spellSummaryCount + 1
+    return lines
+end
+
+-- Opens a popout card for the current target's database NPC.
+function plugin.lookupTarget()
+    if not core then return false end
+    refresh()
+    queueAll()
+    local tid = 0
+    pcall(function() tid = mq.TLO.Target.ID() or 0 end)
+    if tid <= 0 then
+        echo('No target.')
+        return false
+    end
+    local npcId = plugin.npcIdForSpawn(tid)
+    if not npcId then
+        echo(DB.isLoaded('npcs') and 'Target not found in the database.' or 'NPC index still loading - try again in a moment.')
+        return false
+    end
+    return plugin.popout('npcs', npcId)
+end
+
+function plugin.lookupCursor()
+    if not core then return false end
+    refresh()
+    local id = 0
+    pcall(function()
+        local c = mq.TLO.Cursor
+        if c() then id = c.ID() or 0 end
+    end)
+    if id <= 0 then
+        echo('Nothing on the cursor.')
+        return false
+    end
+    return plugin.open('items', id)
+end
+
+-- ----------------------------------------------------------------------------
+-- Chat links. The client wraps a link in \x12 bytes. An item link on this
+-- server is a type byte '0', the item id as eight hex digits (tier offsets
+-- included, so 1032100 links the Enchanted tier), then augments, evolving
+-- data, ornament and hash padded to 77 bytes - the server sends all of that
+-- zeroed, so a zeroed body is exactly what the client already accepts. MQ's
+-- own Item.ItemLink builds the stock 56-byte RoF2 body, which this client
+-- does not read. The client has no spell or NPC links at all, so those are
+-- plain text - "[Complete Heal]", "[Fippy Darkpaw (North Qeynos)]" - that
+-- everyone can read and the Chat Windows plugin turns into a clickable card
+-- for Triune users: a spell name resolves through spellIdByName (the way
+-- the Spell Info replacement reads the game window's title), an NPC name
+-- through the name index with the zone in parentheses deciding between
+-- same-named NPCs (your own zone when there is none).
+-- ----------------------------------------------------------------------------
+local LINK = string.char(18)
+D.ITEM_LINK_PAYLOAD = 77
+
+function D.itemLinkText(id, name)
+    id = tonumber(id)
+    if not id or id <= 0 then return nil end
+    local body = string.format('0%08X', id)
+    return LINK .. body .. string.rep('0', D.ITEM_LINK_PAYLOAD - #body) .. tostring(name or '') .. LINK
+end
+
+function D.spellLinkText(id, name)
+    id = tonumber(id)
+    if not id or id <= 0 or not name or name == '' then return nil end
+    return '[' .. tostring(name) .. ']'
+end
+
+-- The name a "[Name]" link in chat carries, or nil (the Chat Windows plugin
+-- asks per bracketed word group it draws).
+function D.spellLinkName(text)
+    return type(text) == 'string' and text:match('^%[([^%[%]]+)%]$') or nil
+end
+D.textLinkName = D.spellLinkName
+
+function D.npcLinkText(id, name, zone)
+    id = tonumber(id)
+    if not id or id <= 0 or not name or name == '' then return nil end
+    if zone and zone ~= '' then return '[' .. name .. ' (' .. zone .. ')]' end
+    return '[' .. name .. ']'
+end
+
+-- Link text for an item id (tier offsets honoured); nil when unknown.
+function plugin.itemLink(id)
+    id = tonumber(id)
+    if not id or not DB.itemEntry(id) then return nil end
+    return D.itemLinkText(id, DB.itemName(id))
+end
+
+-- Link text for a spell id; nil when the spell is not in the database.
+function plugin.spellLink(id)
+    id = tonumber(id)
+    if not id or not DB.spellRecord(id) then return nil end
+    return D.spellLinkText(id, DB.spellName(id))
+end
+
+-- Link text for an NPC id: the name with its zone's long name in
+-- parentheses; nil when the NPC is not in the database.
+function plugin.npcLink(id)
+    id = tonumber(id)
+    local info = id and DB.npcInfo(id)
+    if not info then return nil end
+    local zone = info.zone ~= '' and DB.zoneName(info.zone) or ''
+    return D.npcLinkText(id, info.name, zone)
+end
+
+-- Spell id for the text of a chat spell link ("[Complete Heal]"), nil for
+-- anything else. `ready` (second result) is false while the spell index is
+-- still loading, so the caller can look again later.
+function plugin.spellLinkId(text)
+    local name = D.spellLinkName(text)
+    if not name then return nil, true end
+    if not DB.isLoaded('spells') then
+        DB.ensure('spells')
+        return nil, false
+    end
+    return plugin.spellIdByName(name), true
+end
+
+-- NPC id for the text of a chat NPC link: "[Name (Zone)]" picks the NPC of
+-- that name in that zone (long or short zone name), "[Name]" the one in
+-- your zone or else the first of that name. nil, ready=false while the NPC
+-- index loads.
+function plugin.npcLinkId(text)
+    local body = D.textLinkName(text)
+    if not body then return nil, true end
+    if not DB.isLoaded('npcs') then
+        DB.ensure('npcs')
+        return nil, false
+    end
+    local ix = DB.kinds.npcs
+    local name, zone = body:match('^(.-)%s*%((.+)%)$')
+    if name and zone and ix.byName then
+        local hit = ix.byName[name:lower()]
+        if hit then
+            zone = zone:lower()
+            for _, n in ipairs(type(hit) == 'number' and { hit } or hit) do
+                local short = ix.zone[n] or ''
+                if short:lower() == zone or DB.zoneName(short):lower() == zone then return ix.ids[n], true end
+            end
+        end
+    end
+    local here = nil
+    pcall(function() here = mq.TLO.Zone.ShortName() end)
+    local id = DB.npcIdFor(body, here)
+    if not id and name then id = DB.npcIdFor(name, here) end
+    return id, true
+end
+
+-- What a bracketed name in chat opens: kind ('spells' / 'npcs') and id, or
+-- nil. `ready` is false while an index that could still answer is loading.
+function plugin.textLinkTarget(text)
+    if not D.textLinkName(text) then return nil, nil, true end
+    local sid, sready = plugin.spellLinkId(text)
+    if sid then return 'spells', sid, true end
+    local nid, nready = plugin.npcLinkId(text)
+    if nid then return 'npcs', nid, true end
+    return nil, nil, (sready and nready) == true
+end
+
+-- The Chat Windows plugin (tac/chat.lua) when it is loaded and enabled.
+local function chatPlugin()
+    local pm = core and core.runtime and core.runtime.pluginManager
+    local p = pm and pm.plugins and pm.plugins.chat
+    if p and p.enabled and p.instance and p.instance.insertLink then return p.instance end
+    return nil
+end
+
+-- Channels a link can be sent to straight away (the Link button's
+-- right-click menu and the /ac link... commands' "/cmd" prefix).
+local LINK_CHANNELS = {
+    { label = 'Say',     cmd = '/say' },
+    { label = 'Group',   cmd = '/g' },
+    { label = 'Guild',   cmd = '/gu' },
+    { label = 'Raid',    cmd = '/rs' },
+    { label = 'OOC',     cmd = '/ooc' },
+    { label = 'Auction', cmd = '/auc' },
+    { label = 'Shout',   cmd = '/shout' },
+}
+
+-- Puts an item or spell link where the game's input line would take a
+-- dragged item: the Chat Windows input (the tab that last had focus), or,
+-- with `channel` (a chat command such as '/g' or '/tell Bob'), sends it
+-- there at once. Without the Chat Windows plugin and without a channel the
+-- link goes to the clipboard. Returns true when the link went somewhere.
+function plugin.linkToChat(kind, id, channel)
+    if not core then return false end
+    refresh()
+    local text = kind == 'spells' and plugin.spellLink(id) or kind == 'npcs' and plugin.npcLink(id) or plugin.itemLink(id)
+    if not text then
+        echo((kind == 'spells' and 'Spell ' or kind == 'npcs' and 'NPC ' or 'Item ') .. tostring(id) .. ' is not in the database.')
+        return false
+    end
+    local name = kind == 'spells' and DB.spellName(id) or kind == 'npcs' and DB.npcName(id) or DB.itemName(id)
+    channel = channel and channel:gsub('^%s+', ''):gsub('%s+$', '') or ''
+    if channel ~= '' then
+        if channel:sub(1, 1) ~= '/' then channel = '/' .. channel end
+        pcall(mq.cmdf, '%s %s', channel, text)
+        return true
+    end
+    local chat = chatPlugin()
+    if chat then
+        local ok, res = pcall(chat.insertLink, text, name)
+        if ok and res then return true end
+    end
+    local copied = false
+    pcall(function() ImGui.SetClipboardText(text); copied = true end)
+    if copied then
+        echo(name .. ' link copied to the clipboard' .. (chat and '' or ' (Chat Windows plugin not loaded)') .. '.')
+    else
+        echo('Nowhere to put the ' .. name .. ' link: load the Chat Windows plugin or give a channel.')
+    end
+    return copied
+end
+
+-- ----------------------------------------------------------------------------
+-- Drawing helpers
+-- ----------------------------------------------------------------------------
+local C = {}   -- colors, filled on draw
+
+local function txt(s) ImGui.Text(tostring(s)) end
+local function muted(s) ImGui.TextColored(C.MUTED[1], C.MUTED[2], C.MUTED[3], C.MUTED[4], tostring(s)) end
+local function good(s) ImGui.TextColored(C.GOOD[1], C.GOOD[2], C.GOOD[3], C.GOOD[4], tostring(s)) end
+local function warn(s) ImGui.TextColored(C.WARN[1], C.WARN[2], C.WARN[3], C.WARN[4], tostring(s)) end
+local function gold(s) ImGui.TextColored(C.GOLD[1], C.GOLD[2], C.GOLD[3], C.GOLD[4], tostring(s)) end
+
+local function labelled(label, value)
+    if value == nil or value == '' or value == 0 then return end
+    muted(label .. ':')
+    ImGui.SameLine()
+    txt(value)
+end
+
+local function header(s)
+    ImGui.Dummy(0, core.px(4))
+    ImGui.TextColored(C.GOLD[1], C.GOLD[2], C.GOLD[3], C.GOLD[4], s)
+    ImGui.Separator()
+end
+
+-- A clickable cross-reference drawn as inline text (so it can share a line).
+-- Returns true when clicked.
+local function link(label, _)
+    ImGui.TextColored(C.ARC[1], C.ARC[2], C.ARC[3], C.ARC[4], tostring(label))
+    local hovered = ImGui.IsItemHovered()
+    if hovered then
+        if ImGuiMouseCursor then pcall(function() ImGui.SetMouseCursor(ImGuiMouseCursor.Hand) end) end
+    end
+    return hovered and ImGui.IsItemClicked()
+end
+
+-- Link to chat button for a card: left-click drops the link into the Chat
+-- Windows input line, right-click picks a channel to send it to now.
+local function drawLinkButton(kind, id, uid)
+    local tag = 'link_' .. kind .. '_' .. tostring(uid)
+    if ImGui.SmallButton('Link to chat##' .. tag) then plugin.linkToChat(kind, id) end
+    if ImGui.IsItemHovered() then
+        if core.setTooltip then
+            core.setTooltip(kind == 'items'
+                and 'Puts a clickable link in the chat input line, like dragging an item onto the game\'s input.\nRight-click: send it to a channel now.'
+                or ('Puts [' .. (kind == 'spells' and 'Spell Name' or 'NPC Name (Zone)') .. '] in the chat input line: plain text for everyone, a clickable card for Triune users.\nRight-click: send it to a channel now.'))
+        end
+        if ImGui.IsMouseClicked(1) then ImGui.OpenPopup('##menu_' .. tag) end
+    end
+    if ImGui.BeginPopup('##menu_' .. tag) then
+        ImGui.TextDisabled('Send link to')
+        ImGui.Separator()
+        for _, ch in ipairs(LINK_CHANNELS) do
+            if ImGui.MenuItem(ch.label .. '##' .. tag) then plugin.linkToChat(kind, id, ch.cmd) end
+        end
+        ImGui.Separator()
+        if ImGui.MenuItem('Copy to clipboard##' .. tag) then
+            local text = kind == 'spells' and plugin.spellLink(id) or kind == 'npcs' and plugin.npcLink(id) or plugin.itemLink(id)
+            if text then pcall(ImGui.SetClipboardText, text) end
+        end
+        ImGui.EndPopup()
+    end
+end
+
+-- Item icon via the shared A_DragItem animation (cell = icon - 500).
+local ICON = { mode = 'probe', shared = nil, lastCell = nil }
+local function itemIconAnim(iconId)
+    local id = tonumber(iconId)
+    if not id or id <= 0 or not mq then return nil end
+    if ICON.mode == 'probe' then
+        ICON.mode = 'none'
+        if mq.FindTextureAnimation then
+            local ok, res = pcall(mq.FindTextureAnimation, 'A_DragItem')
+            if ok and res then
+                ICON.mode = 'shared'
+                ICON.shared = res
+            end
+        end
+    end
+    if ICON.mode ~= 'shared' then return nil end
+    local cell = (id >= 500) and (id - 500) or id
+    if ICON.lastCell ~= cell then
+        if not pcall(function() ICON.shared:SetTextureCell(cell) end) then return nil end
+        ICON.lastCell = cell
+    end
+    return ICON.shared
+end
+
+local function drawIcon(anim, size)
+    if anim and ImGui.DrawTextureAnimation then
+        local ok = pcall(function() ImGui.DrawTextureAnimation(anim, size, size) end)
+        if ok then return true end
+    end
+    ImGui.Dummy(size, size)
+    return false
+end
+
+local function fmtSigned(v)
+    v = tonumber(v) or 0
+    if v > 0 then return '+' .. v end
+    return tostring(v)
+end
+
+local function fmtStatHeroic(v, h)
+    v = tonumber(v) or 0
+    h = tonumber(h) or 0
+    if v == 0 and h == 0 then return nil end
+    if h ~= 0 then return string.format('%s (+%d)', fmtSigned(v), h) end
+    return fmtSigned(v)
+end
+
+-- ----------------------------------------------------------------------------
+-- Item card
+-- ----------------------------------------------------------------------------
+-- Cards are decoded once per (kind, id, tier) into DB.cards and drawn from
+-- that: every list field parsed, every cross-referenced name resolved and
+-- every label formatted at build time, so a frame only walks plain tables.
+-- The main pane and the popouts share entries; a selection change looks up
+-- (or builds) another entry, DB.setDir() drops them all.
+local CARD_CACHE_MAX = 16
+
+-- Memoised numeric field reader for one record.
+local function numReader(rec)
+    local memo = {}
+    return function(k)
+        local v = memo[k]
+        if v == nil then
+            v = ENC.num(rec, k)
+            memo[k] = v
+        end
+        return v
+    end
+end
+
+local function moreText(list)
+    return list.more and (' of ' .. (#list + list.more)) or ''
+end
+
+-- ---- item ------------------------------------------------------------------
+local ELEM_NAMES = { [1] = 'Magic', [2] = 'Fire', [3] = 'Cold', [4] = 'Poison', [5] = 'Disease', [6] = 'Chromatic', [7] = 'Prismatic', [8] = 'Physical', [9] = 'Corruption' }
+local STAT_HEROIC = { { 'astr', 'heroic_str', 'STR' }, { 'asta', 'heroic_sta', 'STA' }, { 'aagi', 'heroic_agi', 'AGI' }, { 'adex', 'heroic_dex', 'DEX' },
+                      { 'awis', 'heroic_wis', 'WIS' }, { 'aint', 'heroic_int', 'INT' }, { 'acha', 'heroic_cha', 'CHA' } }
+local RESIST_HEROIC = { { 'mr', 'heroic_mr', 'Magic' }, { 'fr', 'heroic_fr', 'Fire' }, { 'cr', 'heroic_cr', 'Cold' }, { 'dr', 'heroic_dr', 'Disease' },
+                        { 'pr', 'heroic_pr', 'Poison' }, { 'svcorruption', 'heroic_svcorrup', 'Corruption' } }
+local MOD_STATS = { { 'attack', 'Attack' }, { 'haste', 'Haste', '%' }, { 'regen', 'HP Regen' }, { 'manaregen', 'Mana Regen' }, { 'enduranceregen', 'End Regen' },
+                    { 'accuracy', 'Accuracy' }, { 'avoidance', 'Avoidance' }, { 'shielding', 'Shielding', '%' }, { 'spellshield', 'Spell Shield', '%' },
+                    { 'strikethrough', 'Strikethrough', '%' }, { 'stunresist', 'Stun Resist', '%' }, { 'dotshielding', 'DoT Shielding', '%' },
+                    { 'damageshield', 'Damage Shield' }, { 'dsmitigation', 'DS Mitigation' }, { 'combateffects', 'Combat Effects' },
+                    { 'healamt', 'Heal Amount' }, { 'spelldmg', 'Spell Dmg' }, { 'clairvoyance', 'Clairvoyance' } }
+local ITEM_FLAGS = { { 'magic', 'MAGIC' }, { 'NODROP', 'NO DROP' }, { 'NORENT', 'NO RENT' }, { 'attuneable', 'ATTUNEABLE' }, { 'questitemflag', 'QUEST' },
+                     { 'heirloom', 'HEIRLOOM' }, { 'artifactflag', 'ARTIFACT' }, { 'placeable', 'PLACEABLE' }, { 'fvnodrop', 'FV NO DROP' },
+                     { 'notransfer', 'NO TRANSFER' }, { 'nopet', 'NO PET' }, { 'epicitem', 'EPIC' }, { 'augdistiller', 'AUG DISTILLER' } }
+
+-- Stats block of an item record: labelled lines, the three stat columns and
+-- the effect links, all as strings.
+local function buildItemStats(rec)
+    local n = numReader(rec)
+    local st = { lines = {}, cols = { {}, {}, {} }, effects = {} }
+    local flags = {}
+    if n('magic') > 0 then flags[#flags + 1] = 'MAGIC' end
+    if n('loregroup') ~= 0 then flags[#flags + 1] = 'LORE' end
+    for _, f in ipairs(ITEM_FLAGS) do
+        if f[1] ~= 'magic' and n(f[1]) > 0 then flags[#flags + 1] = f[2] end
+    end
+    st.flags = #flags > 0 and table.concat(flags, '  ') or nil
+
+    local itemtype = n('itemtype')
+    local isAug = itemtype == 54
+    local isWeapon = (itemtype <= 5) or itemtype == 7 or itemtype == 18 or itemtype == 27 or itemtype == 35 or itemtype == 45
+    local lines = st.lines
+    local function labelled(label, value)
+        if value == nil or value == '' or value == 0 then return end
+        lines[#lines + 1] = { label, tostring(value) }
+    end
+    local slots = D.slotsText(n('slots'))
+    labelled('Slot', slots ~= '' and slots or nil)
+    local typeText = D.itemTypeName(itemtype)
+    if isWeapon and n('damage') > 0 then typeText = typeText .. string.format('  Atk Delay: %d', n('delay')) end
+    labelled('Type', typeText)
+    if n('recskill') > 0 then labelled('Skill', D.skillName(n('recskill'))) end
+    labelled('Size', D.sizeName(n('size')) .. '   Weight: ' .. D.weightText(n('weight')))
+    if n('reqlevel') > 0 or n('reclevel') > 0 then
+        local s = ''
+        if n('reqlevel') > 0 then s = 'Required Level: ' .. n('reqlevel') end
+        if n('reclevel') > 0 then s = s .. (s ~= '' and '   ' or '') .. 'Recommended Level: ' .. n('reclevel') end
+        lines[#lines + 1] = { nil, s }
+    end
+    labelled('Class', D.classesText(n('classes')))
+    labelled('Race', D.racesText(n('races')))
+    if n('deity') > 0 then labelled('Deity', D.deityName(n('deity'))) end
+
+    local cols = st.cols
+    local function add(col, label, value) table.insert(cols[col], { label .. ':', tostring(value) }) end
+    if n('ac') ~= 0 then add(1, 'AC', n('ac')) end
+    if isWeapon and n('damage') > 0 then
+        add(1, 'Damage', n('damage'))
+        add(1, 'Delay', n('delay'))
+        if n('delay') > 0 then add(1, 'Ratio', string.format('%.3f', n('damage') / n('delay'))) end
+    end
+    if n('range') > 0 then add(1, 'Range', n('range')) end
+    if n('backstabdmg') > 0 then add(1, 'Backstab Dmg', n('backstabdmg')) end
+    if n('elemdmgamt') > 0 then add(1, ELEM_NAMES[n('elemdmgtype')] or 'Elem', n('elemdmgamt')) end
+    if n('banedmgamt') > 0 then add(1, 'Bane ' .. D.bodyTypeName(n('banedmgbody')), n('banedmgamt')) end
+    if n('banedmgraceamt') > 0 then add(1, 'Bane ' .. D.raceName(n('banedmgrace')), n('banedmgraceamt')) end
+    if n('hp') ~= 0 then add(1, 'HP', fmtSigned(n('hp'))) end
+    if n('mana') ~= 0 then add(1, 'Mana', fmtSigned(n('mana'))) end
+    if n('endur') ~= 0 then add(1, 'Endurance', fmtSigned(n('endur'))) end
+    for _, s in ipairs(STAT_HEROIC) do
+        local v = fmtStatHeroic(n(s[1]), n(s[2]))
+        if v then add(2, s[3], v) end
+    end
+    for _, s in ipairs(RESIST_HEROIC) do
+        local v = fmtStatHeroic(n(s[1]), n(s[2]))
+        if v then add(3, s[3], v) end
+    end
+    for _, s in ipairs(MOD_STATS) do
+        local v = n(s[1])
+        if v ~= 0 then add(3, s[2], fmtSigned(v) .. (s[3] or '')) end
+    end
+    if n('skillmodvalue') ~= 0 then add(3, D.skillName(n('skillmodtype')), fmtSigned(n('skillmodvalue')) .. '%') end
+    st.maxRows = math.max(#cols[1], #cols[2], #cols[3])
+
+    -- effects: { label, spellId, spellName, extra }
+    local effects = st.effects
+    local function eff(label, idKey, typeKey, lvlKey, extraFn)
+        local sid = n(idKey)
+        if sid <= 0 then return end
+        local extra = {}
+        if typeKey and n(typeKey) > 0 and D.CLICK_TYPES[n(typeKey)] and D.CLICK_TYPES[n(typeKey)] ~= '' and label == 'Effect' then extra[#extra + 1] = D.CLICK_TYPES[n(typeKey)] end
+        if lvlKey and n(lvlKey) > 0 then extra[#extra + 1] = 'Level ' .. n(lvlKey) end
+        if extraFn then
+            local e = extraFn()
+            if e and e ~= '' then extra[#extra + 1] = e end
+        end
+        effects[#effects + 1] = { label, sid, DB.spellName(sid), #extra > 0 and ('(' .. table.concat(extra, ', ') .. ')') or '' }
+    end
+    eff('Effect', 'clickeffect', 'clicktype', 'clicklevel2', function()
+        local parts = {}
+        if n('casttime') > 0 then parts[#parts + 1] = string.format('Cast %.1fs', n('casttime') / 1000) end
+        if n('recastdelay') > 0 then parts[#parts + 1] = 'Recast ' .. D.secondsText(n('recastdelay')) end
+        if n('maxcharges') > 0 then parts[#parts + 1] = 'Charges ' .. n('maxcharges') elseif n('maxcharges') < 0 then parts[#parts + 1] = 'Unlimited charges' end
+        return table.concat(parts, ', ')
+    end)
+    eff('Proc', 'proceffect', nil, 'proclevel2', function() return n('procrate') ~= 0 and ('Rate ' .. fmtSigned(n('procrate')) .. '%') or '' end)
+    eff('Worn', 'worneffect', nil, 'wornlevel2')
+    eff('Focus', 'focuseffect', nil, 'focuslevel2')
+    eff('Scroll', 'scrolleffect', nil, 'scrolllevel2')
+    eff('Bard', 'bardeffect', nil, 'bardlevel2')
+
+    local tail = {}
+    st.tail = tail
+    if n('bardtype') > 0 then tail[#tail + 1] = { 'Instrument', string.format('%s (+%d%%)', D.skillName(n('bardtype')), n('bardvalue')) } end
+    local augSlots = {}
+    for i = 1, 6 do
+        local t = n('augslot' .. i .. 'type')
+        if t > 0 then augSlots[#augSlots + 1] = string.format('%d (%s)', t, D.AUG_TYPES[t] or ('Type ' .. t)) end
+    end
+    if #augSlots > 0 then tail[#tail + 1] = { 'Aug Slots', table.concat(augSlots, ', ') } end
+    if isAug then
+        local at = D.augTypesText(n('augtype'))
+        if at ~= '' then tail[#tail + 1] = { 'Aug Type', at } end
+        if n('augrestrict') > 0 then tail[#tail + 1] = { 'Aug Restriction', tostring(n('augrestrict')) } end
+    end
+    if n('bagslots') > 0 then
+        tail[#tail + 1] = { 'Container', string.format('%d slots, up to %s items, %d%% weight reduction', n('bagslots'), D.sizeName(n('bagsize')), n('bagwr')) }
+    end
+    if n('stackable') > 0 and n('stacksize') > 1 then tail[#tail + 1] = { 'Stack', tostring(n('stacksize')) } end
+    if n('price') > 0 then tail[#tail + 1] = { 'Value', D.moneyText(n('price')) } end
+    if n('ldonprice') > 0 then tail[#tail + 1] = { 'LDoN', string.format('%d points (theme %d)', n('ldonprice'), n('ldontheme')) } end
+    st.tradeskill = n('tradeskills') > 0
+    st.lore = ENC.str(rec, 'lore')
+    st.book = (#effects == 0) and n('book') > 0
+    return st
+end
+
+-- Card tables open through these so a draw error inside one (caught by the
+-- popout's pcall) can close what it left open: an unbalanced BeginTable
+-- breaks every window drawn after it.
+local cardTables = 0
+local function beginCardTable(...)
+    if not ImGui.BeginTable(...) then return false end
+    cardTables = cardTables + 1
+    return true
+end
+local function endCardTable()
+    cardTables = cardTables - 1
+    ImGui.EndTable()
+end
+
+local function drawItemStats(st)
+    if st.flags then warn(st.flags) end
+    for _, l in ipairs(st.lines) do
+        if l[1] then labelled(l[1], l[2]) else txt(l[2]) end
+    end
+    if beginCardTable('##itemstats', 6, ImGuiTableFlags.SizingFixedFit) then
+        local cols = st.cols
+        for i = 1, st.maxRows do
+            ImGui.TableNextRow()
+            for c = 1, 3 do
+                local r = cols[c][i]
+                ImGui.TableSetColumnIndex((c - 1) * 2)
+                if r then muted(r[1]) end
+                ImGui.TableSetColumnIndex((c - 1) * 2 + 1)
+                if r then txt(r[2]) end
+            end
+        end
+        endCardTable()
+    end
+    for _, e in ipairs(st.effects) do
+        muted(e[1] .. ':')
+        ImGui.SameLine()
+        if link(e[3], 'spell' .. e[1] .. e[2]) then showEntry('spells', e[2]) end
+        if e[4] ~= '' then
+            ImGui.SameLine()
+            muted(e[4])
+        end
+    end
+    for _, l in ipairs(st.tail) do labelled(l[1], l[2]) end
+    if st.tradeskill then muted('Tradeskill item') end
+    if st.lore ~= '' then
+        ImGui.PushStyleColor(ImGuiCol.Text, C.MUTED[1], C.MUTED[2], C.MUTED[3], C.MUTED[4])
+        ImGui.TextWrapped(st.lore)
+        ImGui.PopStyleColor()
+    end
+    if st.book then muted('Book') end
+end
+
+-- Sources of the base record, names resolved: drops, quests, recipes,
+-- gathering, vendors.
+local function buildItemSources(base)
+    local src = {}
+    local drops = ENC.list(base, 'drops')
+    src.drops = {}
+    for _, d in ipairs(drops) do
+        local nid = tonumber(d[1]) or 0
+        local info = DB.npcInfo(nid)
+        src.drops[#src.drops + 1] = { nid = nid, name = info and info.name or ('NPC ' .. nid), lvl = info and tostring(info.lvl) or '',
+                                      zone = info and DB.zoneName(info.zone) or '', chance = (d[2] or '') .. '%' }
+    end
+    src.dropsHeader = string.format('Drops From (%d%s)', #drops, moreText(drops))
+    local quests = ENC.list(base, 'quests')
+    src.quests = {}
+    for _, q in ipairs(quests) do
+        local nid = tonumber(q[1]) or 0
+        src.quests[#src.quests + 1] = { nid = nid, name = nid > 0 and DB.npcName(nid) or (q[2] ~= '' and q[2] or 'Unknown NPC'),
+                                        zone = q[3] == 'global' and 'Global' or DB.zoneName(q[3]), reward = (q[4] == 'R') }
+    end
+    local made = ENC.list(base, 'made')
+    src.made = {}
+    for _, r in ipairs(made) do
+        local skill = D.tradeskillName(tonumber(r[3]) or 0)
+        local line = string.format('%s  -  %s', r[2] ~= '' and r[2] or ('Recipe ' .. r[1]), skill)
+        local reqs = {}
+        if (tonumber(r[4]) or 0) > 0 then reqs[#reqs + 1] = 'skill ' .. r[4] end
+        if (tonumber(r[5]) or 0) > 0 then reqs[#reqs + 1] = 'trivial ' .. r[5] end
+        if r[6] == '1' then reqs[#reqs + 1] = 'no fail' end
+        if r[7] == '1' then reqs[#reqs + 1] = 'must learn' end
+        if r[9] == '1' then reqs[#reqs + 1] = 'quest' end
+        if #reqs > 0 then line = line .. ' (' .. table.concat(reqs, ', ') .. ')' end
+        local rec = { line = line, learn = nil, conts = nil, comps = {}, yields = nil }
+        local learnId = tonumber(r[8]) or 0
+        if learnId > 0 then rec.learn = { id = learnId, name = DB.itemName(learnId) } end
+        local conts = ENC.nested(r[11])
+        if #conts > 0 then
+            local names = {}
+            for _, c in ipairs(conts) do
+                local cid = tonumber(c[1]) or 0
+                names[#names + 1] = cid > 0 and DB.itemName(cid) or (c[2] or 'container')
+            end
+            rec.conts = 'In: ' .. table.concat(names, ' / ')
+        end
+        for _, c in ipairs(ENC.nested(r[10])) do
+            local cid = tonumber(c[1]) or 0
+            rec.comps[#rec.comps + 1] = { id = cid, label = string.format('%s x%d', DB.itemName(cid), tonumber(c[2]) or 1) }
+        end
+        local results = ENC.nested(r[12])
+        if #results > 1 then
+            local names = {}
+            for _, rr in ipairs(results) do names[#names + 1] = DB.itemName(tonumber(rr[1]) or 0) end
+            rec.yields = 'Yields: ' .. table.concat(names, ', ')
+        end
+        src.made[#src.made + 1] = rec
+    end
+    local usedin = ENC.list(base, 'usedin')
+    src.usedin = {}
+    for _, u in ipairs(usedin) do
+        local rid = tonumber(u[4]) or 0
+        src.usedin[#src.usedin + 1] = { rid = rid, name = rid > 0 and DB.itemName(rid) or ('Recipe ' .. u[1]), skill = D.tradeskillName(tonumber(u[2]) or 0), trivial = u[3] }
+    end
+    src.usedinHeader = string.format('Tradeskill: Used In (%d%s)', #usedin, moreText(usedin))
+    src.gathered = {}
+    for _, g in ipairs(ENC.list(base, 'src')) do
+        local kind = ({ F = 'Foraged in', W = 'Fished in', G = 'Ground spawn in' })[g[1]] or g[1]
+        local chance = (g[3] and g[3] ~= '') and (' (' .. g[3] .. '%)') or ''
+        src.gathered[#src.gathered + 1] = string.format('%s %s%s', kind, DB.zoneName(g[2]), chance)
+    end
+    local sold = ENC.list(base, 'sold')
+    src.sold = {}
+    for _, v in ipairs(sold) do
+        local nid = tonumber(v[1]) or 0
+        local info = DB.npcInfo(nid)
+        src.sold[#src.sold + 1] = { nid = nid, label = string.format('%s  -  %s', info and info.name or ('NPC ' .. nid), info and DB.zoneName(info.zone) or '') }
+    end
+    src.soldHeader = string.format('Sold By (%d%s)', #sold, moreText(sold))
+    src.any = #src.drops + #src.quests + #src.made + #src.usedin + #src.gathered + #src.sold
+    return src
+end
+
+local function drawItemSources(src)
+    if src.any == 0 then
+        header('Sources')
+        muted('No known drop, quest, tradeskill or vendor source.')
+        return
+    end
+
+    if #src.drops > 0 then
+        header(src.dropsHeader)
+        if beginCardTable('##drops', 4, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+            ImGui.TableSetupColumn('NPC', ImGuiTableColumnFlags.WidthStretch, 3)
+            ImGui.TableSetupColumn('Lvl', ImGuiTableColumnFlags.WidthFixed, core.px(36))
+            ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 3)
+            ImGui.TableSetupColumn('Chance', ImGuiTableColumnFlags.WidthFixed, core.px(60))
+            ImGui.TableHeadersRow()
+            for _, d in ipairs(src.drops) do
+                ImGui.TableNextRow()
+                ImGui.TableSetColumnIndex(0)
+                if link(d.name, 'drop' .. d.nid) then showEntry('npcs', d.nid) end
+                ImGui.TableSetColumnIndex(1); txt(d.lvl)
+                ImGui.TableSetColumnIndex(2); txt(d.zone)
+                ImGui.TableSetColumnIndex(3); txt(d.chance)
+            end
+            endCardTable()
+        end
+    end
+
+    if #src.quests > 0 then
+        header('Quests')
+        if beginCardTable('##quests', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+            ImGui.TableSetupColumn('NPC', ImGuiTableColumnFlags.WidthStretch, 3)
+            ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 3)
+            ImGui.TableSetupColumn('Role', ImGuiTableColumnFlags.WidthFixed, core.px(70))
+            ImGui.TableHeadersRow()
+            for i, q in ipairs(src.quests) do
+                ImGui.TableNextRow()
+                ImGui.TableSetColumnIndex(0)
+                if q.nid > 0 then
+                    if link(q.name, 'q' .. i) then showEntry('npcs', q.nid) end
+                else
+                    txt(q.name)
+                end
+                ImGui.TableSetColumnIndex(1); txt(q.zone)
+                ImGui.TableSetColumnIndex(2)
+                if q.reward then good('Reward') else warn('Turn-in') end
+            end
+            endCardTable()
+        end
+    end
+
+    if #src.made > 0 then
+        header('Tradeskill: Made By')
+        for i, r in ipairs(src.made) do
+            good(r.line)
+            if r.learn then
+                ImGui.Indent(core.px(12))
+                muted('Learned from:')
+                ImGui.SameLine()
+                if link(r.learn.name, 'learn' .. i) then showEntry('items', r.learn.id) end
+                ImGui.Unindent(core.px(12))
+            end
+            ImGui.Indent(core.px(12))
+            if r.conts then muted(r.conts) end
+            for ci, c in ipairs(r.comps) do
+                if link(c.label, 'comp' .. i .. '_' .. ci) then showEntry('items', c.id) end
+            end
+            if r.yields then muted(r.yields) end
+            ImGui.Unindent(core.px(12))
+        end
+    end
+
+    if #src.usedin > 0 then
+        header(src.usedinHeader)
+        if beginCardTable('##usedin', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+            ImGui.TableSetupColumn('Result', ImGuiTableColumnFlags.WidthStretch, 4)
+            ImGui.TableSetupColumn('Tradeskill', ImGuiTableColumnFlags.WidthStretch, 2)
+            ImGui.TableSetupColumn('Trivial', ImGuiTableColumnFlags.WidthFixed, core.px(50))
+            ImGui.TableHeadersRow()
+            for i, u in ipairs(src.usedin) do
+                ImGui.TableNextRow()
+                ImGui.TableSetColumnIndex(0)
+                if u.rid > 0 then
+                    if link(u.name, 'use' .. i) then showEntry('items', u.rid) end
+                else
+                    txt(u.name)
+                end
+                ImGui.TableSetColumnIndex(1); txt(u.skill)
+                ImGui.TableSetColumnIndex(2); txt(u.trivial)
+            end
+            endCardTable()
+        end
+    end
+
+    if #src.gathered > 0 then
+        header('Gathered')
+        for _, line in ipairs(src.gathered) do txt(line) end
+    end
+
+    if #src.sold > 0 then
+        header(src.soldHeader)
+        for _, v in ipairs(src.sold) do
+            if link(v.label, 'sold' .. v.nid) then showEntry('npcs', v.nid) end
+        end
+    end
+end
+
+-- ---- npc -------------------------------------------------------------------
+local function buildNpcCard(id, rec)
+    local n = numReader(rec)
+    local c = {}
+    local name = ENC.str(rec, 'name')
+    local last = ENC.str(rec, 'lastname')
+    c.title = name .. (last ~= '' and (' (' .. last .. ')') or '')
+    local lvl = n('level')
+    if n('maxlevel') > lvl then lvl = lvl .. '-' .. n('maxlevel') end
+    c.subtitle = string.format('ID %d   Level %s   %s %s   %s', id, tostring(lvl), D.raceName(n('race')), D.className(n('class')), D.bodyTypeName(n('bodytype')))
+    local tags = {}
+    if n('raid_target') > 0 then tags[#tags + 1] = 'RAID TARGET' end
+    if n('rare_spawn') > 0 then tags[#tags + 1] = 'RARE' end
+    if n('quest') > 0 or n('isquest') > 0 then tags[#tags + 1] = 'QUEST NPC' end
+    if n('merchant_id') > 0 then tags[#tags + 1] = 'MERCHANT' end
+    if n('trackable') == 0 then tags[#tags + 1] = 'UNTRACKABLE' end
+    if n('untargetable') > 0 then tags[#tags + 1] = 'UNTARGETABLE' end
+    c.tags = #tags > 0 and table.concat(tags, '  ') or nil
+
+    local cols = { {}, {}, {} }
+    local function add(col, l, v) if v ~= nil and v ~= 0 and v ~= '' then table.insert(cols[col], { l .. ':', tostring(v) }) end end
+    add(1, 'HP', n('hp'))
+    add(1, 'Mana', n('mana'))
+    add(1, 'AC', n('AC'))
+    if n('maxdmg') > 0 then add(1, 'Damage', string.format('%d - %d', n('mindmg'), n('maxdmg'))) end
+    if n('attack_delay') > 0 then add(1, 'Attack Delay', n('attack_delay')) end
+    if n('attack_count') > 0 then add(1, 'Attacks', n('attack_count')) end
+    if n('attack_speed') ~= 0 then add(1, 'Attack Speed', fmtSigned(n('attack_speed')) .. '%') end
+    if n('runspeed') > 0 then add(1, 'Run Speed', string.format('%.2f', n('runspeed'))) end
+    if n('hp_regen_rate') > 0 then add(1, 'HP Regen', n('hp_regen_rate')) end
+    if n('mana_regen_rate') > 0 then add(1, 'Mana Regen', n('mana_regen_rate')) end
+    for _, s in ipairs({ { 'MR', 'Magic' }, { 'FR', 'Fire' }, { 'CR', 'Cold' }, { 'DR', 'Disease' }, { 'PR', 'Poison' }, { 'Corrup', 'Corruption' }, { 'PhR', 'Physical' } }) do
+        add(2, s[2], n(s[1]))
+    end
+    for _, s in ipairs({ { 'STR', 'STR' }, { 'STA', 'STA' }, { 'AGI', 'AGI' }, { 'DEX', 'DEX' }, { 'WIS', 'WIS' }, { '_INT', 'INT' }, { 'CHA', 'CHA' }, { 'ATK', 'ATK' }, { 'Accuracy', 'Accuracy' }, { 'Avoidance', 'Avoidance' } }) do
+        add(3, s[2], n(s[1]))
+    end
+    if n('aggroradius') > 0 then add(3, 'Aggro Radius', n('aggroradius')) end
+    if n('assistradius') > 0 then add(3, 'Assist Radius', n('assistradius')) end
+    if n('exp_mod') > 0 and n('exp_mod') ~= 100 then add(3, 'XP Mod', n('exp_mod') .. '%') end
+    if n('slow_mitigation') > 0 then add(3, 'Slow Mitigation', n('slow_mitigation') .. '%') end
+    c.cols = cols
+    c.maxRows = math.max(#cols[1], #cols[2], #cols[3])
+
+    local abilities = D.specialAbilitiesText(ENC.str(rec, 'special_abilities'))
+    if n('see_invis') > 0 then abilities[#abilities + 1] = 'Sees Invisible' end
+    if n('see_invis_undead') > 0 then abilities[#abilities + 1] = 'Sees Invis vs Undead' end
+    if n('see_hide') > 0 then abilities[#abilities + 1] = 'Sees Hide' end
+    if n('see_improved_hide') > 0 then abilities[#abilities + 1] = 'Sees Improved Hide' end
+    if n('npc_aggro') > 0 then abilities[#abilities + 1] = 'Aggro' end
+    c.abilities = #abilities > 0 and table.concat(abilities, ', ') or nil
+    c.faction = ENC.str(rec, 'faction')
+    local hits = ENC.list(rec, 'fachits')
+    if #hits > 0 then
+        local parts = {}
+        for _, h in ipairs(hits) do parts[#parts + 1] = string.format('%s %s', h[1], fmtSigned(h[2])) end
+        c.factionHits = table.concat(parts, ', ')
+    end
+
+    local spawns = ENC.list(rec, 'spawns')
+    c.spawns = {}
+    for _, s in ipairs(spawns) do
+        c.spawns[#c.spawns + 1] = { s[1], zone = DB.zoneName(s[1]) .. '  (' .. s[1] .. ')', points = s[2], respawn = D.secondsText(tonumber(s[3]) or 0),
+                                    chance = (s[4] or '') .. '%', mapTip = 'Open the Zone Atlas on ' .. DB.zoneName(s[1]) }
+    end
+    c.spawnsHeader = #spawns > 0 and string.format('Spawns In (%d zone%s)', #spawns, #spawns == 1 and '' or 's') or 'Spawns'
+
+    local drops = ENC.list(rec, 'drops')
+    c.drops = {}
+    for _, d in ipairs(drops) do
+        local iid = tonumber(d[1]) or 0
+        c.drops[#c.drops + 1] = { id = iid, name = DB.itemName(iid), chance = (d[2] or '') .. '%' }
+    end
+    c.dropsHeader = string.format('Drops (%d%s)', #drops, moreText(drops))
+
+    local casts = ENC.list(rec, 'casts')
+    c.casts = {}
+    for _, cs in ipairs(casts) do
+        local sid = tonumber(cs[1]) or 0
+        local t = D.npcSpellTypes(tonumber(cs[2]) or 0)
+        c.casts[#c.casts + 1] = { id = sid, name = DB.spellName(sid), types = t ~= '' and ('(' .. t .. ')') or nil }
+    end
+    c.castsHeader = string.format('Casts (%d)', #casts)
+
+    c.quest = n('quest') > 0
+    c.rewards, c.handins = {}, {}
+    if c.quest then
+        for _, r in ipairs(ENC.list(rec, 'qrewards')) do
+            local iid = tonumber(r[1]) or 0
+            c.rewards[#c.rewards + 1] = { id = iid, name = DB.itemName(iid) }
+        end
+        for _, h in ipairs(ENC.list(rec, 'qhandins')) do
+            local iid = tonumber(h[1]) or 0
+            c.handins[#c.handins + 1] = { id = iid, name = DB.itemName(iid) }
+        end
+    end
+    local sells = ENC.list(rec, 'sells')
+    c.sells = {}
+    for _, s in ipairs(sells) do
+        local iid = tonumber(s[1]) or 0
+        c.sells[#c.sells + 1] = { id = iid, name = DB.itemName(iid) }
+    end
+    c.sellsHeader = string.format('Sells (%d%s)', #sells, moreText(sells))
+    return c
+end
+
+-- ---- spell -----------------------------------------------------------------
+local function buildSpellCard(id, rec)
+    local n = numReader(rec)
+    local c = {}
+    c.name = ENC.str(rec, 'name')
+    c.iconId = n('new_icon') > 0 and n('new_icon') or n('icon')
+    local classes = spellClassesText(rec.classes)
+    c.subtitle = 'ID ' .. id .. '   ' .. (classes ~= '' and classes or 'Not player castable')
+
+    -- live client values (duration at your level, description), read once
+    local duration, desc = nil, nil
+    pcall(function()
+        local sp = mq.TLO.Spell(id)
+        if sp and sp() then
+            local d = sp.Duration and sp.Duration.TotalSeconds and sp.Duration.TotalSeconds() or nil
+            if d and d > 0 then duration = d end
+            if sp.Description then desc = sp.Description() end
+        end
+    end)
+    c.desc = (desc and desc ~= '') and desc or nil
+
+    local rows = { {}, {} }
+    local function add(col, l, v) if v ~= nil and v ~= 0 and v ~= '' then table.insert(rows[col], { l .. ':', tostring(v) }) end end
+    add(1, 'Mana', n('mana'))
+    add(1, 'Endurance', n('EndurCost'))
+    if n('EndurUpkeep') > 0 then add(1, 'End Upkeep', n('EndurUpkeep')) end
+    add(1, 'Cast Time', string.format('%.2fs', n('cast_time') / 1000))
+    if n('recast_time') > 0 then add(1, 'Recast', D.secondsText(n('recast_time') / 1000)) end
+    if n('recovery_time') > 0 then add(1, 'Recovery', string.format('%.2fs', n('recovery_time') / 1000)) end
+    if duration then
+        add(1, 'Duration', D.secondsText(duration) .. ' (at your level)')
+    elseif n('buffduration') > 0 then
+        add(1, 'Duration', string.format('%d ticks max (formula %d)', n('buffduration'), n('buffdurationformula')))
+    end
+    add(2, 'Target', D.targetTypeName(n('targettype')))
+    if n('range') > 0 then add(2, 'Range', n('range')) end
+    if n('aoerange') > 0 then add(2, 'AE Range', n('aoerange')) end
+    if n('maxtargets') > 0 then add(2, 'Max Targets', n('maxtargets')) end
+    add(2, 'Resist', D.resistTypeName(n('resisttype')) .. (n('basediff') ~= 0 and (' (' .. fmtSigned(n('basediff')) .. ')') or ''))
+    add(2, 'Skill', D.skillName(n('skill')))
+    if n('HateAdded') ~= 0 then add(2, 'Hate', fmtSigned(n('HateAdded'))) end
+    if n('numhits') > 0 then add(2, 'Hits', n('numhits')) end
+    if n('IsDiscipline') > 0 then add(2, 'Discipline', 'yes') end
+    c.rows = rows
+    c.maxRows = math.max(#rows[1], #rows[2])
+
+    local tele = ENC.str(rec, 'teleport_zone')
+    c.teleport = tele ~= '' and DB.zoneName(tele) or nil
+    local flags = {}
+    if n('uninterruptable') > 0 then flags[#flags + 1] = 'Uninterruptable' end
+    if n('nodispell') > 0 then flags[#flags + 1] = 'Cannot be dispelled' end
+    if n('can_mgb') > 0 then flags[#flags + 1] = 'MGB-able' end
+    if n('reflectable') > 0 then flags[#flags + 1] = 'Reflectable' end
+    if n('cast_not_standing') > 0 then flags[#flags + 1] = 'Castable while not standing' end
+    if n('goodEffect') > 0 then flags[#flags + 1] = 'Beneficial' end
+    c.flags = #flags > 0 and table.concat(flags, ', ') or nil
+
+    c.comps = {}
+    for i = 1, 4 do
+        local cid = n('components' .. i)
+        if cid > 0 then c.comps[#c.comps + 1] = { id = cid, label = string.format('%s x%d', DB.itemName(cid), math.max(n('component_counts' .. i), 1)) } end
+    end
+
+    -- effects: { num = 'slot: ', text, ref = spellId, refName, iref = itemId, irefName }
+    c.effects = {}
+    for _, e in ipairs(ENC.list(rec, 'effects')) do
+        local spa = tonumber(e[2]) or 0
+        local text = D.spaText(spa, e[3], e[4], e[5])
+        local ref = text:match('%[spell (%d+)%]')
+        local iref = text:match('%[item (%d+)%]')
+        local ef = { num = string.format('%d: ', tonumber(e[1]) or 0), text = text }
+        if ref then
+            ef.text = text:gsub('%[spell %d+%]', '')
+            ef.ref = tonumber(ref)
+            ef.refName = DB.spellName(ef.ref)
+        elseif iref then
+            ef.text = text:gsub('%[item %d+%]', '')
+            ef.iref = tonumber(iref)
+            ef.irefName = DB.itemName(ef.iref)
+        end
+        c.effects[#c.effects + 1] = ef
+    end
+
+    local items = ENC.list(rec, 'items')
+    c.items = {}
+    for _, it in ipairs(items) do
+        local iid = tonumber(it[2]) or 0
+        local kind = ({ click = 'Click', proc = 'Proc', worn = 'Worn', focus = 'Focus', scroll = 'Scroll', bard = 'Bard' })[it[1]] or it[1]
+        c.items[#c.items + 1] = { id = iid, name = DB.itemName(iid), kind = '(' .. kind .. ')' }
+    end
+    c.itemsHeader = string.format('Items (%d%s)', #items, moreText(items))
+    local npcs = ENC.list(rec, 'npcs')
+    c.npcs = {}
+    for _, np in ipairs(npcs) do
+        local nid = tonumber(np[1]) or 0
+        local info = DB.npcInfo(nid)
+        c.npcs[#c.npcs + 1] = { id = nid, label = info and string.format('%s  (%d, %s)', info.name, info.lvl, DB.zoneName(info.zone)) or ('NPC ' .. nid) }
+    end
+    c.npcsHeader = string.format('Cast By (%d%s)', #npcs, moreText(npcs))
+    return c
+end
+
+-- ---- cache -----------------------------------------------------------------
+-- Decoded card for (kind, id, tier); `rec` is nil when the record is missing.
+local function cardFor(kind, id, tier)
+    tier = tier or 'B'
+    local key = kind .. ':' .. id .. ':' .. tier
+    local card = DB.cards[key]
+    if card then return card end
+    if DB.cardsN >= CARD_CACHE_MAX then
+        DB.cards = {}
+        DB.cardsN = 0
+    end
+    card = { kind = kind, id = id, tier = tier }
+    if kind == 'items' then
+        card.rec = DB.itemRecord(id, tier)
+        if card.rec then
+            local baseRec = DB.itemRecord(id, 'B') or card.rec
+            card.fullId = id + D.TIER_OFFSET[tier]
+            card.name = DB.itemName(card.fullId)
+            card.tiers = DB.itemTiers(id)
+            card.iconId = ENC.num(card.rec, 'icon')
+            card.subtitle = 'ID ' .. card.fullId .. (card.tiers ~= '' and ('   Tiers: ' .. card.tiers:gsub('B', 'Base '):gsub('E', 'Enchanted '):gsub('L', 'Legendary ')) or '')
+            card.stats = buildItemStats(card.rec)
+            card.sources = buildItemSources(baseRec)
+        end
+    elseif kind == 'npcs' then
+        card.rec = DB.npcRecord(id)
+        if card.rec then card.npc = buildNpcCard(id, card.rec) end
+    else
+        card.rec = DB.spellRecord(id)
+        if card.rec then card.spell = buildSpellCard(id, card.rec) end
+    end
+    -- Only keep a complete card: a missing record (index not in yet) or one
+    -- built while other indexes load (cross-referenced names would stay
+    -- "Item 123" placeholders) is rebuilt next frame; finishLoad drops the rest.
+    if card.rec and not DB.loading and #DB.loadQueue == 0 then
+        DB.cards[key] = card
+        DB.cardsN = DB.cardsN + 1
+    end
+    return card
+end
+
+-- Item card body for a state table { sel = baseId, tier = 'B'|'E'|'L' }:
+-- the main pane passes S.items, a popout passes its own entry. `compact`
+-- collapses the sources behind a header.
+local function drawItemCardFor(st, compact)
+    local base = st.sel
+    if not base then
+        muted('Search for an item, or click Cursor Item.')
+        return
+    end
+    local tiers = DB.itemTiers(base)
+    if tiers ~= '' and not tiers:find(st.tier or 'B', 1, true) then st.tier = tiers:sub(1, 1) end
+    local card = cardFor('items', base, st.tier or 'B')
+    if not card.rec then
+        warn('Item ' .. base .. ' is not in the database.')
+        return
+    end
+
+    -- header: icon, name, tier buttons
+    local anim = itemIconAnim(card.iconId)
+    drawIcon(anim, core.px(40))
+    ImGui.SameLine()
+    ImGui.BeginGroup()
+    gold(card.name)
+    muted(card.subtitle)
+    ImGui.EndGroup()
+    if #tiers > 1 then
+        for _, t in ipairs({ 'B', 'E', 'L' }) do
+            if tiers:find(t, 1, true) then
+                local active = st.tier == t
+                if active then ImGui.PushStyleColor(ImGuiCol.Button, C.GOLD[1] * 0.6, C.GOLD[2] * 0.6, C.GOLD[3] * 0.6, 1.0) end
+                if ImGui.SmallButton(D.TIER_NAMES[t] .. '##tier' .. t) then st.tier = t end
+                if active then ImGui.PopStyleColor() end
+                ImGui.SameLine()
+            end
+        end
+    end
+    drawLinkButton('items', card.fullId, st.key or 'main')
+    ImGui.Separator()
+    drawItemStats(card.stats)
+    if compact then
+        ImGui.Dummy(0, core.px(4))
+        if ImGui.SmallButton('Open in Database##pop' .. tostring(st.key)) then
+            showEntry('items', card.fullId)
+            ctrl.show_gamedb = true
+        end
+        ImGui.SameLine()
+        local label = st.showSources and 'Hide sources' or 'Show sources'
+        if ImGui.SmallButton(label .. '##popsrc' .. tostring(st.key)) then st.showSources = not st.showSources end
+        if st.showSources then drawItemSources(card.sources) end
+    else
+        drawItemSources(card.sources)
+    end
+end
+
+local function drawItemCard()
+    drawItemCardFor(S.items, false)
+end
+
+-- The Map plugin (tac/map.lua) when it is loaded and enabled.
+local function mapPlugin()
+    local pm = core and core.runtime and core.runtime.pluginManager
+    local p = pm and pm.plugins and pm.plugins.map
+    if p and p.enabled and p.instance and p.instance.showZone then return p.instance end
+    return nil
+end
+
+-- ----------------------------------------------------------------------------
+-- NPC card
+-- ----------------------------------------------------------------------------
+local function drawNpcCardFor(st)
+    local id = st.sel
+    if not id then
+        muted('Search for an NPC by name (filter by zone or level on the left).')
+        return
+    end
+    local card = cardFor('npcs', id, 'B')
+    local c = card.npc
+    if not c then
+        warn('NPC ' .. id .. ' is not in the database.')
+        return
+    end
+    gold(c.title)
+    muted(c.subtitle)
+    if c.tags then warn(c.tags) end
+    drawLinkButton('npcs', id, st.key or 'main')
+    ImGui.Separator()
+
+    if beginCardTable('##npcstats', 6, ImGuiTableFlags.SizingFixedFit) then
+        local cols = c.cols
+        for i = 1, c.maxRows do
+            ImGui.TableNextRow()
+            for col = 1, 3 do
+                local r = cols[col][i]
+                ImGui.TableSetColumnIndex((col - 1) * 2)
+                if r then muted(r[1]) end
+                ImGui.TableSetColumnIndex((col - 1) * 2 + 1)
+                if r then txt(r[2]) end
+            end
+        end
+        endCardTable()
+    end
+
+    if c.abilities then
+        muted('Abilities:')
+        ImGui.SameLine()
+        ImGui.TextWrapped(c.abilities)
+    end
+    if c.faction ~= '' then labelled('Faction', c.faction) end
+    if c.factionHits then
+        muted('Faction hits:')
+        ImGui.SameLine()
+        ImGui.TextWrapped(c.factionHits)
+    end
+
+    header(c.spawnsHeader)
+    if #c.spawns == 0 then
+        muted('No spawn point (summoned, pet, or scripted).')
+    elseif beginCardTable('##spawns', 5, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+        local map = mapPlugin()
+        ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 4)
+        ImGui.TableSetupColumn('Points', ImGuiTableColumnFlags.WidthFixed, core.px(50))
+        ImGui.TableSetupColumn('Respawn', ImGuiTableColumnFlags.WidthFixed, core.px(80))
+        ImGui.TableSetupColumn('Chance', ImGuiTableColumnFlags.WidthFixed, core.px(60))
+        ImGui.TableSetupColumn('##map', ImGuiTableColumnFlags.WidthFixed, core.px(44))
+        ImGui.TableHeadersRow()
+        for i, s in ipairs(c.spawns) do
+            ImGui.TableNextRow()
+            ImGui.TableSetColumnIndex(0); txt(s.zone)
+            ImGui.TableSetColumnIndex(1); txt(s.points)
+            ImGui.TableSetColumnIndex(2); txt(s.respawn)
+            ImGui.TableSetColumnIndex(3); txt(s.chance)
+            ImGui.TableSetColumnIndex(4)
+            if map then
+                ImGui.PushID(i)
+                if ImGui.SmallButton('Map') then map.showZone(s[1]) end
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', s.mapTip) end
+                ImGui.PopID()
+            end
+        end
+        endCardTable()
+    end
+
+    if #c.drops > 0 then
+        header(c.dropsHeader)
+        if beginCardTable('##npcdrops', 2, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+            ImGui.TableSetupColumn('Item', ImGuiTableColumnFlags.WidthStretch, 5)
+            ImGui.TableSetupColumn('Chance', ImGuiTableColumnFlags.WidthFixed, core.px(60))
+            ImGui.TableHeadersRow()
+            for i, d in ipairs(c.drops) do
+                ImGui.TableNextRow()
+                ImGui.TableSetColumnIndex(0)
+                if link(d.name, 'nd' .. i) then showEntry('items', d.id) end
+                ImGui.TableSetColumnIndex(1); txt(d.chance)
+            end
+            endCardTable()
+        end
+    end
+
+    if #c.casts > 0 then
+        header(c.castsHeader)
+        for i, cs in ipairs(c.casts) do
+            if link(cs.name, 'nc' .. i) then showEntry('spells', cs.id) end
+            if cs.types then
+                ImGui.SameLine()
+                muted(cs.types)
+            end
+        end
+    end
+
+    if c.quest and (#c.rewards > 0 or #c.handins > 0) then
+        header('Quest')
+        if #c.handins > 0 then
+            muted('Accepts:')
+            for i, h in ipairs(c.handins) do
+                if link(h.name, 'qh' .. i) then showEntry('items', h.id) end
+            end
+        end
+        if #c.rewards > 0 then
+            muted('Rewards:')
+            for i, r in ipairs(c.rewards) do
+                if link(r.name, 'qr' .. i) then showEntry('items', r.id) end
+            end
+        end
+    end
+
+    if #c.sells > 0 then
+        header(c.sellsHeader)
+        for i, s in ipairs(c.sells) do
+            if link(s.name, 'ns' .. i) then showEntry('items', s.id) end
+        end
+    end
+end
+
+-- ----------------------------------------------------------------------------
+-- Spell card
+-- ----------------------------------------------------------------------------
+-- Your own relationship to the spell ("Scribed - Gem 3", "Scribed", or nil):
+-- what the game's Spell Info window never says. Read once a second per card.
+local LIVE_STATUS_TTL = 1.0
+local function spellLiveStatus(st, id, name)
+    local now = os.clock()
+    if st.liveId == id and st.liveAt and (now - st.liveAt) < LIVE_STATUS_TTL then return st.liveText end
+    st.liveId, st.liveAt = id, now
+    local text = nil
+    pcall(function()
+        local me = mq.TLO.Me
+        local gem = me.Gem(name)()
+        local book = me.Book(name)()
+        if gem and gem > 0 then
+            text = 'Scribed - Gem ' .. gem
+        elseif book and book > 0 then
+            text = 'Scribed'
+        end
+    end)
+    st.liveText = text
+    return text
+end
+
+local function drawSpellCardFor(st)
+    local id = st.sel
+    if not id then
+        muted('Search for a spell by name (filter by class and level on the left).')
+        return
+    end
+    local card = cardFor('spells', id, 'B')
+    local c = card.spell
+    if not c then
+        warn('Spell ' .. id .. ' is not in the database.')
+        return
+    end
+    local anim = core.getSpellIconAnimation and core.getSpellIconAnimation(c.iconId) or nil
+    drawIcon(anim, core.px(32))
+    ImGui.SameLine()
+    ImGui.BeginGroup()
+    gold(c.name)
+    muted(c.subtitle)
+    local live = spellLiveStatus(st, id, c.name)
+    if live then good(live) end
+    ImGui.EndGroup()
+    drawLinkButton('spells', id, st.key or 'main')
+    ImGui.Separator()
+
+    if beginCardTable('##spellstats', 4, ImGuiTableFlags.SizingFixedFit) then
+        local rows = c.rows
+        for i = 1, c.maxRows do
+            ImGui.TableNextRow()
+            for col = 1, 2 do
+                local r = rows[col][i]
+                ImGui.TableSetColumnIndex((col - 1) * 2)
+                if r then muted(r[1]) end
+                ImGui.TableSetColumnIndex((col - 1) * 2 + 1)
+                if r then txt(r[2]) end
+            end
+        end
+        endCardTable()
+    end
+    if c.teleport then labelled('Teleports to', c.teleport) end
+    if c.flags then muted(c.flags) end
+
+    if #c.comps > 0 then
+        muted('Components:')
+        for i, cp in ipairs(c.comps) do
+            ImGui.SameLine()
+            if link(cp.label, 'comp' .. i) then showEntry('items', cp.id) end
+        end
+    end
+
+    header('Effects')
+    if #c.effects == 0 then muted('None') end
+    for i, e in ipairs(c.effects) do
+        txt(e.num)
+        ImGui.SameLine()
+        if e.ref then
+            txt(e.text)
+            ImGui.SameLine()
+            if link(e.refName, 'spa' .. i) then showEntry('spells', e.ref) end
+        elseif e.iref then
+            txt(e.text)
+            ImGui.SameLine()
+            if link(e.irefName, 'spai' .. i) then showEntry('items', e.iref) end
+        else
+            txt(e.text)
+        end
+    end
+
+    if c.desc then
+        header('Description')
+        ImGui.TextWrapped(c.desc)
+    end
+
+    if #c.items > 0 then
+        header(c.itemsHeader)
+        for i, it in ipairs(c.items) do
+            if link(it.name, 'si' .. i) then showEntry('items', it.id) end
+            ImGui.SameLine()
+            muted(it.kind)
+        end
+    end
+    if #c.npcs > 0 then
+        header(c.npcsHeader)
+        for i, np in ipairs(c.npcs) do
+            if link(np.label, 'sn' .. i) then showEntry('npcs', np.id) end
+        end
+    end
+end
+
+local function drawNpcCard() drawNpcCardFor(S.npcs) end
+local function drawSpellCard() drawSpellCardFor(S.spells) end
+
+local function drawPopoutBody(pop)
+    if pop.kind == 'items' then
+        drawItemCardFor(pop, true)
+        return
+    end
+    if ImGui.SmallButton('Open in Database##pop' .. tostring(pop.key)) then
+        showEntry(pop.kind, pop.sel)
+        ctrl.show_gamedb = true
+    end
+    if pop.kind == 'npcs' then drawNpcCardFor(pop) else drawSpellCardFor(pop) end
+end
+
+local function popoutTitle(pop)
+    if pop.pending then return KIND_LABELS[pop.kind]:sub(1, -2) .. ' (loading...)' end
+    if pop.kind == 'items' then return DB.itemName(pop.sel + D.TIER_OFFSET[pop.tier or 'B']) end
+    if pop.kind == 'npcs' then return DB.npcName(pop.sel) end
+    return DB.spellName(pop.sel)
+end
+
+-- Floating cards (items, NPCs, spells). Drawn even while the main window is closed.
+local function drawPopouts()
+    if #S.popouts == 0 then return end
+    local colors = core.colors or {}
+    C.GOOD = C.GOOD or colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
+    C.WARN = C.WARN or colors.WARN or { 0.95, 0.75, 0.30, 1.0 }
+    C.ERR = C.ERR or colors.ERR or { 0.95, 0.40, 0.40, 1.0 }
+    C.MUTED = C.MUTED or colors.MUTED or { 0.55, 0.60, 0.65, 1.0 }
+    C.ARC = C.ARC or colors.ARC or { 0.30, 0.80, 1.00, 1.0 }
+    C.GOLD = C.GOLD or colors.GOLD or { 1.0, 0.70, 0.54, 1.0 }
+    local windowFlags = 0
+    if ImGuiWindowFlags then
+        windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
+    end
+    core.pushTheme()
+    S.linkOpensWindow = true
+    -- Cards opened before their index was in resolve first: openPopout may
+    -- evict the oldest card or append one, so it never runs inside the draw
+    -- loop below, and the placeholder is dropped by identity, not position.
+    local pendings = nil
+    for _, pop in ipairs(S.popouts) do
+        if pop.pending and DB.isLoaded(pop.kind) then
+            pendings = pendings or {}
+            pendings[#pendings + 1] = pop
+        end
+    end
+    for _, pop in ipairs(pendings or {}) do
+        local resolved = openPopout(pop.kind, pop.pending)
+        pop.pending = nil
+        if resolved ~= pop then
+            for j = #S.popouts, 1, -1 do
+                if S.popouts[j] == pop then table.remove(S.popouts, j) end
+            end
+        end
+    end
+    -- draw from a snapshot; closed cards are removed after the loop
+    local list, closed = {}, nil
+    for k = 1, #S.popouts do list[k] = S.popouts[k] end
+    for _, pop in ipairs(list) do
+        local remove = false
+        do
+            local title = popoutTitle(pop)
+            ImGui.SetNextWindowSize(core.px(430), core.px(480), ImGuiCond.FirstUseEver)
+            if pop.focus then
+                pcall(ImGui.SetNextWindowFocus)
+                pop.focus = false
+            end
+            -- One shared layout key for every card: the options (title bar,
+            -- ghost, scale) apply to all of them.
+            if core.preBeginWindow then core.preBeginWindow('gamedb_pop') end
+            local open, draw = ImGui.Begin(title .. '###TriuneGameDBPop' .. pop.key, true, core.windowFlags and core.windowFlags('gamedb_pop', windowFlags) or windowFlags)
+            if not open then
+                remove = true
+            elseif draw then
+                if core.postBeginWindow then core.postBeginWindow('gamedb_pop') end
+                if pop.pending then
+                    muted('Loading the ' .. pop.kind .. ' index...')
+                else
+                    cardTables = 0
+                    local ok, err = pcall(drawPopoutBody, pop)
+                    if not ok then
+                        while cardTables > 0 do endCardTable() end
+                        warn('Card error: ' .. tostring(err))
+                    end
+                    cardTables = 0
+                end
+            end
+            if core.preEndWindow then core.preEndWindow('gamedb_pop', false, { name = 'Database cards', close = false }) end
+            ImGui.End()
+            if core.postEndWindow then core.postEndWindow('gamedb_pop') end
+        end
+        if remove then
+            closed = closed or {}
+            closed[pop] = true
+        end
+    end
+    if closed then
+        for j = #S.popouts, 1, -1 do
+            if closed[S.popouts[j]] then table.remove(S.popouts, j) end
+        end
+    end
+    S.linkOpensWindow = false
+    core.popTheme()
+end
+
+-- ----------------------------------------------------------------------------
+-- Search panes
+-- ----------------------------------------------------------------------------
+local function drawResults(kind, height)
+    local st = S[kind]
+    local ix = DB.kinds[kind]
+    if not ix or not ix.loaded then
+        local lk, prog = DB.progress()
+        if lk == kind and prog then
+            ImGui.ProgressBar(prog, -1, core.px(18), string.format('Loading %s... %d%%', KIND_LABELS[kind], math.floor(prog * 100)))
+        elseif ix and ix.failed then
+            warn('No ' .. kind .. '.idx under resources/gamedb.')
+            muted('Run tools/build_gamedb.py (see README) or install the full release.')
+        else
+            muted('Waiting to load ' .. KIND_LABELS[kind] .. '...')
+        end
+        return
+    end
+    local results = st.results
+    local labels = st.labels or {}
+    if st.dirty or st.scanJob then
+        muted('Searching...')
+    else
+        local total = st.total or #results
+        if total > #results then
+            muted(string.format('%d results (showing top %d)', total, #results))
+        else
+            muted(string.format('%d result%s%s', #results, #results == 1 and '' or 's', #results >= DB.MAX_RESULTS and ' (capped)' or ''))
+        end
+    end
+    if ImGui.BeginChild('##results' .. kind, ImVec2(0, height), true) then
+        local function drawRow(i, n)
+            local id = ix.ids[n]
+            local label = labels[i] or resultLabel(kind, ix, n)
+            local selected = (st.sel == id)
+            -- MQ's binding returns (selected, pressed): the first value is the
+            -- selection state, true every frame for the selected row.
+            ImGui.PushID(i)
+            local _, pressed = ImGui.Selectable(label, selected)
+            ImGui.PopID()
+            if pressed then showEntry(kind, id) end
+        end
+        local clipper = nil
+        local ClipperClass = ImGui.ListClipper or (mq and mq.imgui and mq.imgui.ListClipper) or _G['ImGuiListClipper']
+        if type(ClipperClass) == 'table' and ClipperClass.new then
+            local okC, c = pcall(ClipperClass.new)
+            if okC and c then clipper = c end
+        end
+        if clipper then
+            clipper:Begin(#results)
+            while clipper:Step() do
+                for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                    local n = results[i]
+                    if n then drawRow(i, n) end
+                end
+            end
+            clipper:End()
+        else
+            for i, n in ipairs(results) do drawRow(i, n) end
+        end
+        if #results == 0 and st.query ~= '' and not st.dirty and not st.scanJob then muted('No matches.') end
+    end
+    ImGui.EndChild()
+end
+
+-- A combo over `choices` ({ label, ... } rows, or plain strings) with an
+-- "any" row at index 0. Returns the new index and whether it changed.
+local function choiceCombo(id, width, current, anyLabel, choices, labelOf)
+    ImGui.SetNextItemWidth(core.px(width))
+    local cur = choices[current]
+    local label = cur and (labelOf and labelOf(current, cur) or cur[1] or cur) or anyLabel
+    local out, changed = current, false
+    if ImGui.BeginCombo(id, label) then
+        if anyLabel then
+            local _, pressed = ImGui.Selectable(anyLabel, current == 0)
+            if pressed then out, changed = 0, current ~= 0 end
+        end
+        for i, c in ipairs(choices) do
+            local _, pressed = ImGui.Selectable((labelOf and labelOf(i, c) or c[1] or c) .. '##' .. i, current == i)
+            if pressed then out, changed = i, current ~= i end
+        end
+        ImGui.EndCombo()
+    end
+    return out, changed
+end
+
+local function minInput(id, width, value, tooltip)
+    ImGui.SetNextItemWidth(core.px(width))
+    local v, changed = ImGui.InputInt(id, value, 0, 0)
+    if ImGui.IsItemHovered() then ImGui.SetTooltip(tooltip) end
+    if changed then return math.max(0, v), true end
+    return value, false
+end
+
+-- Item pane filters: a collapsible block under the search box (items.idx
+-- v2); every widget marks the search dirty, Clear resets them all.
+local function drawItemFilters(st)
+    if not DB.hasItemFilters() then
+        if DB.isLoaded('items') then
+            muted('(no filters: items.idx v1)')
+            if ImGui.IsItemHovered() then ImGui.SetTooltip('Rebuild the index for class / slot / stat filters:\npython3 tools/build_gamedb.py --reindex-items') end
+        end
+        return
+    end
+    local active = itemFiltersActive(st)
+    local sort = DB.ITEM_SORTS[st.sort or 1]
+    local hdr = 'Filters'
+    if active > 0 then hdr = hdr .. ' (' .. active .. ')' end
+    if sort and sort[1] ~= 'match' then hdr = hdr .. '  sort: ' .. sort[2] end
+    local open = ImGui.CollapsingHeader(hdr .. '###itemFilters')
+    if not open then return end
+    local function set(k, v, changed)
+        if changed then st[k] = v; markDirty(st) end
+    end
+    -- row 1: class / race / slot
+    set('class', choiceCombo('##fcls', 92, st.class, 'Any class', D.CLASSES, function(i, c) return c .. ' - ' .. D.CLASS_NAMES[i] end))
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Usable by this class') end
+    ImGui.SameLine()
+    set('race', choiceCombo('##frace', 92, st.race, 'Any race', D.RACES, function(i, c) return c .. ' - ' .. (D.RACE_NAMES[i] or c) end))
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Usable by this race') end
+    ImGui.SameLine()
+    set('slot', choiceCombo('##fslot', 92, st.slot, 'Any slot', SLOT_CHOICES))
+    -- row 2: type / required level
+    set('itype', choiceCombo('##ftype', 128, st.itype, 'Any type', TYPE_CHOICES))
+    ImGui.SameLine()
+    muted('Lvl'); ImGui.SameLine()
+    set('minLvl', minInput('##fminl', 44, st.minLvl, 'Required level range (0 = any)'))
+    ImGui.SameLine(); muted('-'); ImGui.SameLine()
+    set('maxLvl', minInput('##fmaxl', 44, st.maxLvl, 'Required level range (0 = any)'))
+    -- row 3: effect / tradeable
+    set('effect', choiceCombo('##feff', 92, st.effect, nil, DB.EFFECT_FILTERS))
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Click, proc, worn or focus effect') end
+    ImGui.SameLine()
+    local tr = ImGui.Checkbox('Tradeable##ftrade', st.tradeable == true)
+    if tr ~= (st.tradeable == true) then st.tradeable = tr; markDirty(st) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Hide NO DROP items') end
+    ImGui.SameLine()
+    local tt = ImGui.Checkbox('Top tier##ftop', st.topTier == true)
+    if tt ~= (st.topTier == true) then st.topTier = tt; markDirty(st) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Use the stats of the item\'s highest tier (Legendary / Enchanted)\nfor the minimums below and for sorting, instead of the base item.') end
+    -- row 4: stat minimums
+    muted('Min'); ImGui.SameLine()
+    set('minAC', minInput('##fac', 46, st.minAC, 'Minimum AC (0 = any)'))
+    ImGui.SameLine(); muted('AC'); ImGui.SameLine()
+    set('minHP', minInput('##fhp', 46, st.minHP, 'Minimum HP (0 = any)'))
+    ImGui.SameLine(); muted('HP'); ImGui.SameLine()
+    set('minMana', minInput('##fmana', 46, st.minMana, 'Minimum mana (0 = any)'))
+    ImGui.SameLine(); muted('Mana')
+    -- row 5: sort / clear
+    muted('Sort'); ImGui.SameLine()
+    ImGui.SetNextItemWidth(core.px(110))
+    if ImGui.BeginCombo('##fsort', sort and sort[2] or 'Best match') then
+        for i, c in ipairs(DB.ITEM_SORTS) do
+            local _, pressed = ImGui.Selectable(c[2], st.sort == i)
+            if pressed and st.sort ~= i then st.sort = i; markDirty(st) end
+        end
+        ImGui.EndCombo()
+    end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Order results by a stat, highest first (the top ' .. DB.MAX_RESULTS .. ' of every match).') end
+    ImGui.SameLine()
+    if active > 0 or (sort and sort[1] ~= 'match') then
+        if ImGui.SmallButton('Clear##fclear') then
+            for k, v in pairs(ITEM_FILTER_DEFAULTS) do st[k] = v end
+            markDirty(st)
+        end
+    end
+end
+
+local function drawSearchPane(kind)
+    local st = S[kind]
+    ImGui.SetNextItemWidth(-1)
+    local q, changed = ImGui.InputTextWithHint('##q' .. kind, 'Search ' .. KIND_LABELS[kind] .. ' by name or ID...', st.query)
+    if changed then
+        st.query = q
+        markDirty(st)
+    end
+    if kind == 'items' then
+        if ImGui.SmallButton('Cursor Item') then plugin.lookupCursor() end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Look up the item on your cursor.') end
+        drawItemFilters(st)
+    elseif kind == 'npcs' then
+        ImGui.SetNextItemWidth(core.px(110))
+        local z, zc = ImGui.InputTextWithHint('##zone', 'zone', st.zone)
+        if zc then st.zone = z; markDirty(st) end
+        ImGui.SameLine()
+        ImGui.SetNextItemWidth(core.px(50))
+        local a, ac = ImGui.InputInt('##minl', st.minLvl, 0, 0)
+        if ac then st.minLvl = math.max(0, a); markDirty(st) end
+        ImGui.SameLine(); muted('-'); ImGui.SameLine()
+        ImGui.SetNextItemWidth(core.px(50))
+        local b, bc = ImGui.InputInt('##maxl', st.maxLvl, 0, 0)
+        if bc then st.maxLvl = math.max(0, b); markDirty(st) end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Level range (0 = any)') end
+    elseif kind == 'spells' then
+        ImGui.SetNextItemWidth(core.px(90))
+        local label = st.class > 0 and D.CLASSES[st.class] or 'Any class'
+        if ImGui.BeginCombo('##cls', label) then
+            local _, anyPressed = ImGui.Selectable('Any class', st.class == 0)
+            if anyPressed then st.class = 0; markDirty(st) end
+            for i, c in ipairs(D.CLASSES) do
+                local _, pressed = ImGui.Selectable(c .. ' - ' .. D.CLASS_NAMES[i], st.class == i)
+                if pressed then st.class = i; markDirty(st) end
+            end
+            ImGui.EndCombo()
+        end
+        ImGui.SameLine()
+        ImGui.SetNextItemWidth(core.px(50))
+        local a, ac = ImGui.InputInt('##sminl', st.minLvl, 0, 0)
+        if ac then st.minLvl = math.max(0, a); markDirty(st) end
+        ImGui.SameLine(); muted('-'); ImGui.SameLine()
+        ImGui.SetNextItemWidth(core.px(50))
+        local b, bc = ImGui.InputInt('##smaxl', st.maxLvl, 0, 0)
+        if bc then st.maxLvl = math.max(0, b); markDirty(st) end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Level range (0 = any)') end
+        -- (the class / level widgets mark the search dirty when they change;
+        -- an empty result set must not re-run the search every frame)
+    end
+    drawResults(kind, -1)
+end
+
+-- ----------------------------------------------------------------------------
+-- Spell Info replacement: every way the game opens its Spell Display window
+-- (right-click on a gem, a buff, a spellbook page, a spell link) lands here.
+-- The window is polled each frame; when it opens (or shows a new spell while
+-- open) its spell is resolved by name and, if the database knows it, the
+-- game window is closed and the spell's card takes its place. Unknown spells
+-- keep the game window, and the same name is not retried until it changes.
+-- ----------------------------------------------------------------------------
+-- STML (the client's HTML-like markup) to plain lines: tags dropped, <br>
+-- as line breaks, entities decoded, blank lines removed.
+local STML_ENTITIES = { amp = '&', lt = '<', gt = '>', quot = '"', apos = "'", nbsp = ' ' }
+local function stmlToLines(text)
+    text = tostring(text or '')
+    text = text:gsub('<[bB][rR]%s*/?>', '\n'):gsub('</?[pP]%s*>', '\n'):gsub('<[^>]*>', '')
+    text = text:gsub('&(%a+);', function(e) return STML_ENTITIES[e:lower()] or ('&' .. e .. ';') end)
+    text = text:gsub('&#(%d+);', function(n) n = tonumber(n) return (n and n < 256) and string.char(n) or '' end)
+    local lines = {}
+    for line in (text .. '\n'):gmatch('(.-)\r?\n') do
+        line = line:gsub('^%s+', ''):gsub('%s+$', '')
+        if line ~= '' then lines[#lines + 1] = line end
+    end
+    return lines
+end
+
+-- The spell name the game's Spell Display window is showing: its title, or
+-- the first line of its description when the title is not the spell.
+local function spellWindowName(title, stml)
+    title = tostring(title or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    if title ~= '' and not title:lower():find('^spell display') then return title end
+    local lines = stmlToLines(stml)
+    return lines[1]
+end
+
+local function watchSpellWindow()
+    local W = S.spellWnd
+    if not S.spellWindow then
+        W.wasOpen = false
+        W.lastKey = nil
+        return
+    end
+    local open, title, stml = false, nil, nil
+    pcall(function()
+        local w = mq.TLO.Window('SpellDisplayWindow')
+        if not (w and w.Open and w.Open() == true) then return end
+        open = true
+        title = w.Text and w.Text() or nil
+        local d = w.Child and w.Child('SDW_SpellDescription')
+        if d and d.Text then stml = d.Text() end
+    end)
+    if not open then
+        W.wasOpen = false
+        W.lastKey = nil
+        return
+    end
+    local name = spellWindowName(title, stml)
+    local key = name or '?'
+    if W.wasOpen and key == W.lastKey then return end
+    W.wasOpen = true
+    W.lastKey = key
+    if not name then return end
+    if not DB.isLoaded('spells') then
+        -- first open starts the (sliced) load; the game window stays this time
+        DB.ensure('spells')
+        return
+    end
+    local id = spellIdForName(name)
+    if not id then return end
+    pcall(function() mq.TLO.Window('SpellDisplayWindow').DoClose() end)
+    W.wasOpen = false
+    plugin.popout('spells', id)
+end
+
+-- ----------------------------------------------------------------------------
+-- Loot Advisor: while the loot window is open, one row per corpse item with
+-- the drop chance on this NPC, value, tiers and quest / recipe / vendor facts.
+-- ----------------------------------------------------------------------------
+local function scanLoot()
+    local L = S.loot
+    local open = false
+    pcall(function()
+        local w = mq.TLO.Window('LootWnd')
+        open = w and w.Open and w.Open() == true
+    end)
+    L.open = open
+    if not open then
+        L.rows = {}
+        L.corpseId = 0
+        L.count = nil
+        return
+    end
+    if not DB.isLoaded('items') or not DB.isLoaded('npcs') then
+        -- a corpse is open: start the (sliced) load now
+        DB.ensure('zones')
+        DB.ensure('items')
+        DB.ensure('npcs')
+        return
+    end
+    local corpseId, count = 0, 0
+    pcall(function()
+        corpseId = mq.TLO.Corpse.ID() or 0
+        count = mq.TLO.Corpse.Items() or 0
+    end)
+    -- Same corpse, same item count: the rows are still right.
+    if corpseId == L.corpseId and count == L.count then return end
+    L.count = count
+    if corpseId ~= L.corpseId then
+        L.corpseId = corpseId
+        L.rows = {}
+        L.npcId = nil
+        L.npcName = ''
+        if corpseId > 0 then
+            local name = nil
+            pcall(function() name = mq.TLO.Spawn(corpseId).CleanName() end)
+            if name then
+                name = name:gsub("'s corpse$", ''):gsub(' corpse$', '')
+                L.npcName = name
+                local level, zone = 0, ''
+                pcall(function()
+                    level = mq.TLO.Spawn(corpseId).Level() or 0
+                    zone = mq.TLO.Zone.ShortName() or ''
+                end)
+                L.npcId = DB.npcIdFor(name, zone, level)
+            end
+        end
+    end
+    -- drop chances on this NPC
+    local chance = {}
+    if L.npcId then
+        local rec = DB.npcRecord(L.npcId)
+        for _, d in ipairs(rec and ENC.list(rec, 'drops') or {}) do chance[tonumber(d[1]) or 0] = d[2] end
+    end
+    local rows = {}
+    for i = 1, count do
+        local id, name, value = 0, '', 0
+        pcall(function()
+            local it = mq.TLO.Corpse.Item(i)
+            if it and it() then
+                id = it.ID() or 0
+                name = it.Name() or ''
+                value = it.Value() or 0
+            end
+        end)
+        if id > 0 then
+            local _, base = D.tierOf(id)
+            local row = { id = id, name = name ~= '' and name or DB.itemName(id), value = value, chance = chance[id] or chance[base], lines = plugin.itemSummary(id) or {} }
+            local rec = DB.itemRecord(base, 'B')
+            row.quest = rec and ENC.num(rec, 'questitemflag') > 0
+            row.tags = {}
+            for _, l in ipairs(row.lines) do
+                if l:find('^Quest turn%-in') then row.tags[#row.tags + 1] = 'TURN-IN' end
+                if l:find('^Tradeskill') then row.tags[#row.tags + 1] = 'RECIPE' end
+            end
+            row.tip = #row.lines > 0 and table.concat(row.lines, '\n') or nil
+            rows[#rows + 1] = row
+        end
+    end
+    L.rows = rows
+end
+
+local function drawLootAdvisor()
+    local L = S.loot
+    if not S.lootAdvisor or not L.open or #L.rows == 0 then return end
+    local colors = core.colors or {}
+    C.GOOD = C.GOOD or colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
+    C.WARN = C.WARN or colors.WARN or { 0.95, 0.75, 0.30, 1.0 }
+    C.MUTED = C.MUTED or colors.MUTED or { 0.55, 0.60, 0.65, 1.0 }
+    C.ARC = C.ARC or colors.ARC or { 0.30, 0.80, 1.00, 1.0 }
+    C.GOLD = C.GOLD or colors.GOLD or { 1.0, 0.70, 0.54, 1.0 }
+    core.pushTheme()
+    ImGui.SetNextWindowSize(core.px(520), core.px(220), ImGuiCond.FirstUseEver)
+    core.preBeginWindow('gamedb_loot')
+    local open, draw = ImGui.Begin('Loot Advisor###TriuneGameDBLoot', true, core.windowFlags and core.windowFlags('gamedb_loot', 0) or 0)
+    if not open then
+        S.lootAdvisor = false
+        core.saveLoadout(true)
+    elseif draw then
+        core.postBeginWindow('gamedb_loot')
+        if L.npcName ~= '' then
+            muted('Looting ' .. L.npcName .. (L.npcId and '' or '  (not in the database)'))
+        end
+        if ImGui.BeginTable('##loot', 4, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+            ImGui.TableSetupColumn('Item', ImGuiTableColumnFlags.WidthStretch, 4)
+            ImGui.TableSetupColumn('Drop', ImGuiTableColumnFlags.WidthFixed, core.px(52))
+            ImGui.TableSetupColumn('Value', ImGuiTableColumnFlags.WidthFixed, core.px(90))
+            ImGui.TableSetupColumn('Notes', ImGuiTableColumnFlags.WidthStretch, 4)
+            ImGui.TableHeadersRow()
+            for i, row in ipairs(L.rows) do
+                ImGui.TableNextRow()
+                ImGui.TableSetColumnIndex(0)
+                if link(row.name, 'loot' .. i) then openPopout('items', row.id) end
+                if ImGui.IsItemHovered() and #row.lines > 0 then ImGui.SetTooltip('%s', row.tip or table.concat(row.lines, '\n')) end
+                ImGui.TableSetColumnIndex(1)
+                local ch = tonumber(row.chance)
+                if ch then
+                    if ch <= 5 then warn(string.format('%.1f%%', ch)) else txt(string.format('%.1f%%', ch)) end
+                else
+                    muted('-')
+                end
+                ImGui.TableSetColumnIndex(2); txt(D.moneyText(row.value))
+                ImGui.TableSetColumnIndex(3)
+                local notes = {}
+                if ch and ch <= 5 then notes[#notes + 1] = 'RARE' end
+                if row.quest then notes[#notes + 1] = 'QUEST' end
+                for _, t in ipairs(row.tags) do notes[#notes + 1] = t end
+                for _, l in ipairs(row.lines) do
+                    if l:find('^Tiers') then notes[#notes + 1] = l:gsub('^Tiers: ', ''):gsub('Base / ', ''); break end
+                end
+                if #notes > 0 then gold(table.concat(notes, '  ')) else muted('-') end
+            end
+            ImGui.EndTable()
+        end
+    end
+    if core.preEndWindow then core.preEndWindow('gamedb_loot', false) end
+    ImGui.End()
+    core.popTheme()
+end
+
+-- ----------------------------------------------------------------------------
+-- Window
+-- ----------------------------------------------------------------------------
+-- BeginTabItem with flags. MQ's binding takes (label, open, flags); with a
+-- nil `open` it returns the "should draw" state first (the Map plugin relies
+-- on that every frame). If a binding ever returned the (open, show) tuple
+-- of the sol2 bindings instead, `open` would not be a boolean for a nil
+-- p_open, so the second value is taken in that case. Falls back to the
+-- plain call when the flagged form is unavailable.
+local function beginTabItem(label, flags)
+    if flags == 0 then return ImGui.BeginTabItem(label) == true end
+    local ok, a, b = pcall(ImGui.BeginTabItem, label, nil, flags)
+    if not ok then return ImGui.BeginTabItem(label) == true end
+    if type(a) ~= 'boolean' and type(b) == 'boolean' then return b end
+    return a == true
+end
+
+local function drawWindow()
+    if not ctrl.show_gamedb then return end
+    local colors = core.colors or {}
+    C.GOOD = colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
+    C.WARN = colors.WARN or { 0.95, 0.75, 0.30, 1.0 }
+    C.ERR = colors.ERR or { 0.95, 0.40, 0.40, 1.0 }
+    C.MUTED = colors.MUTED or { 0.55, 0.60, 0.65, 1.0 }
+    C.ARC = colors.ARC or { 0.30, 0.80, 1.00, 1.0 }
+    C.GOLD = colors.GOLD or { 1.0, 0.70, 0.54, 1.0 }
+
+    queueAll()
+
+    core.pushTheme()
+    ImGui.SetNextWindowCollapsed(false, ImGuiCond.Appearing)
+    ImGui.SetNextWindowSize(core.px(940), core.px(620), ImGuiCond.FirstUseEver)
+    local windowFlags = 0
+    if ImGuiWindowFlags then
+        windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
+    end
+    core.preBeginWindow('gamedb')
+    local open, draw = ImGui.Begin('Triune Database###TriuneGameDB', ctrl.show_gamedb, core.windowFlags and core.windowFlags('gamedb', windowFlags) or windowFlags)
+    if not open then
+        ctrl.show_gamedb = false
+        if core.preEndWindow then core.preEndWindow('gamedb', false) end
+        ImGui.End()
+        core.popTheme()
+        core.saveLoadout(true)
+        return
+    end
+    if not draw then
+        if core.preEndWindow then core.preEndWindow('gamedb', false) end
+        ImGui.End()
+        core.popTheme()
+        return
+    end
+    core.postBeginWindow('gamedb')
+
+    -- toolbar: history + status
+    local canBack = S.histPos > 1
+    local canFwd = S.histPos < #S.history
+    if not canBack then ImGui.BeginDisabled() end
+    if ImGui.SmallButton('< Back') then
+        S.histPos = S.histPos - 1
+        local h = S.history[S.histPos]
+        showEntry(h.kind, h.id, true)
+    end
+    if not canBack then ImGui.EndDisabled() end
+    ImGui.SameLine()
+    if not canFwd then ImGui.BeginDisabled() end
+    if ImGui.SmallButton('Forward >') then
+        S.histPos = S.histPos + 1
+        local h = S.history[S.histPos]
+        showEntry(h.kind, h.id, true)
+    end
+    if not canFwd then ImGui.EndDisabled() end
+    ImGui.SameLine()
+    local m = DB.readManifest()
+    if m.present then
+        muted(string.format('Database built %s  -  %s items, %s NPCs, %s spells', m.built or '?', m.item_index or '?', m.npcs or '?', m.spells or '?'))
+    else
+        warn('resources/gamedb not found - install the full release or run tools/build_gamedb.py')
+    end
+
+    -- A link clicked inside a card (drawn under its own tab) requests another
+    -- kind's tab; tabs earlier in this loop have already been drawn this
+    -- frame, so the request is kept until the frame in which that tab
+    -- actually received the SetSelected flag.
+    local applied = nil
+    if ImGui.BeginTabBar('##gamedbtabs') then
+        for _, kind in ipairs(KINDS) do
+            local flags = 0
+            if S.pendingTab == kind and ImGuiTabItemFlags and ImGuiTabItemFlags.SetSelected then
+                flags = ImGuiTabItemFlags.SetSelected
+                applied = kind
+            end
+            local tabOpen = beginTabItem(KIND_LABELS[kind] .. '##tab' .. kind, flags)
+            if tabOpen then
+                if S.pendingTab ~= kind then S.tab = kind end
+                local leftW = core.px(310)
+                if ImGui.BeginChild('##left' .. kind, ImVec2(leftW, 0), false) then
+                    drawSearchPane(kind)
+                end
+                ImGui.EndChild()
+                ImGui.SameLine()
+                if ImGui.BeginChild('##card' .. kind, ImVec2(0, 0), true) then
+                    if kind == 'items' then drawItemCard()
+                    elseif kind == 'npcs' then drawNpcCard()
+                    else drawSpellCard() end
+                end
+                ImGui.EndChild()
+                ImGui.EndTabItem()
+            end
+        end
+        ImGui.EndTabBar()
+    end
+    if applied and S.pendingTab == applied then S.pendingTab = nil end
+
+    if core.preEndWindow then core.preEndWindow('gamedb', false) end
+    ImGui.End()
+    core.popTheme()
+end
+
+-- ----------------------------------------------------------------------------
+-- Plugin lifecycle
+-- ----------------------------------------------------------------------------
+function plugin.onInit(coreApi)
+    core = coreApi
+    refresh()
+    if ctrl and ctrl.show_gamedb == nil then ctrl.show_gamedb = false end
+    -- The indexes (~260k entries) load lazily: the first window open, lookup
+    -- command, spawn / item / spell lookup or loot window queues them, and
+    -- the tick-driven loader slices the work from there.
+    if ctrl and ctrl.show_gamedb then queueAll() end
+    -- Let the combat loop skip casts the database knows are wasted.
+    local tracker = core.castTracker
+    if type(tracker) == 'table' then tracker.knownImmunity = plugin.immunityReason end
+end
+
+function plugin.onDestroy()
+    S.popouts = {}
+    clearSpawnCache()
+    local tracker = core and core.castTracker
+    if type(tracker) == 'table' and tracker.knownImmunity == plugin.immunityReason then tracker.knownImmunity = nil end
+    DB.setDir(DB.dir)
+end
+
+function plugin.onTick()
+    if not core then return end
+    refresh()
+    stepLoading()
+    runPendingSearches()
+    if S.lootAdvisor then
+        local now = os.clock()
+        if now - (S.loot.lastScan or 0) >= 0.5 then
+            S.loot.lastScan = now
+            pcall(scanLoot)
+        end
+    end
+end
+
+function plugin.onDrawUI()
+    if not core then return end
+    refresh()
+    stepLoading()
+    -- sorted filter-only listings advance per frame too (see stepScanJob)
+    for _, kind in ipairs(KINDS) do
+        if S[kind].scanJob then stepScanJob(kind) end
+    end
+    watchSpellWindow()
+    drawWindow()
+    drawPopouts()
+    drawLootAdvisor()
+end
+
+-- Spawn ids are per zone instance: the spawn -> NPC cache and the loot
+-- corpse state are invalid after zoning.
+function plugin.onZoned()
+    clearSpawnCache()
+    S.loot.corpseId = 0
+    S.loot.count = nil
+    S.loot.rows = {}
+end
+
+function plugin.onSaveSettings()
+    return { tab = S.tab, lootAdvisor = S.lootAdvisor == true, spellWindow = S.spellWindow == true }
+end
+
+function plugin.onLoadSettings(s)
+    if type(s) ~= 'table' then return end
+    if KIND_LABELS[s.tab] then S.tab = s.tab end
+    if s.lootAdvisor ~= nil then S.lootAdvisor = (s.lootAdvisor == true) end
+    if s.spellWindow ~= nil then S.spellWindow = (s.spellWindow == true) end
+end
+
+function plugin.onDrawSettings()
+    if not core then return end
+    refresh()
+    local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
+    core.accent(GOLD, 'Game Database')
+    local isWinOpen = (ctrl.show_gamedb == true)
+    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##gdbToggleWin', core.px(250), core.px(24)) then
+        ctrl.show_gamedb = not isWinOpen
+        core.saveLoadout(true)
+    end
+    local la = ImGui.Checkbox('Loot Advisor while looting (drop chance, value, quest / recipe notes)##gdbLoot', S.lootAdvisor == true)
+    if la ~= (S.lootAdvisor == true) then
+        S.lootAdvisor = la
+        core.saveLoadout(true)
+    end
+    local sw = ImGui.Checkbox('Replace the game\'s Spell Info window with a database card##gdbSpellWnd', S.spellWindow == true)
+    if sw ~= (S.spellWindow == true) then
+        S.spellWindow = sw
+        core.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then core.setTooltip('Right-clicking a spell gem, a buff or a spellbook page normally opens EverQuest\'s Spell Display window.\nWith this on, that window is closed as it opens and a Triune spell card (effects, costs, scroll sources, who casts it) takes its place.\nSpells the database does not know keep the game window. Also /ac spellwindow.') end
+    local m = DB.readManifest()
+    if m.present then
+        ImGui.TextDisabled(string.format('Data built %s: %s items, %s NPCs, %s spells (%s)', m.built or '?', m.item_index or '?', m.npcs or '?', m.spells or '?', m.source or ''))
+    else
+        ImGui.TextDisabled('No database files found under resources/gamedb.')
+    end
+    for _, k in ipairs(KINDS) do
+        local ix = DB.kinds[k]
+        ImGui.TextDisabled(string.format('  %s: %s', KIND_LABELS[k], ix and ix.loaded and (ix.count .. ' loaded') or (ix and ix.failed and 'missing' or 'not loaded')))
+    end
+end
+
+-- /ac db [text] | /ac item <text> | /ac npc <text> | /ac spell <text> | /ac dbcursor
+function plugin.onCommand(cmd, args)
+    local text = ''
+    if type(args) == 'table' then
+        local rest = {}
+        for i = 2, #args do rest[#rest + 1] = tostring(args[i]) end
+        text = table.concat(rest, ' ')
+    elseif args ~= nil then
+        text = tostring(args)
+    end
+    text = text:gsub('^%s+', ''):gsub('%s+$', '')
+    if cmd == 'db' or cmd == 'gamedb' or cmd == 'database' then
+        refresh()
+        if text ~= '' then
+            plugin.search('items', text)
+        else
+            ctrl.show_gamedb = not ctrl.show_gamedb
+            core.saveLoadout(true)
+            print(string.format('\ag[Triune]\ax Database %s.', ctrl.show_gamedb and 'OPENED' or 'CLOSED'))
+        end
+        return true
+    end
+    if cmd == 'item' then plugin.search('items', text); return true end
+    if cmd == 'npc' then plugin.search('npcs', text); return true end
+    if cmd == 'spell' then plugin.search('spells', text); return true end
+    if cmd == 'dbcursor' then plugin.lookupCursor(); return true end
+    if cmd == 'linkitem' or cmd == 'linkspell' or cmd == 'linknpc' or cmd == 'linkcursor' or cmd == 'linktarget' then
+        -- /ac linkitem [/channel [name]] <name|id>: an optional leading chat
+        -- command ("/g", "/tell Bob") sends the link there instead of the
+        -- input line.
+        local channel, rest = nil, text
+        if rest:sub(1, 1) == '/' then
+            local c, r = rest:match('^(/%S+)%s*(.*)$')
+            if c == '/t' or c == '/tell' then
+                local who
+                who, r = r:match('^(%S+)%s*(.*)$')
+                c = c .. ' ' .. tostring(who or '')
+            end
+            channel, rest = c, r or ''
+        end
+        local kind, id = 'items', nil
+        if cmd == 'linkcursor' then
+            pcall(function()
+                local c = mq.TLO.Cursor
+                if c() then id = c.ID() or 0 end
+            end)
+            if not id or id <= 0 then
+                echo('Nothing on the cursor.')
+                return true
+            end
+        elseif cmd == 'linktarget' then
+            kind = 'npcs'
+            local tid = 0
+            pcall(function() tid = mq.TLO.Target.ID() or 0 end)
+            if tid <= 0 then
+                echo('No target.')
+                return true
+            end
+            id = plugin.npcIdForSpawn(tid)
+            if not id then
+                echo(DB.isLoaded('npcs') and 'Your target is not in the database.' or 'The NPC index is still loading; try again in a moment.')
+                return true
+            end
+        else
+            if cmd == 'linkspell' then kind = 'spells' elseif cmd == 'linknpc' then kind = 'npcs' end
+            if rest == '' then
+                echo('Usage: /ac ' .. cmd .. ' [/channel] <name|id>')
+                return true
+            end
+            id = plugin.lookupId(kind, rest)
+            if not id then
+                if not DB.isLoaded(kind) then
+                    echo('The ' .. kind .. ' index is still loading; try again in a moment.')
+                else
+                    echo('No ' .. (kind == 'spells' and 'spell' or kind == 'npcs' and 'NPC' or 'item') .. ' matches "' .. rest .. '".')
+                end
+                return true
+            end
+        end
+        plugin.linkToChat(kind, id, channel)
+        return true
+    end
+    if cmd == 'dbtarget' then plugin.lookupTarget(); return true end
+    if cmd == 'lootadvisor' then
+        S.lootAdvisor = not S.lootAdvisor
+        core.saveLoadout(true)
+        print(string.format('\ag[Triune]\ax Loot Advisor %s.', S.lootAdvisor and 'ON' or 'OFF'))
+        return true
+    end
+    if cmd == 'spellwindow' or cmd == 'spellinfo' then
+        if text ~= '' then
+            -- /ac spellinfo <name|id>: open the card (or the game window) for one spell
+            if not plugin.inspectSpell(tonumber(text) or text) then
+                if core.inspectSpell and core.inspectSpell(tonumber(text) or text) then return true end
+                echo('Spell not found: ' .. text)
+            end
+            return true
+        end
+        S.spellWindow = not S.spellWindow
+        core.saveLoadout(true)
+        print(string.format('\ag[Triune]\ax Spell Info replacement %s.', S.spellWindow and 'ON (database cards replace the game\'s Spell Display window)' or 'OFF (game window)'))
+        return true
+    end
+    return false
+end
+
+plugin.help = {
+    '  \ag/ac db\ax - Toggle the Game Database window (items / NPCs / spells)',
+    '  \ag/ac item <name|id>\ax, \ag/ac npc <name|id>\ax, \ag/ac spell <name|id>\ax - Search the database',
+    '  \ag/ac dbcursor\ax - Look up the item on your cursor',
+    '  \ag/ac dbtarget\ax - Open a card for your current target (stats, abilities, loot)',
+    '  \ag/ac lootadvisor\ax - Toggle the Loot Advisor shown while looting a corpse',
+    '  \ag/ac spellwindow\ax - Toggle replacing the game\'s Spell Info window with a database card',
+    '  \ag/ac spellinfo <name|id>\ax - Open the Spell Info card for a spell',
+    '  \ag/ac linkitem [/channel] <name|id>\ax, \ag/ac linkspell [/channel] <name|id>\ax, \ag/ac linknpc [/channel] <name|id>\ax - Put a chat link in the Chat Windows input line (or send it to /g, /gu, /tell Name...)',
+    '  \ag/ac linkcursor [/channel]\ax, \ag/ac linktarget [/channel]\ax - Link the item on your cursor / your current target',
+}
+
+-- Exposed for tests and other plugins
+plugin.ENC = ENC
+plugin.D = D
+plugin.DB = DB
+plugin.state = S
+plugin.showEntry = showEntry
+plugin.runSearch = runSearch
+plugin.scanLoot = scanLoot
+plugin.stmlToLines = stmlToLines
+plugin.spellWindowName = spellWindowName
+plugin.watchSpellWindow = watchSpellWindow
+
+return plugin

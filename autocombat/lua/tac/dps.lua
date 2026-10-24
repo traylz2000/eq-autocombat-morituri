@@ -1,0 +1,2523 @@
+---@diagnostic disable: undefined-global, undefined-field, need-check-nil
+-- ============================================================================
+-- TAC/lua/tac/dps.lua — Triune DPS Parser Plugin
+-- ============================================================================
+-- In-process replacement for the old standalone triune_dps.lua script (v4.3).
+-- Parses combat chat into per-fight player / multi-pet damage breakdowns
+-- (melee, skills, spells, DoTs, procs/DS), archives encounters (max 25), and
+-- reports to /group, /say, /guild or /raid.
+--
+-- The parser runs whenever the plugin is enabled, so damage is tracked even
+-- while the windows are hidden. Window visibility is ctrl.show_dps (header
+-- button, Mini HUD, /dps, /ac dps, and the Window Layout manager flip it);
+-- compact-mode / timeout / channel options persist per character in
+-- triune_dps_<name>.lua exactly as before.
+-- ============================================================================
+
+local plugin = {
+    id                 = 'dps',
+    name               = 'DPS Parser',
+    version            = '4.3.0',
+    author             = 'Triune',
+    uses               = { boxnet = 'group DPS meter fed by the other boxes (Group tab, compact window)' },
+    description        = 'Live combat-log DPS parser with per-fight player / pet breakdowns, encounter history, and chat reports.',
+    defaultEnabled     = true,
+    tickInterval       = 0.25,   -- plenty for a 6 s fight timeout and the 2 s share cadence
+    runOutOfCombatOnly = false,
+    hasThread          = false,
+    -- Window owned by this plugin (drives the main-window header button)
+    window             = { label = 'DPS Parser', tooltip = 'Toggles the DPS Parser window (dps plugin; also /dps).', flag = 'show_dps', desc = 'Live combat-log DPS parser & encounter history', headerButton = true, order = 30 },
+}
+
+-- Populated by refresh() on every entry point; typed so the language server
+-- does not treat them as permanently nil.
+local core = nil  ---@type table
+local ctrl, ImGui, mq = nil, nil, nil  ---@type table, table, table
+
+local VERSION = '4.3'
+local MAX_HISTORY = 25
+
+local function refresh()
+    ctrl = core.ctrl
+    ImGui = core.ImGui
+    mq = core.mq
+end
+
+local GOLD  = { 1.00, 0.70, 0.54, 1 }
+local ARC   = { 0.30, 0.70, 1.00, 1 }
+local MUTED = { 0.49, 0.56, 0.65, 1 }
+local GOOD  = { 0.37, 0.88, 0.64, 1 }
+local WARN  = { 1.00, 0.72, 0.30, 1 }
+local ERR   = { 0.95, 0.35, 0.35, 1 }
+local PURPLE = { 0.75, 0.45, 0.95, 1 }
+
+local MELEE_VERBS = {
+    ['hit'] = true, ['hits'] = true,
+    ['slash'] = true, ['slashes'] = true,
+    ['pierce'] = true, ['pierces'] = true,
+    ['crush'] = true, ['crushes'] = true,
+    ['bite'] = true, ['bites'] = true,
+    ['claw'] = true, ['claws'] = true,
+    ['strike'] = true, ['strikes'] = true,
+    ['slice'] = true, ['slices'] = true,
+    ['gore'] = true, ['gores'] = true,
+    ['punch'] = true, ['punches'] = true,
+    ['shoot'] = true, ['shoots'] = true,
+    ['hand to hand'] = true,
+}
+
+local SKILL_VERBS = {
+    ['bash'] = true, ['bashes'] = true,
+    ['kick'] = true, ['kicks'] = true,
+    ['backstab'] = true, ['backstabs'] = true,
+    ['frenzy'] = true, ['frenzies'] = true,
+    ['flying kick'] = true, ['flying kicks'] = true,
+    ['dragon punch'] = true, ['dragon punches'] = true,
+    ['eagle strike'] = true, ['eagle strikes'] = true,
+    ['tiger claw'] = true, ['tiger claws'] = true,
+    ['roundhouse kick'] = true, ['roundhouse kicks'] = true,
+    ['slam'] = true, ['slams'] = true,
+    ['headbutt'] = true, ['headbutts'] = true,
+    ['maul'] = true, ['mauls'] = true,
+    ['pummel'] = true, ['pummels'] = true,
+    ['rend'] = true, ['rends'] = true,
+    ['rip'] = true, ['rips'] = true,
+    ['sweep'] = true, ['sweeps'] = true,
+    ['finishing blow'] = true, ['finishing blows'] = true,
+}
+
+local COMBAT_VERBS = {}
+for k, v in pairs(MELEE_VERBS) do COMBAT_VERBS[k] = v end
+for k, v in pairs(SKILL_VERBS) do COMBAT_VERBS[k] = v end
+
+-- Sorted list of verbs by length descending to match multi-word verbs first
+local SORTED_COMBAT_VERB_LIST = {}
+for verb in pairs(COMBAT_VERBS) do
+    table.insert(SORTED_COMBAT_VERB_LIST, verb)
+end
+table.sort(SORTED_COMBAT_VERB_LIST, function(a, b) return #a > #b end)
+
+-- Both match forms per verb, built once: the line-start pattern ("^verb%s+",
+-- multi-word verbs with %s+ between words) and the plain " verb " needle.
+-- parseMeleeSentence runs on every "#1# for #2#" chat line.
+local VERB_PATTERNS = {}
+for i, verb in ipairs(SORTED_COMBAT_VERB_LIST) do
+    VERB_PATTERNS[i] = { verb = verb, start = "^" .. verb:gsub("%s+", "%%s+") .. "%s+", inner = " " .. verb .. " " }
+end
+
+local function getVerbCategory(verb)
+    local lowerV = (verb or ''):lower()
+    if SKILL_VERBS[lowerV] then
+        return 'Skill'
+    elseif MELEE_VERBS[lowerV] then
+        return 'Melee'
+    end
+    return 'Melee'
+end
+
+-- ============================================================================
+-- State Tables (cfg = parser options persisted per character, rt = live fight state)
+-- ============================================================================
+local cfg = {
+    paused = false,
+    compact = false,      -- Mini Compact Window mode flag
+    combatTimeout = 6.0,   -- Inactivity seconds to auto-end fight
+    reportChannel = 'group', -- default channel: 'group', 'say', 'guild', 'raid'
+    autoResetOnZone = true,
+    showPetBreakdown = true,
+    meterScope = 'all',    -- group meter rows: 'all' (every box sharing a parse, grouped or not) | 'group' (boxes in our group)
+    compactGroup = true,   -- compact window shows the group meter
+}
+
+local rt = {
+    activeTab = 1,
+    guiOpen = true,
+    inFight = false,
+    -- Box Network: other boxes' fights, keyed by lower-case name
+    boxes = {},
+    boxesUnsub = nil,
+    boxesApi = nil,        -- the boxnet api table / generation the subscription was made on
+    boxesGen = nil,
+    hitGen = 0,            -- bumped by touched(): invalidates the per-frame view caches
+    lastLiveShareAt = 0,
+    fightStartTime = 0,
+    lastDamageTime = 0,
+    currentTargetId = 0,
+    currentTargetName = 'None',
+    lastZoneShort = nil,   -- zone short name at the last auto-reset (zone-change detection)
+    
+    -- Current Fight Overall Totals
+    playerDamage = 0,
+    petDamage = 0,
+    totalDamage = 0,
+    
+    -- Hit / Miss / Crit Counters for Current Fight
+    playerHits = 0,
+    playerMisses = 0,
+    playerCrits = 0,
+    petHits = 0,
+    petMisses = 0,
+    petCrits = 0,
+    
+    -- Attack Type Breakdown Maps
+    playerBreakdown = {},
+    petBreakdown = {},
+    selectedPetTab = 'All Pets',
+    
+    -- History of Completed Fights
+    history = {},
+    nextHistoryId = 1,
+    selectedHistoryIndex = 1,
+    
+    -- Encounter Inspector State
+    inspectorOpen = false,
+    inspectedFight = nil,
+    shouldOpenModal = false,
+}
+
+local petState = {
+    name = '',
+}
+
+-- ============================================================================
+-- Dynamic Category Totals Calculator
+-- ============================================================================
+local function calculateCategoryTotals(playerBreakdown, petBreakdown)
+    local totals = { melee = 0, skill = 0, spell = 0, dot = 0, ds = 0 }
+    
+    local function processTable(tbl)
+        if type(tbl) ~= 'table' then return end
+        for _, data in pairs(tbl) do
+            if type(data) == 'table' then
+                local cat = data.category or 'Melee'
+                local dmg = data.totalDmg or 0
+                if cat == 'Skill' then
+                    totals.skill = totals.skill + dmg
+                elseif cat == 'Spell' then
+                    totals.spell = totals.spell + dmg
+                elseif cat == 'DoT' then
+                    totals.dot = totals.dot + dmg
+                elseif cat == 'Proc/DS' then
+                    totals.ds = totals.ds + dmg
+                else
+                    totals.melee = totals.melee + dmg
+                end
+            end
+        end
+    end
+    
+    processTable(playerBreakdown)
+    
+    if type(petBreakdown) == 'table' then
+        for _, pData in pairs(petBreakdown) do
+            if type(pData) == 'table' and type(pData.attacks) == 'table' then
+                processTable(pData.attacks)
+            end
+        end
+    end
+    
+    return totals
+end
+
+-- ============================================================================
+-- String Utilities & Target Name Filters
+-- ============================================================================
+local function cleanLine(str)
+    if not str then return "" end
+    -- Strip ASCII 7 BEL (0x07) MQ color tags like \ax, \ar, \ag, \a-y, etc.
+    local s = str:gsub("\a[-%w]*", "")
+    -- Strip literal \a string color tags
+    s = s:gsub("\\a[-%w]*", "")
+    -- Strip ASCII 127 (0x7F) MQ color codes
+    s = s:gsub("\127%d*", "")
+    -- Strip literal \127 string color codes
+    s = s:gsub("\\127%d*", "")
+    -- Trim leading/trailing whitespace
+    return s:match("^%s*(.-)%s*$") or s
+end
+
+local function parseDamageValue(dmgStrRaw)
+    if not dmgStrRaw then return nil end
+    local cleanStr = dmgStrRaw:gsub(",", "")
+    local num = cleanStr:match("(%-?%d+)")
+    return tonumber(num)
+end
+
+local function isValidMobName(name)
+    if not name or name == '' then return false end
+    local lower = name:lower()
+    -- Word-anchored keyword checks (frontier patterns) so mob names that merely
+    -- contain these substrings (e.g. "a manaetic golem", "Beenor") stay valid.
+    if lower:find("non%-melee") or lower:find("nonmelee") or lower:sub(1,3) == 'by '
+       or lower:find("%f[%a]healed%f[%A]") or lower:find("%f[%a]been%f[%A]")
+       or lower:find("%f[%a]taken%f[%A]") or lower:find("%f[%a]mana%f[%A]")
+       or lower == 'target' or lower == 'none' or lower == 'unknown'
+       or lower == 'you' or lower == 'yourself' or lower == 'itself'
+       or lower == 'himself' or lower == 'herself' then
+        return false
+    end
+    return true
+end
+
+local function isValidCombatTarget(targetStr)
+    return isValidMobName(targetStr)
+end
+
+-- Milliseconds for the lookup / meter caches (mq.gettime when available).
+local function nowMs()
+    local ok, t = pcall(function() return mq.gettime() end)
+    if ok and type(t) == 'number' then return t end
+    return os.clock() * 1000
+end
+
+-- Own name, pet name and group membership are consulted for every combat
+-- line and each is a TLO round-trip, so they are cached for LOOKUP_TTL_MS
+-- (warmed from tick(), refreshed lazily when a line arrives first).
+local LOOKUP_TTL_MS = 1000
+local GROUP_CACHE_MAX = 256
+local lookups = { nameAt = -1e9, name = '', petAt = -1e9, group = {}, groupN = 0 }
+
+local function getMyPlayerName()
+    local now = nowMs()
+    if (now - lookups.nameAt) < LOOKUP_TTL_MS then return lookups.name end
+    lookups.nameAt = now
+    local ok, name = pcall(function() return mq.TLO.Me.CleanName() end)
+    lookups.name = (ok and name and name ~= '') and tostring(name):lower() or ''
+    return lookups.name
+end
+
+local function isPlayerActor(actorStr)
+    if not actorStr or actorStr == '' then return false end
+    -- If string contains (Owner: ...) it is EXPLICITLY a pet belonging to an owner!
+    if actorStr:find("%([Oo]wner:") then
+        return false
+    end
+    local cleanActor = actorStr:gsub("%W", ""):lower()
+    if cleanActor == 'you' then
+        return true
+    end
+    local myName = getMyPlayerName()
+    if myName and myName ~= '' then
+        local cleanMyName = myName:gsub("%W", ""):lower()
+        if cleanMyName ~= '' and cleanActor == cleanMyName then
+            return true
+        end
+    end
+    return false
+end
+
+-- ============================================================================
+-- Sentence Verb Parser for Melee & Skills (First-Person & Space-Bounded)
+-- ============================================================================
+local function parseMeleeSentence(sentence)
+    if not sentence or sentence == '' then return nil, nil, nil end
+    local cleanS = cleanLine(sentence)
+    local lowerS = cleanS:lower()
+    
+    for _, vp in ipairs(VERB_PATTERNS) do
+        -- Tier 1: Check if line starts directly with the verb (e.g. "punch a cleric...", "kick a cleric...")
+        local sStart, sEnd = lowerS:find(vp.start)
+        if sStart then
+            local actor = "You"
+            local matchedVerb = cleanS:sub(sStart, sEnd):match("^%s*(.-)%s*$")
+            local target = cleanS:sub(sEnd + 1):match("^%s*(.-)%s*$")
+            if actor and target and target ~= '' then
+                return actor, matchedVerb, target
+            end
+        else
+            -- Tier 2: Check for " verb " with leading space (e.g. "Tenekis crushes a forlorn revenant")
+            local sStart2, sEnd2 = lowerS:find(vp.inner, 1, true)
+            if sStart2 then
+                local actor = cleanS:sub(1, sStart2 - 1):match("^%s*(.-)%s*$")
+                local matchedVerb = cleanS:sub(sStart2 + 1, sEnd2 - 1)
+                local target = cleanS:sub(sEnd2 + 1):match("^%s*(.-)%s*$")
+                if actor and actor ~= '' and target and target ~= '' then
+                    return actor, matchedVerb, target
+                end
+            end
+        end
+    end
+    
+    return nil, nil, nil
+end
+
+-- ============================================================================
+-- Config Persistence Helper
+-- ============================================================================
+-- Resolved once per onInit and reused until onDestroy: after a character swap
+-- the core restarts plugins (onDestroy -> onInit) while the TLOs already report
+-- the new character, so saving to a freshly-computed path would file the old
+-- character's settings under the new name.
+local cachedConfigPath = nil
+local function getConfigFilePath()
+    if cachedConfigPath then return cachedConfigPath end
+    local myName = 'Default'
+    local ok, name = pcall(function() return mq.TLO.Me.CleanName() end)
+    if ok and name and name ~= '' then myName = name end
+    cachedConfigPath = string.format('%s/triune_dps_%s.lua', mq.configDir or 'config', myName)
+    return cachedConfigPath
+end
+
+local function saveConfig()
+    local path = getConfigFilePath()
+    local file = io.open(path, "w")
+    if not file then return end
+    file:write("-- Triune DPS Parser Config\nreturn {\n")
+    file:write(string.format("    compact = %s,\n", tostring(cfg.compact)))
+    file:write(string.format("    combatTimeout = %.1f,\n", cfg.combatTimeout))
+    file:write(string.format("    reportChannel = %q,\n", cfg.reportChannel))
+    file:write(string.format("    autoResetOnZone = %s,\n", tostring(cfg.autoResetOnZone)))
+    file:write(string.format("    showPetBreakdown = %s,\n", tostring(cfg.showPetBreakdown)))
+    file:write(string.format("    meterScope = %q,\n", cfg.meterScope))
+    file:write(string.format("    compactGroup = %s,\n", tostring(cfg.compactGroup)))
+    file:write("}\n")
+    file:close()
+end
+
+local function loadConfig()
+    local path = getConfigFilePath()
+    local chunk = loadfile(path)
+    if chunk then
+        local ok, data = pcall(chunk)
+        if ok and type(data) == 'table' then
+            if data.compact ~= nil then cfg.compact = data.compact end
+            if data.combatTimeout then cfg.combatTimeout = tonumber(data.combatTimeout) or 6.0 end
+            if data.reportChannel then cfg.reportChannel = data.reportChannel end
+            if data.autoResetOnZone ~= nil then cfg.autoResetOnZone = data.autoResetOnZone end
+            if data.showPetBreakdown ~= nil then cfg.showPetBreakdown = data.showPetBreakdown end
+            if data.meterScope == 'group' or data.meterScope == 'all' then cfg.meterScope = data.meterScope end
+            if data.compactGroup ~= nil then cfg.compactGroup = data.compactGroup end
+        end
+    end
+end
+
+-- ============================================================================
+-- Helper & Calculation Functions
+-- ============================================================================
+local function getPetName()
+    local now = nowMs()
+    if (now - lookups.petAt) < LOOKUP_TTL_MS then return petState.name end
+    lookups.petAt = now
+    local ok, name = pcall(function() return mq.TLO.Pet.CleanName() end)
+    if ok and name and name ~= '' and name ~= 'NULL' then
+        petState.name = tostring(name)
+    end
+    return petState.name
+end
+
+-- True when `name` is in our group. Prefers the Box Network's cached answer
+-- (one place, one TTL); otherwise its own LOOKUP_TTL_MS cache over
+-- Group.Member(). Defined after boxnet() below; used by isFriendlyTarget.
+local isGroupMember
+
+local function getCleanPetName(actorStr)
+    local cleaned = cleanLine(actorStr)
+    -- Strip "(Owner: Gennro)" or similar owner brackets
+    cleaned = cleaned:gsub("%s*%([Oo]wner:.-%)", "")
+    if cleaned:sub(1,5):lower() == 'your ' then
+        local pName = getPetName()
+        if pName and pName ~= '' and pName ~= 'NULL' then
+            return pName
+        end
+        return "Your Pet"
+    end
+    return cleaned ~= '' and cleaned or "Pet"
+end
+
+local function isPetActor(actorStr)
+    if not actorStr or actorStr == '' then return false end
+    if isPlayerActor(actorStr) then return false end
+    
+    -- Explicit owner tag indicates a pet; only ours when the owner is us
+    local owner = actorStr:match("%([Oo]wner:%s*(.-)%s*%)")
+    if owner then
+        local myName = getMyPlayerName()
+        if myName == '' then return true end
+        return owner:gsub("%W", ""):lower() == myName:gsub("%W", ""):lower()
+    end
+    
+    local cleanActor = actorStr:gsub("%W", ""):lower()
+    
+    -- Matches "Your pet" / "your pet"
+    if cleanActor == 'yourpet' or actorStr:sub(1,8):lower() == 'your pet' then
+        return true
+    end
+    
+    -- Exact match on the active pet's CleanName (cached Pet.CleanName). Only an
+    -- exact name: other players' pets / mobs that merely contain or end in
+    -- "pet", "animated" or "corpse" are not ours.
+    local pName = getPetName()
+    if pName and pName ~= '' and pName ~= 'NULL' then
+        local cleanPName = pName:gsub("%W", ""):lower()
+        if cleanPName ~= '' and cleanActor == cleanPName then
+            return true
+        end
+    end
+    
+    -- Our own swarm pets ("Gennro`s pet" / "Gennro's warder")
+    local myName = getMyPlayerName()
+    if myName ~= '' then
+        local poss = actorStr:lower():match("^(.-)[`']s%s")
+        if poss and poss:gsub("%W", "") == myName:gsub("%W", ""):lower() then
+            return true
+        end
+    end
+    
+    -- A pet already credited to us this fight (seen earlier with "(Owner: <me>)")
+    if rt.petBreakdown and rt.petBreakdown[cleanLine(actorStr)] then
+        return true
+    end
+    
+    -- Anything else (mobs hitting us, other players, their pets) is not ours
+    return false
+end
+
+-- True when the damage target is us, our pet, or a group member: those lines
+-- are incoming/friendly-fire damage and must never be recorded as outgoing.
+local function isFriendlyTarget(targetStr)
+    if not targetStr or targetStr == '' then return false end
+    local cleanTarget = cleanLine(targetStr):gsub("[!%.%?,]+$", "")
+    local lower = cleanTarget:lower()
+    if lower == 'you' or lower == 'yourself' or lower == 'itself' or lower == 'himself' or lower == 'herself' then
+        return true
+    end
+    if isPlayerActor(cleanTarget) then return true end
+    local pName = getPetName()
+    if pName and pName ~= '' and pName ~= 'NULL' and lower == pName:lower() then
+        return true
+    end
+    return isGroupMember(cleanTarget)
+end
+
+local function getCurrentFightDuration()
+    if rt.fightStartTime == 0 then return 0 end
+    local now = mq.gettime()
+    local endT = now
+    if not rt.inFight then
+        endT = (rt.lastDamageTime > 0) and rt.lastDamageTime or now
+    end
+    local dur = (endT - rt.fightStartTime) / 1000.0
+    return dur > 0 and dur or 0.1
+end
+
+local function getFightDPS(dmg, dur)
+    if dur <= 0 then return 0 end
+    return math.floor((dmg / dur) + 0.5)
+end
+
+-- Bumped whenever the live breakdowns, the history or the box parses change:
+-- the per-frame views (sorted tables, combined maps, category totals, meter
+-- rows) are only recomputed when it moved.
+local function touched()
+    rt.hitGen = (rt.hitGen or 0) + 1
+end
+
+local function recordHit(sourceTable, attackName, damage, isCrit, isMiss, isPetFlag, category)
+    touched()
+    if not sourceTable[attackName] then
+        sourceTable[attackName] = {
+            count = 0,
+            totalDmg = 0,
+            minDmg = damage,
+            maxDmg = damage,
+            crits = 0,
+            misses = 0,
+            isPet = isPetFlag or false,
+            category = category or 'Melee',
+        }
+    end
+    local item = sourceTable[attackName]
+    if isMiss then
+        item.misses = item.misses + 1
+    else
+        item.count = item.count + 1
+        item.totalDmg = item.totalDmg + damage
+        if damage < item.minDmg or item.minDmg == 0 then item.minDmg = damage end
+        if damage > item.maxDmg then item.maxDmg = damage end
+        if isCrit then item.crits = item.crits + 1 end
+        -- Last hit, so a separate "scores a critical hit! (N)" line can be
+        -- credited to the row it belongs to (see creditCrit).
+        item.lastDmg = damage
+        item.lastSeq = rt.hitGen
+    end
+end
+
+-- Credits a standalone crit line to one row of `map`: the row whose last hit
+-- was exactly `dmg`, else the most recently hit row, else nobody (never the
+-- first row in pairs() order).
+local function creditCrit(map, dmg)
+    local match, matchSeq, latest, latestSeq = nil, -1, nil, -1
+    for _, item in pairs(map) do
+        local seq = item.lastSeq or -1
+        if seq >= 0 then
+            if dmg ~= nil and item.lastDmg == dmg and seq > matchSeq then match, matchSeq = item, seq end
+            if seq > latestSeq then latest, latestSeq = item, seq end
+        end
+    end
+    local row = match or latest
+    if row then row.crits = row.crits + 1 end
+end
+
+local function recordPetHit(actorRaw, attackName, damage, isCrit, isMiss, category)
+    local petName = getCleanPetName(actorRaw)
+    if not rt.petBreakdown[petName] then
+        rt.petBreakdown[petName] = {
+            totalDmg = 0,
+            hits = 0,
+            misses = 0,
+            crits = 0,
+            attacks = {},
+        }
+    end
+    local petData = rt.petBreakdown[petName]
+    if isMiss then
+        petData.misses = petData.misses + 1
+    else
+        petData.hits = petData.hits + 1
+        petData.totalDmg = petData.totalDmg + damage
+        if isCrit then petData.crits = petData.crits + 1 end
+    end
+    recordHit(petData.attacks, attackName, damage, isCrit, isMiss, true, category or 'Melee')
+end
+
+local function deepCopyBreakdown(tbl)
+    local copy = {}
+    for k, v in pairs(tbl) do
+        copy[k] = {
+            count = v.count,
+            totalDmg = v.totalDmg,
+            minDmg = v.minDmg,
+            maxDmg = v.maxDmg,
+            crits = v.crits,
+            misses = v.misses,
+            isPet = v.isPet,
+            category = v.category or 'Melee',
+        }
+    end
+    return copy
+end
+
+local function deepCopyMultiPetBreakdown(petMap)
+    local copy = {}
+    for pName, pData in pairs(petMap) do
+        copy[pName] = {
+            totalDmg = pData.totalDmg,
+            hits = pData.hits,
+            misses = pData.misses,
+            crits = pData.crits,
+            attacks = deepCopyBreakdown(pData.attacks),
+        }
+    end
+    return copy
+end
+
+local function resetCurrentFight()
+    rt.inFight = false
+    rt.fightStartTime = 0
+    rt.lastDamageTime = 0
+    rt.currentTargetId = 0
+    rt.currentTargetName = 'None'
+    rt.playerDamage = 0
+    rt.petDamage = 0
+    rt.totalDamage = 0
+    rt.playerHits = 0
+    rt.playerMisses = 0
+    rt.playerCrits = 0
+    rt.petHits = 0
+    rt.petMisses = 0
+    rt.petCrits = 0
+    rt.playerBreakdown = {}
+    rt.petBreakdown = {}
+    touched()
+end
+
+-- ----------------------------------------------------------------------------
+-- Box Network sharing: broadcast a live line every 2s during a fight and the
+-- fight summary when it ends; keep what the other boxes send us.
+-- ----------------------------------------------------------------------------
+local LIVE_SHARE_SEC = 2.0
+local BOX_STALE_SEC = 60.0
+
+local function boxnet()
+    local bn = core and rawget(core, 'boxnet')
+    if type(bn) ~= 'table' or type(bn.available) ~= 'function' then return nil end
+    local ok, avail = pcall(bn.available)
+    if not ok or not avail then return nil end
+    return bn
+end
+
+local function onBoxDps(data, sender)
+    local name = sender and sender.character
+    if not name or name == '' or type(data) ~= 'table' then return end
+    local key = tostring(name):lower()
+    local b = rt.boxes[key] or { name = name }
+    b.name = name
+    b.seenAt = mq.gettime()
+    if data.live then
+        b.live = { target = data.target, dmg = tonumber(data.dmg) or 0, dps = tonumber(data.dps) or 0, dur = tonumber(data.dur) or 0,
+            playerDmg = tonumber(data.playerDmg) or 0, petDmg = tonumber(data.petDmg) or 0 }
+    else
+        b.live = nil
+        b.lastFight = { target = data.target, dmg = tonumber(data.dmg) or 0, dps = tonumber(data.dps) or 0, dur = tonumber(data.dur) or 0,
+            playerDmg = tonumber(data.playerDmg) or 0, petDmg = tonumber(data.petDmg) or 0, at = os.date('%H:%M:%S') }
+    end
+    rt.boxes[key] = b
+    touched()
+end
+
+local function ensureBoxSubscription()
+    local bn = boxnet()
+    if not bn or type(bn.subscribe) ~= 'function' then return end
+    -- A reloaded Box Network hands out a new api table (or a new generation
+    -- from the same one): the old subscription is stale, so re-subscribe.
+    local gen = type(bn.generation) == 'function' and bn.generation() or nil
+    if rt.boxesUnsub then
+        if rt.boxesApi == bn and rt.boxesGen == gen then return end
+        pcall(rt.boxesUnsub)
+        rt.boxesUnsub = nil
+    end
+    local ok, unsub = pcall(bn.subscribe, 'dps:share', onBoxDps)
+    if ok and type(unsub) == 'function' then
+        rt.boxesUnsub, rt.boxesApi, rt.boxesGen = unsub, bn, gen
+    end
+end
+
+local function shareLive()
+    local bn = boxnet()
+    if not bn or not rt.inFight or rt.totalDamage == 0 then return end
+    local now = mq.gettime()
+    if (now - (rt.lastLiveShareAt or 0)) < LIVE_SHARE_SEC * 1000 then return end
+    rt.lastLiveShareAt = now
+    local dur = getCurrentFightDuration()
+    pcall(bn.broadcast, 'dps:share', { live = true, target = rt.currentTargetName, dmg = rt.totalDamage, dur = dur, dps = getFightDPS(rt.totalDamage, dur),
+        playerDmg = rt.playerDamage, petDmg = rt.petDamage })
+end
+
+local function shareFight(h)
+    local bn = boxnet()
+    if not bn or not h then return end
+    pcall(bn.broadcast, 'dps:share', { live = false, target = h.targetName, dmg = h.totalDmg, dur = h.duration, dps = h.peakDps, playerDmg = h.playerDmg, petDmg = h.petDmg })
+end
+
+-- Other boxes with recent data, sorted by name; live fights first.
+local function boxList()
+    local out = {}
+    local now = mq.gettime()
+    for key, b in pairs(rt.boxes) do
+        if (now - (b.seenAt or 0)) > BOX_STALE_SEC * 1000 then
+            rt.boxes[key] = nil
+        else
+            out[#out + 1] = b
+        end
+    end
+    table.sort(out, function(a, b)
+        if (a.live ~= nil) ~= (b.live ~= nil) then return a.live ~= nil end
+        return tostring(a.name):lower() < tostring(b.name):lower()
+    end)
+    return out
+end
+
+-- ----------------------------------------------------------------------------
+-- Group DPS meter. One row for this character plus one per box in scope
+-- (cfg.meterScope: 'group' = boxes in our group, 'all' = every box that
+-- shares a parse). While anyone is fighting the meter is live - fighters
+-- carry their live numbers, idle members sit at 0 - otherwise it shows
+-- everybody's last fight. Rows are sorted by DPS; pct is the share of the
+-- combined damage.
+-- ----------------------------------------------------------------------------
+function isGroupMember(name)
+    if not name or name == '' then return false end
+    -- Own bounded cache first: mob names flow through here too (isFriendlyTarget)
+    local key = tostring(name):lower()
+    local now = nowMs()
+    local c = lookups.group[key]
+    if c and (now - c.at) < LOOKUP_TTL_MS then return c.v end
+    local v
+    local bn = core and rawget(core, 'boxnet')
+    if type(bn) == 'table' and type(bn.isGroupMember) == 'function' then
+        local okBn, bv = pcall(bn.isGroupMember, name)
+        if okBn then v = (bv == true) end
+    end
+    if v == nil then
+        local ok, isMember = pcall(function()
+            local m = mq.TLO.Group.Member(name)
+            return m ~= nil and m() ~= nil and (m.ID() or 0) > 0
+        end)
+        v = ok and isMember == true
+    end
+    if not c then
+        -- Mob names flow through here too (isFriendlyTarget): keep it bounded.
+        if lookups.groupN >= GROUP_CACHE_MAX then lookups.group, lookups.groupN = {}, 0 end
+        lookups.groupN = lookups.groupN + 1
+    end
+    lookups.group[key] = { v = v, at = now }
+    return v
+end
+
+local function fmtNum(n)
+    n = math.floor(tonumber(n) or 0)
+    local str = tostring(n)
+    local sign, digits = str:match('^(%-?)(%d+)$')
+    if not digits then return str end
+    local out = digits:reverse():gsub('(%d%d%d)', '%1,'):reverse()
+    if out:sub(1, 1) == ',' then out = out:sub(2) end
+    return sign .. out
+end
+
+local function meterRows()
+    local boxes = {}
+    local anyLive = rt.inFight
+    for _, b in ipairs(boxList()) do
+        if cfg.meterScope == 'all' or isGroupMember(b.name) then
+            boxes[#boxes + 1] = b
+            if b.live then anyLive = true end
+        end
+    end
+
+    local rows = {}
+    local function add(name, f, live, me)
+        rows[#rows + 1] = {
+            name = name, live = live, me = me,
+            dps = f and (tonumber(f.dps) or 0) or 0, dmg = f and (tonumber(f.dmg) or 0) or 0, dur = f and (tonumber(f.dur) or 0) or 0,
+            playerDmg = f and (tonumber(f.playerDmg) or 0) or 0, petDmg = f and (tonumber(f.petDmg) or 0) or 0,
+            target = f and f.target or nil, at = f and f.at or nil,
+        }
+    end
+
+    local okName, myName = pcall(function() return mq.TLO.Me.CleanName() end)
+    myName = (okName and myName and myName ~= '') and myName or 'Me'
+    if anyLive then
+        local dur = getCurrentFightDuration()
+        local mine = rt.inFight and { dps = getFightDPS(rt.totalDamage, dur), dmg = rt.totalDamage, dur = dur,
+            target = rt.currentTargetName, playerDmg = rt.playerDamage, petDmg = rt.petDamage } or nil
+        add(myName, mine, rt.inFight, true)
+        for _, b in ipairs(boxes) do add(b.name, b.live, b.live ~= nil, false) end
+    else
+        local h = rt.history[1]
+        local mine = h and { dps = h.peakDps, dmg = h.totalDmg, dur = h.duration, target = h.targetName,
+            playerDmg = h.playerDmg, petDmg = h.petDmg, at = h.timestamp } or nil
+        add(myName, mine, false, true)
+        for _, b in ipairs(boxes) do add(b.name, b.lastFight, false, false) end
+    end
+
+    local total, partyDps, fighting, topDps = 0, 0, 0, 0
+    for _, r in ipairs(rows) do
+        total = total + r.dmg
+        partyDps = partyDps + r.dps
+        if r.live then fighting = fighting + 1 end
+        if r.dps > topDps then topDps = r.dps end
+    end
+    for _, r in ipairs(rows) do r.pct = total > 0 and (r.dmg / total) or 0 end
+    table.sort(rows, function(a, b)
+        if a.dps ~= b.dps then return a.dps > b.dps end
+        return tostring(a.name):lower() < tostring(b.name):lower()
+    end)
+    return rows, { live = anyLive, dps = partyDps, dmg = total, topDps = topDps, count = #rows, fighting = fighting }
+end
+
+-- meterRows() for the windows: recomputed when a hit / share landed or after
+-- METER_CACHE_MS (the live DPS moves with time), never every frame. tick()
+-- refreshes it while a window is open; the draw only falls back to computing
+-- when the cache is missing or stale. Reports keep calling meterRows() directly.
+local METER_CACHE_MS = 250
+local meterCache = { rows = nil, summary = nil, at = -1e9, gen = nil }
+local function cachedMeterRows()
+    local now = nowMs()
+    if meterCache.rows and meterCache.gen == rt.hitGen and (now - meterCache.at) < METER_CACHE_MS then
+        return meterCache.rows, meterCache.summary
+    end
+    local rows, summary = meterRows()
+    meterCache.rows, meterCache.summary, meterCache.at, meterCache.gen = rows, summary, now, rt.hitGen
+    return rows, summary
+end
+
+-- One meter row: name, then a bar scaled to the top DPS with "dps (share%)"
+-- on it. Gold for us, blue for the other boxes, grey for anyone idle while
+-- the meter is live.
+local function drawMeterBar(r, summary, h)
+    local frac = (summary.topDps or 0) > 0 and (r.dps / summary.topDps) or 0
+    local c = r.me and GOLD or ARC
+    if summary.live and not r.live then c = MUTED end
+    local label = string.format('%s dps  (%d%%)', fmtNum(r.dps), math.floor((r.pct or 0) * 100 + 0.5))
+    if core.drawStatusProgressBar then
+        core.drawStatusProgressBar(frac, -1, h or 16, label, c[1], c[2], c[3], 0.80)
+    else
+        ImGui.ProgressBar(frac, -1, h or 16, label)
+    end
+end
+
+-- Name | bar table shared by the main window's Group tab and the compact
+-- window. `detailed` adds Damage / Target / Time columns.
+local function drawMeterTable(rows, summary, tableId, detailed, barH)
+    local tflags = bit.bor(ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingStretchProp, ImGuiTableFlags.NoPadOuterX)
+    if detailed then tflags = bit.bor(tflags, ImGuiTableFlags.Borders, ImGuiTableFlags.Resizable) end
+    local cols = detailed and 5 or 2
+    if not ImGui.BeginTable(tableId, cols, tflags) then return end
+    ImGui.TableSetupColumn('Name', ImGuiTableColumnFlags.WidthFixed, detailed and 110 or 92)
+    ImGui.TableSetupColumn('DPS', ImGuiTableColumnFlags.WidthStretch)
+    if detailed then
+        ImGui.TableSetupColumn('Damage', ImGuiTableColumnFlags.WidthFixed, core.px(80))
+        ImGui.TableSetupColumn('Target', ImGuiTableColumnFlags.WidthFixed, core.px(150))
+        ImGui.TableSetupColumn('Time', ImGuiTableColumnFlags.WidthFixed, core.px(64))
+        ImGui.TableHeadersRow()
+    end
+    for _, r in ipairs(rows) do
+        ImGui.TableNextRow()
+        ImGui.TableSetColumnIndex(0)
+        local nc = r.me and GOLD or (r.live and { 1, 1, 1, 1 } or MUTED)
+        ImGui.TextColored(nc[1], nc[2], nc[3], nc[4], tostring(r.name))
+        if ImGui.IsItemHovered() then
+            local split = (r.petDmg or 0) > 0 and string.format('\nPlayer %s / Pet %s', fmtNum(r.playerDmg), fmtNum(r.petDmg)) or ''
+            local state = r.live and 'fighting' or (summary.live and 'idle' or ('last fight' .. (r.at and (' at ' .. r.at) or '')))
+            ImGui.SetTooltip('%s', string.format('%s - %s\n%s damage over %.0fs%s%s', tostring(r.name), state, fmtNum(r.dmg), r.dur or 0,
+                r.target and ('\nTarget: ' .. tostring(r.target)) or '', split))
+        end
+        ImGui.TableSetColumnIndex(1)
+        drawMeterBar(r, summary, barH)
+        if detailed then
+            ImGui.TableSetColumnIndex(2); ImGui.Text(fmtNum(r.dmg))
+            ImGui.TableSetColumnIndex(3)
+            if r.target then ImGui.Text(tostring(r.target)) else ImGui.TextDisabled('-') end
+            ImGui.TableSetColumnIndex(4)
+            if r.live then ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('%.0fs', r.dur or 0))
+            elseif r.at then ImGui.TextDisabled(tostring(r.at))
+            else ImGui.TextDisabled('-') end
+        end
+    end
+    ImGui.EndTable()
+end
+
+-- "/group [Triune DPS] Group: Alice 1,234 (45%) | Bob 900 (33%) ..." for the meter.
+local function reportGroupDPS(channelOverride)
+    local rows, summary = meterRows()
+    if #rows == 0 then return end
+    local channel = channelOverride or cfg.reportChannel or 'group'
+    local parts = {}
+    for _, r in ipairs(rows) do
+        parts[#parts + 1] = string.format('%s %s (%d%%)', tostring(r.name), fmtNum(r.dps), math.floor((r.pct or 0) * 100 + 0.5))
+    end
+    mq.cmd(string.format('/%s [Triune DPS] %s %s dps: %s', channel, summary.live and 'Group (live)' or 'Group (last fight)',
+        fmtNum(summary.dps), table.concat(parts, ' | ')))
+end
+
+local function endFightSession()
+    if not rt.inFight or rt.totalDamage == 0 then
+        rt.inFight = false
+        return
+    end
+    
+    local dur = getCurrentFightDuration()
+    local totalDps = getFightDPS(rt.totalDamage, dur)
+    local timestamp = os.date("%H:%M:%S")
+    local totals = calculateCategoryTotals(rt.playerBreakdown, rt.petBreakdown)
+    
+    table.insert(rt.history, 1, {
+        id = rt.nextHistoryId,
+        targetName = (isValidMobName(rt.currentTargetName)) and rt.currentTargetName or 'Unknown',
+        duration = dur,
+        totalDmg = rt.totalDamage,
+        playerDmg = rt.playerDamage,
+        petDmg = rt.petDamage,
+        peakDps = totalDps,
+        
+        -- Categorized Damage Metrics calculated dynamically from breakdown tables
+        meleeDmg = totals.melee,
+        skillDmg = totals.skill,
+        spellDmg = totals.spell,
+        dotDmg = totals.dot,
+        dsDmg = totals.ds,
+        
+        playerHits = rt.playerHits,
+        playerMisses = rt.playerMisses,
+        playerCrits = rt.playerCrits,
+        petHits = rt.petHits,
+        petMisses = rt.petMisses,
+        petCrits = rt.petCrits,
+        playerBreakdown = deepCopyBreakdown(rt.playerBreakdown),
+        petBreakdown = deepCopyMultiPetBreakdown(rt.petBreakdown),
+        timestamp = timestamp,
+    })
+    
+    rt.nextHistoryId = rt.nextHistoryId + 1
+    if #rt.history > MAX_HISTORY then
+        table.remove(rt.history)
+    end
+    shareFight(rt.history[1])
+    
+    rt.inFight = false
+    rt.currentTargetId = 0
+    touched()
+end
+
+local function startFightIfNeeded(targetName)
+    local now = mq.gettime()
+    local ok, tid = pcall(function() return mq.TLO.Target.ID() end)
+    local targetId = (ok and tid and tid > 0) and tid or 0
+    
+    local cleanTarget = isValidMobName(targetName) and cleanLine(targetName) or nil
+    local tloTargetName = nil
+    local ok2, tar = pcall(function() return mq.TLO.Target.CleanName() end)
+    if ok2 and tar and isValidMobName(tar) then
+        tloTargetName = tar
+    end
+    
+    local validTargetName = cleanTarget or tloTargetName or 'Target'
+    
+    if not rt.inFight then
+        rt.inFight = true
+        rt.fightStartTime = now
+        rt.lastDamageTime = now
+        rt.currentTargetId = targetId
+        rt.currentTargetName = validTargetName
+        rt.playerDamage = 0
+        rt.petDamage = 0
+        rt.totalDamage = 0
+        rt.playerHits = 0
+        rt.playerMisses = 0
+        rt.playerCrits = 0
+        rt.petHits = 0
+        rt.petMisses = 0
+        rt.petCrits = 0
+        rt.playerBreakdown = {}
+        rt.petBreakdown = {}
+    else
+        -- If we are in a fight, but this hit is for a DIFFERENT valid mob target (e.g. Mob A died and we hit Mob B)
+        if cleanTarget and isValidMobName(rt.currentTargetName) and cleanTarget ~= rt.currentTargetName then
+            local timeSinceLastDmg = (now - rt.lastDamageTime) / 1000.0
+            if timeSinceLastDmg > 1.5 then
+                endFightSession()
+                startFightIfNeeded(targetName)
+                return
+            end
+        end
+        
+        rt.lastDamageTime = now
+        if targetId > 0 and rt.currentTargetId == 0 then
+            rt.currentTargetId = targetId
+        end
+        if isValidMobName(validTargetName) and (not isValidMobName(rt.currentTargetName)) then
+            rt.currentTargetName = validTargetName
+        end
+    end
+end
+
+-- ============================================================================
+-- Unified Event Handlers (Dispatches Player & Pet damage without shadowing)
+-- ============================================================================
+
+-- 1. Unified Melee & Special Skill Hit Handler: "#1# for #2#" or "#1# for #2# points of damage#3#"
+local function onUnifiedMeleeHit(line, sentenceRaw, dmgStrRaw, extraRaw)
+    if cfg.paused then return end
+    
+    -- The catch-all also matches chat ("Bob says, 'kicked a mob for 500'"):
+    -- drop say/tell/shout/auction/channel lines before parsing them as damage.
+    local lowerLine = tostring(line or ''):lower()
+    if lowerLine:find(" says,", 1, true) or lowerLine:find(" says out", 1, true)
+       or lowerLine:find(" tells ", 1, true) or lowerLine:find(" shouts,", 1, true)
+       or lowerLine:find(" auctions,", 1, true) or lowerLine:find(", '", 1, true) then
+        return
+    end
+    
+    -- Filter out non-melee spell lines. With the 2-capture catch-all '#1# for #2#'
+    -- the "points of non-melee damage" text lands in #2# (dmgStrRaw), so check
+    -- every capture; the dedicated spell/DoT/DS/proc events own those lines.
+    local lowerSentence = (sentenceRaw or ''):lower()
+    if lowerSentence:find("non%-melee") or (dmgStrRaw and dmgStrRaw:lower():find("non%-melee"))
+       or (extraRaw and extraRaw:lower():find("non%-melee"))
+       or lowerSentence:find("is struck by") or lowerSentence:find("has taken")
+       or lowerSentence:find(" by your ") or lowerSentence:find("has healed") then
+        return
+    end
+    
+    local actor, verb, target = parseMeleeSentence(sentenceRaw)
+    if not actor or not verb or not target then return end
+    if not isValidCombatTarget(target) then return end
+    -- Mobs hitting us / our pet / a groupmate are incoming damage, not ours
+    if isFriendlyTarget(target) then return end
+    
+    local dmg = parseDamageValue(dmgStrRaw)
+    if not dmg or dmg <= 0 then return end
+    
+    local cat = getVerbCategory(verb)
+    local extra = cleanLine(extraRaw or '')
+    local isCrit = (extra:find("Critical") or extra:find("Crippling") or line:find("Critical") or line:find("Crippling")) and true or false
+    
+    if isPlayerActor(actor) then
+        -- Player Hit
+        startFightIfNeeded(target)
+        if isCrit then rt.playerCrits = rt.playerCrits + 1 end
+        rt.playerHits = rt.playerHits + 1
+        rt.playerDamage = rt.playerDamage + dmg
+        rt.totalDamage = rt.totalDamage + dmg
+        
+        local attackName = verb:sub(1,1):upper() .. verb:sub(2):lower()
+        recordHit(rt.playerBreakdown, attackName, dmg, isCrit, false, false, cat)
+    elseif isPetActor(actor) then
+        -- Pet Hit
+        startFightIfNeeded(target)
+        if isCrit then rt.petCrits = rt.petCrits + 1 end
+        rt.petHits = rt.petHits + 1
+        rt.petDamage = rt.petDamage + dmg
+        rt.totalDamage = rt.totalDamage + dmg
+        
+        local attackName = verb:sub(1,1):upper() .. verb:sub(2):lower()
+        recordPetHit(actor, attackName, dmg, isCrit, false, cat)
+    end
+end
+
+-- Spell crit dedupe: the server can announce a crit nuke both inline
+-- ("... non-melee damage. (Critical blast!) (12450)") and as its own line
+-- ("You deliver a critical blast! (12450) (Spell)"). Count it once.
+local lastSpellCrit = { dmg = nil, at = 0 }
+local function noteSpellCrit(dmg)
+    local now = mq.gettime()
+    if lastSpellCrit.dmg ~= nil and lastSpellCrit.dmg == dmg and (now - lastSpellCrit.at) < 1500 then
+        return false
+    end
+    lastSpellCrit.dmg = dmg
+    lastSpellCrit.at = now
+    return true
+end
+
+-- Pull the spell name out of the trailing "#4#" of a non-melee line, skipping
+-- "(Critical blast!)"-style markers and bare "(12450)" damage echoes.
+local function parseSpellExtra(extra)
+    local spellName, isCrit = nil, false
+    for paren in (extra or ''):gmatch("%((.-)%)") do
+        local lower = paren:lower()
+        if lower:find("^critical") or lower:find("^crippling") then
+            isCrit = true
+        elseif not paren:gsub(",", ""):match("^%s*%d+%s*$") and paren:match("%S") then
+            if not spellName then spellName = paren end
+        end
+    end
+    return spellName, isCrit
+end
+
+-- 2. Unified Non-Melee / Spell Hit Handler: "#1# hit #2# for #3# points of non-melee damage#4#"
+local function onUnifiedSpellHit(line, actorRaw, targetRaw, dmgStrRaw, extraRaw)
+    if cfg.paused then return end
+    local actor = cleanLine(actorRaw)
+    local target = cleanLine(targetRaw)
+    local extra = cleanLine(extraRaw)
+    
+    if isValidCombatTarget(target) and not isFriendlyTarget(target) then
+        local dmg = parseDamageValue(dmgStrRaw)
+        if dmg then
+            local parsedName, isCrit = parseSpellExtra(extra)
+            if isPlayerActor(actor) then
+                -- Player Direct Damage Hit ("You hit a mob for X non-melee damage")
+                startFightIfNeeded(target)
+                local countCrit = isCrit and noteSpellCrit(dmg)
+                if countCrit then rt.playerCrits = rt.playerCrits + 1 end
+                rt.playerHits = rt.playerHits + 1
+                rt.playerDamage = rt.playerDamage + dmg
+                rt.totalDamage = rt.totalDamage + dmg
+                local spellName = parsedName or 'Spell DD'
+                recordHit(rt.playerBreakdown, spellName, dmg, countCrit, false, false, 'Spell')
+            elseif isPetActor(actor) then
+                -- Pet Spell Hit ("Glidequill (Owner: Gennro) hit a mob for X non-melee damage. (Spell)")
+                startFightIfNeeded(target)
+                local countCrit = isCrit and noteSpellCrit(dmg)
+                if countCrit then rt.petCrits = rt.petCrits + 1 end
+                rt.petHits = rt.petHits + 1
+                rt.petDamage = rt.petDamage + dmg
+                rt.totalDamage = rt.totalDamage + dmg
+                local spellName = parsedName or 'Pet Spell'
+                recordPetHit(actor, spellName, dmg, countCrit, false, 'Spell')
+            end
+        end
+    end
+end
+
+-- 3. Player DoT Hit: "#1# has taken #2# points of damage from your #3#."
+local function onPlayerDoTHit(line, targetRaw, dmgStrRaw, spellRaw)
+    if cfg.paused then return end
+    local target = cleanLine(targetRaw)
+    local spell = cleanLine(spellRaw)
+    
+    -- DoT3 ('#1# has taken #2# damage from your #3#.') also matches the DoT1/DoT2
+    -- lines with #2# = "50 points of"; only handle when the capture is a bare number
+    -- so each tick is counted once.
+    local dmgClean = cleanLine(dmgStrRaw):gsub(",", "")
+    if not dmgClean:match("^%d+$") then return end
+    
+    if isValidCombatTarget(target) and not isFriendlyTarget(target) then
+        local dmg = parseDamageValue(dmgStrRaw)
+        if dmg then
+            startFightIfNeeded(target)
+            rt.playerHits = rt.playerHits + 1
+            rt.playerDamage = rt.playerDamage + dmg
+            rt.totalDamage = rt.totalDamage + dmg
+            local attackName = spell .. " (DoT)"
+            recordHit(rt.playerBreakdown, attackName, dmg, false, false, false, 'DoT')
+        end
+    end
+end
+
+-- 4. Player Damage Shield: "#1# is #2# by your #3# for #4# points of damage."
+local function onPlayerDSHit(line, targetRaw, verbRaw, dsTypeRaw, dmgStrRaw)
+    if cfg.paused then return end
+    local target = cleanLine(targetRaw)
+    
+    if isValidCombatTarget(target) and not isFriendlyTarget(target) then
+        local dmg = parseDamageValue(dmgStrRaw)
+        if dmg then
+            startFightIfNeeded(target)
+            rt.playerHits = rt.playerHits + 1
+            rt.playerDamage = rt.playerDamage + dmg
+            rt.totalDamage = rt.totalDamage + dmg
+            recordHit(rt.playerBreakdown, 'Damage Shield', dmg, false, false, false, 'Proc/DS')
+        end
+    end
+end
+
+-- 5. Dedicated Critical Hit & Critical Blast Event Handlers
+local function onCriticalHit(line, actorRaw, dmgStrRaw)
+    if cfg.paused then return end
+    local actor = cleanLine(actorRaw)
+    local dmg = parseDamageValue(dmgStrRaw)
+    
+    if isPlayerActor(actor) then
+        rt.playerCrits = rt.playerCrits + 1
+        creditCrit(rt.playerBreakdown, dmg)
+        touched()
+    elseif isPetActor(actor) then
+        rt.petCrits = rt.petCrits + 1
+        local petName = getCleanPetName(actor)
+        local petData = rt.petBreakdown[petName]
+        if petData then
+            petData.crits = petData.crits + 1
+            creditCrit(petData.attacks, dmg)
+        end
+        touched()
+    end
+end
+
+local function onCriticalBlast(line, actorRaw, dmgStrRaw, spellRaw)
+    if cfg.paused then return end
+    local actor = cleanLine(actorRaw)
+    local spell = cleanLine(spellRaw or '')
+    spell = spell:match("%((.-)%)") or spell
+    local dmg = parseDamageValue(dmgStrRaw)
+    
+    -- Skip when the matching non-melee hit line already carried "(Critical blast!)"
+    if dmg and not noteSpellCrit(dmg) then return end
+    
+    if isPlayerActor(actor) then
+        rt.playerCrits = rt.playerCrits + 1
+        if spell ~= '' and rt.playerBreakdown[spell] then
+            rt.playerBreakdown[spell].crits = rt.playerBreakdown[spell].crits + 1
+            touched()
+        end
+    elseif isPetActor(actor) then
+        rt.petCrits = rt.petCrits + 1
+        local petName = getCleanPetName(actor)
+        local petData = rt.petBreakdown[petName]
+        if petData then
+            petData.crits = petData.crits + 1
+            if spell ~= '' and petData.attacks[spell] then
+                petData.attacks[spell].crits = petData.attacks[spell].crits + 1
+                touched()
+            end
+        end
+    end
+end
+
+-- 6. Unified Miss Handler. MQ passes (line, captures...) in pattern order, so
+-- each pattern gets its own thin wrapper that normalises to (actor, verb, target):
+--   'You try to #1# #2#, but miss!'        -> (line, verb, target)      actor = You
+--   '#1# tried to #2# #3#, but missed!'    -> (line, actor, verb, target)
+--   '#1# missed #2#'                       -> (line, actor, target)     verb = nil
+local function onUnifiedMiss(line, actorRaw, verbRaw, targetRaw)
+    if cfg.paused then return end
+    if not rt.inFight then return end
+    
+    local actor = cleanLine(actorRaw or '')
+    local verb = cleanLine(verbRaw or '')
+    local target = cleanLine(targetRaw or '')
+    if actor == '' or target == '' then return end
+    
+    -- Multi-word skills ("flying kick a mob") split across #2#/#3#; let the
+    -- sentence parser re-join them when it recognises the verb.
+    if verb ~= '' then
+        local pActor, pVerb, pTarget = parseMeleeSentence(actor .. ' ' .. verb .. ' ' .. target)
+        if pActor and pVerb and pTarget then
+            actor, verb, target = pActor, pVerb, pTarget
+        end
+    end
+    
+    if not isValidCombatTarget(target) or isFriendlyTarget(target) then return end
+    
+    local cat = (verb ~= '') and getVerbCategory(verb) or 'Melee'
+    local attackName = (verb ~= '') and (verb:sub(1,1):upper() .. verb:sub(2):lower()) or 'Miss'
+    if isPlayerActor(actor) then
+        rt.playerMisses = rt.playerMisses + 1
+        recordHit(rt.playerBreakdown, attackName, 0, false, true, false, cat)
+    elseif isPetActor(actor) then
+        rt.petMisses = rt.petMisses + 1
+        recordPetHit(actor, attackName, 0, false, true, cat)
+    end
+end
+
+local function onPlayerMissStandard(line, verbRaw, targetRaw)
+    onUnifiedMiss(line, 'You', verbRaw, targetRaw)
+end
+
+local function onMissShort(line, actorRaw, targetRaw)
+    onUnifiedMiss(line, actorRaw, nil, targetRaw)
+end
+
+-- 7. Chat-driven Mob Slain Event Handler: only end the fight when the slain
+-- name is our current target (or the targeted spawn is actually dead), so
+-- unrelated kills nearby don't cut the parse short.
+local function onMobSlain(line, targetRaw)
+    if not rt.inFight then return end
+    local target = cleanLine(targetRaw)
+    target = target:gsub("[!%.%?]+$", "")
+    if not isValidMobName(target) then return end
+    
+    local current = cleanLine(rt.currentTargetName or '')
+    local nameMatches = isValidMobName(current) and current:lower() == target:lower()
+    
+    local targetDead = false
+    if not nameMatches then
+        local okId, tId = pcall(function() return mq.TLO.Target.ID() end)
+        local okDead, tDead = pcall(function() return mq.TLO.Target.Dead() or mq.TLO.Target.Type() == 'Corpse' end)
+        local targetId = (okId and tId and tId > 0) and tId or 0
+        targetDead = (okDead and tDead == true) and targetId > 0 and targetId == rt.currentTargetId
+    end
+    
+    if nameMatches or targetDead then
+        endFightSession()
+    end
+end
+
+-- 8. "#1# was hit by non-melee for N" is intentionally NOT parsed: EQ prints it
+-- for other players' damage shields and nukes too, so it cannot be credited to
+-- us. Our own damage shield is counted by the "is <verb> by your" DS events.
+
+-- Register Event Listeners
+local registeredEvents = {}
+local function regEvent(name, pattern, handler)
+    if mq.unevent then pcall(mq.unevent, name) end
+    mq.event(name, pattern, handler)
+    table.insert(registeredEvents, name)
+end
+
+local function unregisterEvents()
+    if mq and mq.unevent then
+        for _, name in ipairs(registeredEvents) do pcall(mq.unevent, name) end
+    end
+    registeredEvents = {}
+end
+
+local function registerEvents()
+    -- Standard & Server Abbreviated Melee & Skill Hit Patterns
+    -- Matches "Tenekis crushes a forlorn revenant for 204" and "punch a cleric of hate for 607"
+    regEvent('DPS_MeleeHitShort', '#1# for #2#', onUnifiedMeleeHit)
+    
+    -- Dedicated Critical Hit & Critical Blast Event Patterns
+    -- Third-person ("Genro scores a critical hit! (835)") and the player's own
+    -- first-person lines ("You score a critical hit! (420)", "You deliver a
+    -- critical blast! (3580) (Spell)") are distinct server formats; the
+    -- first-person ones never match the "#1# scores/delivers" patterns.
+    regEvent('DPS_CritHit', '#1# scores a critical hit! (#2#)', onCriticalHit)
+    regEvent('DPS_CritHitYou', 'You score a critical hit! (#1#)', function(line, dmgStr)
+        onCriticalHit(line, 'You', dmgStr)
+    end)
+    regEvent('DPS_CritBlast', '#1# delivers a critical blast! (#2#)#3#', onCriticalBlast)
+    regEvent('DPS_CritBlastYou', 'You deliver a critical blast! (#1#)#2#', function(line, dmgStr, spellStr)
+        onCriticalBlast(line, 'You', dmgStr, spellStr)
+    end)
+    
+    -- Spell / Non-Melee Patterns (Plural & Singular)
+    regEvent('DPS_SpellHitPlural', '#1# hit #2# for #3# points of non-melee damage#4#', onUnifiedSpellHit)
+    regEvent('DPS_SpellHitSingular', '#1# hit #2# for #3# point of non-melee damage#4#', onUnifiedSpellHit)
+    -- Proc lines name the victim first ("<mob> is struck by <source> ..."):
+    -- swap so onUnifiedSpellHit gets (actor = source, target = victim).
+    local function onProcHit(line, victimRaw, sourceRaw, dmgStrRaw, extraRaw)
+        onUnifiedSpellHit(line, sourceRaw, victimRaw, dmgStrRaw, extraRaw)
+    end
+    regEvent('DPS_ProcHitPlural', '#1# is struck by #2# for #3# points of damage#4#', onProcHit)
+    regEvent('DPS_ProcHitSingular', '#1# is struck by #2# for #3# point of damage#4#', onProcHit)
+    
+    -- DoT Patterns (DoT3 also fires for the DoT1/DoT2 lines; onPlayerDoTHit
+    -- ignores the non-numeric "50 points of" capture so each tick counts once)
+    regEvent('DPS_PlayerDoT1', '#1# has taken #2# points of damage from your #3#.', onPlayerDoTHit)
+    regEvent('DPS_PlayerDoT2', '#1# has taken #2# point of damage from your #3#.', onPlayerDoTHit)
+    regEvent('DPS_PlayerDoT3', '#1# has taken #2# damage from your #3#.', onPlayerDoTHit)
+    
+    -- Damage Shield Patterns
+    regEvent('DPS_PlayerDSPlural', '#1# is #2# by your #3# for #4# points of damage.', onPlayerDSHit)
+    regEvent('DPS_PlayerDSSingular', '#1# is #2# by your #3# for #4# point of damage.', onPlayerDSHit)
+    
+    -- Standard & Abbreviated Miss Patterns (each wrapper maps MQ's capture
+    -- order for that pattern onto onUnifiedMiss(line, actor, verb, target))
+    regEvent('DPS_PlayerMissStandard', 'You try to #1# #2#, but miss!', onPlayerMissStandard)
+    regEvent('DPS_PetMissStandard', '#1# tried to #2# #3#, but missed!', onUnifiedMiss)
+    regEvent('DPS_MissShort', '#1# missed #2#', onMissShort)
+    
+    -- Chat-driven Mob Slain Events
+    regEvent('DPS_MobSlain1', '#1# has been slain#*#', onMobSlain)
+    regEvent('DPS_MobSlain2', 'You have slain #1#!', onMobSlain)
+    
+    -- Zone Change Auto-Reset: chat-driven fallback. "You have entered" also
+    -- prefixes non-zone messages (levitation, PvP areas, "an area where ..."),
+    -- so only reset when the zone short name actually changed; plugin.onZoned
+    -- below covers the host-driven path.
+    regEvent('DPS_Zone', 'You have entered #*#', function()
+        if not cfg.autoResetOnZone then return end
+        local ok, zone = pcall(function() return mq.TLO.Zone.ShortName() end)
+        if ok and zone and zone ~= '' and zone ~= 'NULL' then
+            if zone ~= rt.lastZoneShort then
+                rt.lastZoneShort = zone
+                resetCurrentFight()
+            end
+        end
+    end)
+end
+
+-- ============================================================================
+-- Report Generator
+-- ============================================================================
+local function reportDPS(channelOverride)
+    local channel = channelOverride or cfg.reportChannel or 'group'
+    local dur = getCurrentFightDuration()
+    local totalDps = getFightDPS(rt.totalDamage, dur)
+    local playerDps = getFightDPS(rt.playerDamage, dur)
+    local petDps = getFightDPS(rt.petDamage, dur)
+    
+    local playerPct = rt.totalDamage > 0 and math.floor((rt.playerDamage / rt.totalDamage * 100) + 0.5) or 0
+    local petPct = rt.totalDamage > 0 and math.floor((rt.petDamage / rt.totalDamage * 100) + 0.5) or 0
+    
+    local target = (rt.currentTargetName ~= '' and rt.currentTargetName ~= 'None') and rt.currentTargetName or 'Combat'
+    
+    local msg = string.format("[Triune DPS] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
+        target, dur, totalDps, tostring(rt.totalDamage))
+        
+    local totals = calculateCategoryTotals(rt.playerBreakdown, rt.petBreakdown)
+    local mPct = rt.totalDamage > 0 and math.floor((totals.melee / rt.totalDamage * 100) + 0.5) or 0
+    local skPct = rt.totalDamage > 0 and math.floor((totals.skill / rt.totalDamage * 100) + 0.5) or 0
+    local spPct = rt.totalDamage > 0 and math.floor((totals.spell / rt.totalDamage * 100) + 0.5) or 0
+    local dotPct = rt.totalDamage > 0 and math.floor((totals.dot / rt.totalDamage * 100) + 0.5) or 0
+    
+    msg = msg .. string.format(" | Types: Melee %d%%, Skill %d%%, Spell %d%%, DoT %d%%", mPct, skPct, spPct, dotPct)
+    
+    if rt.petDamage > 0 then
+        msg = msg .. string.format(" | Player: %d DPS (%d%%) | Pet: %d DPS (%d%%)", playerDps, playerPct, petDps, petPct)
+    else
+        msg = msg .. string.format(" | Player: %d DPS", playerDps)
+    end
+    
+    local cmd = '/' .. channel .. ' ' .. msg
+    mq.cmd(cmd)
+end
+
+local function reportHistoricalFight(h, channelOverride)
+    if not h then return end
+    local channel = channelOverride or cfg.reportChannel or 'group'
+    local playerDps = getFightDPS(h.playerDmg, h.duration)
+    local petDps = getFightDPS(h.petDmg, h.duration)
+    
+    local playerPct = h.totalDmg > 0 and math.floor((h.playerDmg / h.totalDmg * 100) + 0.5) or 0
+    local petPct = h.totalDmg > 0 and math.floor((h.petDmg / h.totalDmg * 100) + 0.5) or 0
+    
+    local mPct = h.totalDmg > 0 and math.floor(((h.meleeDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local skPct = h.totalDmg > 0 and math.floor(((h.skillDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local spPct = h.totalDmg > 0 and math.floor(((h.spellDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local dotPct = h.totalDmg > 0 and math.floor(((h.dotDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    
+    local msg = string.format("[Triune DPS Log] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
+        h.targetName, h.duration, h.peakDps, tostring(h.totalDmg))
+        
+    msg = msg .. string.format(" | Types: Melee %d%%, Skill %d%%, Spell %d%%, DoT %d%%", mPct, skPct, spPct, dotPct)
+        
+    if h.petDmg > 0 then
+        msg = msg .. string.format(" | Player: %d DPS (%d%%) | Pet: %d DPS (%d%%)", playerDps, playerPct, petDps, petPct)
+    else
+        msg = msg .. string.format(" | Player: %d DPS", playerDps)
+    end
+    
+    local cmd = '/' .. channel .. ' ' .. msg
+    mq.cmd(cmd)
+end
+
+-- ============================================================================
+-- ImGui Rendering Engine (Guaranteed Unique IDs Across Windows)
+-- ============================================================================
+-- Per-frame views (sorted key lists, combined maps, totals) derived from a
+-- breakdown table are cached per source table (weak keys) and rebuilt only
+-- when rt.hitGen moved, i.e. when a hit / share / reset actually changed
+-- something, instead of being sorted and allocated every frame.
+local function viewCache(build)
+    local cache = setmetatable({}, { __mode = 'k' })
+    return function(key)
+        local c = cache[key]
+        if c and c.gen == rt.hitGen then return c.value end
+        local v = build(key)
+        cache[key] = { gen = rt.hitGen, value = v }
+        return v
+    end
+end
+
+local sortedKeysOf = viewCache(function(breakdownMap)
+    local keys = {}
+    for name in pairs(breakdownMap) do table.insert(keys, name) end
+    table.sort(keys, function(a, b) return breakdownMap[a].totalDmg > breakdownMap[b].totalDmg end)
+    return keys
+end)
+
+local function renderBreakdownTable(breakdownMap, showSourceColumn, tableId)
+    local tId = tableId or "BreakdownTable"
+    if not ImGui.BeginTable(tId, showSourceColumn and 10 or 9, bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)) then
+        return
+    end
+    
+    if showSourceColumn then
+        ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthFixed, core.px(55))
+    end
+    ImGui.TableSetupColumn("Category", ImGuiTableColumnFlags.WidthFixed, core.px(65))
+    ImGui.TableSetupColumn("Attack / Spell Name", ImGuiTableColumnFlags.WidthStretch, 2.0)
+    ImGui.TableSetupColumn("Hits", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+    ImGui.TableSetupColumn("Total Dmg", ImGuiTableColumnFlags.WidthFixed, core.px(70))
+    ImGui.TableSetupColumn("Min", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+    ImGui.TableSetupColumn("Max", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+    ImGui.TableSetupColumn("Avg", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+    ImGui.TableSetupColumn("Crits", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+    ImGui.TableSetupColumn("Crit %", ImGuiTableColumnFlags.WidthFixed, core.px(50))
+    ImGui.TableHeadersRow()
+    
+    local sortedKeys = sortedKeysOf(breakdownMap)
+
+    for _, name in ipairs(sortedKeys) do
+        local data = breakdownMap[name]
+        local avg = data.count > 0 and math.floor((data.totalDmg / data.count) + 0.5) or 0
+        local critPct = data.count > 0 and math.floor((data.crits / data.count * 100) + 0.5) or 0
+        local cat = data.category or 'Melee'
+        
+        ImGui.TableNextRow()
+        if showSourceColumn then
+            ImGui.TableNextColumn()
+            if data.isPet then
+                ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], "[Pet]")
+            else
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "[Player]")
+            end
+        end
+        
+        -- Category Badge Column
+        ImGui.TableNextColumn()
+        if cat == 'Skill' then
+            ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], "[Skill]")
+        elseif cat == 'Spell' then
+            ImGui.TextColored(PURPLE[1], PURPLE[2], PURPLE[3], PURPLE[4], "[Spell]")
+        elseif cat == 'DoT' then
+            ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], "[DoT]")
+        elseif cat == 'Proc/DS' then
+            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], "[DS/Proc]")
+        else
+            ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "[Melee]")
+        end
+        
+        ImGui.TableNextColumn()
+        local labelCol = data.isPet and ARC or (showSourceColumn and GOLD or ARC)
+        ImGui.TextColored(labelCol[1], labelCol[2], labelCol[3], labelCol[4], name)
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(data.count))
+        ImGui.TableNextColumn()
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], tostring(data.totalDmg))
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(data.minDmg))
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(data.maxDmg))
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(avg))
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(data.crits))
+        ImGui.TableNextColumn()
+        ImGui.Text(string.format("%d%%", critPct))
+    end
+    
+    ImGui.EndTable()
+end
+
+local function getCombinedPetAttackMap(petMap)
+    local combined = {}
+    for _, pData in pairs(petMap) do
+        for atkName, atkData in pairs(pData.attacks) do
+            if not combined[atkName] then
+                combined[atkName] = {
+                    count = atkData.count,
+                    totalDmg = atkData.totalDmg,
+                    minDmg = atkData.minDmg,
+                    maxDmg = atkData.maxDmg,
+                    crits = atkData.crits,
+                    misses = atkData.misses,
+                    isPet = true,
+                    category = atkData.category or 'Melee',
+                }
+            else
+                local c = combined[atkName]
+                c.count = c.count + atkData.count
+                c.totalDmg = c.totalDmg + atkData.totalDmg
+                if atkData.minDmg < c.minDmg or c.minDmg == 0 then c.minDmg = atkData.minDmg end
+                if atkData.maxDmg > c.maxDmg then c.maxDmg = atkData.maxDmg end
+                c.crits = c.crits + atkData.crits
+                c.misses = c.misses + atkData.misses
+            end
+        end
+    end
+    return combined
+end
+
+local function getCombinedOverviewBreakdownMap()
+    local combined = {}
+    for name, data in pairs(rt.playerBreakdown) do
+        combined[name] = data
+    end
+    for pName, pData in pairs(rt.petBreakdown) do
+        for atkName, atkData in pairs(pData.attacks) do
+            local keyName = pName .. " (" .. atkName .. ")"
+            combined[keyName] = atkData
+        end
+    end
+    return combined
+end
+
+local function getHistoricalOverviewBreakdownMap(h)
+    local combined = {}
+    if not h then return combined end
+    for name, data in pairs(h.playerBreakdown or {}) do
+        combined[name] = data
+    end
+    if type(h.petBreakdown) == 'table' then
+        for pName, pData in pairs(h.petBreakdown) do
+            if type(pData) == 'table' and pData.attacks then
+                for atkName, atkData in pairs(pData.attacks) do
+                    local keyName = pName .. " (" .. atkName .. ")"
+                    combined[keyName] = atkData
+                end
+            end
+        end
+    end
+    return combined
+end
+
+-- Cached views (see viewCache): keyed by the source table, refreshed on hits.
+local combinedPetAttacksOf = viewCache(getCombinedPetAttackMap)
+local historicalOverviewOf = viewCache(getHistoricalOverviewBreakdownMap)
+local liveOverviewOf = viewCache(function() return getCombinedOverviewBreakdownMap() end)      -- key: rt
+local liveTotalsOf = viewCache(function() return calculateCategoryTotals(rt.playerBreakdown, rt.petBreakdown) end) -- key: rt
+local petNamesOf = viewCache(function(petMap)
+    local names = {}
+    for name in pairs(petMap) do table.insert(names, name) end
+    table.sort(names)
+    return names
+end)
+
+local function renderMultiPetDetails(petMap, tabBarId, tableIdPrefix, fightPetDmg)
+    local petNames = petNamesOf(petMap)
+
+    if #petNames == 0 then
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "No Active Pet Damage Recorded")
+        return
+    end
+    
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Pet Damage Breakdown:")
+    ImGui.Spacing()
+    
+    local tbId = tabBarId or "MultiPetTabBar"
+    local tPrefix = tableIdPrefix or "PetTable"
+    local totalPetDmg = fightPetDmg or rt.petDamage
+    
+    if ImGui.BeginTabBar(tbId) then
+        -- Tab 1: All Pets Combined
+        if ImGui.BeginTabItem("All Pets Combined##" .. tbId) then
+            local combinedAttacks = combinedPetAttacksOf(petMap)
+            renderBreakdownTable(combinedAttacks, false, tPrefix .. "_Combined")
+            ImGui.EndTabItem()
+        end
+        
+        -- Individual Tabs per Pet Name
+        for _, pName in ipairs(petNames) do
+            local pData = petMap[pName]
+            local petPct = totalPetDmg > 0 and math.floor((pData.totalDmg / totalPetDmg * 100) + 0.5) or 0
+            local tabLabel = string.format("%s (%d Dmg - %d%%)##%s_%s", pName, pData.totalDmg, petPct, tbId, pName)
+            
+            if ImGui.BeginTabItem(tabLabel) then
+                local petTotalAttacks = pData.hits + pData.misses
+                local petAcc = petTotalAttacks > 0 and math.floor((pData.hits / petTotalAttacks * 100) + 0.5) or 0
+                
+                ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], string.format("Pet Name: %s", pName))
+                ImGui.SameLine(core.px(200))
+                ImGui.Text(string.format("Hits: %d | Misses: %d | Accuracy: %d%%", pData.hits, pData.misses, petAcc))
+                ImGui.Spacing()
+                
+                renderBreakdownTable(pData.attacks, false, tPrefix .. "_" .. pName:gsub("%W",""))
+                ImGui.EndTabItem()
+            end
+        end
+        
+        ImGui.EndTabBar()
+    end
+end
+
+-- ============================================================================
+-- Shared Historical Encounter Inspector Renderer
+-- ============================================================================
+local function renderHistoricalInspector(h, inTabMode)
+    if not h then return end
+    
+    -- Header Toolbar
+    if inTabMode then
+        if ImGui.Button("< Back to Fight List##InspectBackBtn", core.px(140), core.px(24)) then
+            rt.inspectedFight = nil
+            rt.inspectorOpen = false
+            return
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Report Fight##InspectReportBtnTab", core.px(100), core.px(24)) then
+            reportHistoricalFight(h)
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Pop Out Window##InspectPopOutBtn", core.px(120), core.px(24)) then
+            rt.inspectorOpen = true
+            rt.shouldOpenModal = true
+        end
+        ImGui.Spacing()
+    else
+        if ImGui.Button("Report Fight##InspectReportBtnModal", core.px(100), core.px(24)) then
+            reportHistoricalFight(h)
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Close Inspector##InspectCloseBtnModal", core.px(110), core.px(24)) then
+            rt.inspectorOpen = false
+            rt.inspectedFight = nil
+            ImGui.CloseCurrentPopup()
+            return
+        end
+        ImGui.Spacing()
+    end
+    
+    -- Stats Banner
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Target:")
+    ImGui.SameLine()
+    ImGui.TextColored(1, 1, 1, 1, h.targetName)
+    ImGui.SameLine(core.px(220))
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Time:")
+    ImGui.SameLine()
+    ImGui.Text(h.timestamp)
+    ImGui.SameLine(core.px(360))
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Duration:")
+    ImGui.SameLine()
+    ImGui.Text(string.format("%.1fs", h.duration))
+    
+    ImGui.Separator()
+    
+    -- Key Performance Summary Cards
+    local cardChildId = inTabMode and "InspectTabSummaryCards" or "InspectModalSummaryCards"
+    ImGui.BeginChild(cardChildId, 0, core.px(65), true)
+    
+    local totalDps = h.peakDps
+    local playerDps = getFightDPS(h.playerDmg, h.duration)
+    local petDps = getFightDPS(h.petDmg, h.duration)
+    local playerPct = h.totalDmg > 0 and math.floor((h.playerDmg / h.totalDmg * 100) + 0.5) or 0
+    local petPct = h.totalDmg > 0 and math.floor((h.petDmg / h.totalDmg * 100) + 0.5) or 0
+    
+    -- Combined DPS Card
+    ImGui.BeginGroup()
+    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "COMBINED DPS")
+    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(totalDps))
+    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Total Dmg", h.totalDmg))
+    ImGui.EndGroup()
+    
+    ImGui.SameLine(core.px(160))
+    -- Player DPS Card
+    ImGui.BeginGroup()
+    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "PLAYER DPS")
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], tostring(playerDps))
+    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", h.playerDmg, playerPct))
+    ImGui.EndGroup()
+    
+    ImGui.SameLine(core.px(320))
+    -- Pet DPS Card
+    ImGui.BeginGroup()
+    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "PET DPS")
+    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(petDps))
+    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", h.petDmg, petPct))
+    ImGui.EndGroup()
+    
+    ImGui.EndChild()
+    
+    -- Contribution Progress Bar
+    local pFrac = h.totalDmg > 0 and (h.playerDmg / h.totalDmg) or 0
+    ImGui.ProgressBar(pFrac, -1, core.px(14), string.format("Player %d%%  |  Pet %d%%", playerPct, petPct))
+    
+    ImGui.Spacing()
+    
+    -- Damage Type Category Metric Badges Summary
+    local mPct = h.totalDmg > 0 and math.floor(((h.meleeDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local skPct = h.totalDmg > 0 and math.floor(((h.skillDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local spPct = h.totalDmg > 0 and math.floor(((h.spellDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local dotPct = h.totalDmg > 0 and math.floor(((h.dotDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    local dsPct = h.totalDmg > 0 and math.floor(((h.dsDmg or 0) / h.totalDmg * 100) + 0.5) or 0
+    
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Category Metrics:")
+    ImGui.SameLine()
+    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], string.format("Melee: %d (%d%%) | Skills: %d (%d%%) | Spells: %d (%d%%) | DoTs: %d (%d%%) | DS: %d (%d%%)",
+        h.meleeDmg or 0, mPct, h.skillDmg or 0, skPct, h.spellDmg or 0, spPct, h.dotDmg or 0, dotPct, h.dsDmg or 0, dsPct))
+        
+    ImGui.Spacing()
+    
+    -- Navigation Tabs inside Inspector
+    local mainTbId = inTabMode and "InspectTabMainTabBar" or "InspectModalMainTabBar"
+    local tPrefix = inTabMode and "InspectTab" or "InspectModal"
+    
+    if ImGui.BeginTabBar(mainTbId) then
+        
+        -- Overview Breakdown
+        if ImGui.BeginTabItem("Overview##" .. tPrefix .. "OverviewTab") then
+            ImGui.Spacing()
+            local combinedMap = historicalOverviewOf(h)
+            renderBreakdownTable(combinedMap, true, tPrefix .. "OverviewTable")
+            ImGui.EndTabItem()
+        end
+        
+        -- Player Details
+        if ImGui.BeginTabItem("Player Details##" .. tPrefix .. "PlayerTab") then
+            ImGui.Spacing()
+            ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Historical Player Damage Breakdown:")
+            renderBreakdownTable(h.playerBreakdown or {}, false, tPrefix .. "PlayerTable")
+            ImGui.EndTabItem()
+        end
+        
+        -- Pet Details (Settings: "Show Pet Breakdown Tab")
+        if cfg.showPetBreakdown ~= false and ImGui.BeginTabItem("Pet Details##" .. tPrefix .. "PetTab") then
+            ImGui.Spacing()
+            renderMultiPetDetails(h.petBreakdown or {}, tPrefix .. "MultiPetTabBar", tPrefix .. "PetTable", h.petDmg)
+            ImGui.EndTabItem()
+        end
+        
+        ImGui.EndTabBar()
+    end
+end
+
+-- ============================================================================
+-- Compact Window: status line, the big number, player / pet split, the group
+-- meter and a row of small buttons. Auto-sized; no hard-coded x offsets.
+-- ============================================================================
+local MINI_WIDTH = 300
+
+-- Right-aligns `text` on the current line inside a MINI_WIDTH content area.
+local function miniRightText(text, c)
+    local w = nil
+    pcall(function() w = ImGui.CalcTextSize(text) end)
+    if type(w) == 'number' then
+        ImGui.SameLine(MINI_WIDTH - w)
+    else
+        ImGui.SameLine()
+    end
+    ImGui.TextColored(c[1], c[2], c[3], c[4], text)
+end
+
+local function drawMiniDpsGui()
+    if not ctrl.show_dps or not cfg.compact then return end
+
+    core.pushTheme()
+    -- Its own layout key: the shared window options (title bar, ghost, scale)
+    -- are set on the compact window, not the full parser.
+    if core.preBeginWindow then core.preBeginWindow('dps_compact') end
+    local flags = ImGuiWindowFlags.AlwaysAutoResize
+    if core.windowFlags then flags = core.windowFlags('dps_compact', flags) end
+    local open, draw = ImGui.Begin("Triune DPS###TriuneDPSMiniWindow", ctrl.show_dps, flags)
+    ctrl.show_dps = open
+    if open and draw then
+        if core.postBeginWindow then core.postBeginWindow('dps_compact') end
+    end
+    local function closeCompact()
+        ctrl.show_dps = false
+        rt.guiOpen = false
+        cfg.compact = false
+    end
+    local function preEnd()
+        if core.preEndWindow then core.preEndWindow('dps_compact', false, { name = 'DPS compact window', onClose = closeCompact }) end
+    end
+    if not open then
+        closeCompact()
+        preEnd()
+        ImGui.End()
+        core.popTheme()
+        core.saveLoadout(true)
+        return
+    end
+
+    if draw then
+        local dur = getCurrentFightDuration()
+        local totalDps = getFightDPS(rt.totalDamage, dur)
+        local playerDps = getFightDPS(rt.playerDamage, dur)
+        local petDps = getFightDPS(rt.petDamage, dur)
+        local playerPct = rt.totalDamage > 0 and math.floor((rt.playerDamage / rt.totalDamage * 100) + 0.5) or 0
+        local petPct = rt.totalDamage > 0 and math.floor((rt.petDamage / rt.totalDamage * 100) + 0.5) or 0
+        local hasPet = rt.petDamage > 0 or rt.petHits > 0
+
+        -- Line 1: state tag, target, duration on the right
+        local tag, tagC = 'IDLE', MUTED
+        if cfg.paused then tag, tagC = 'PAUSED', WARN elseif rt.inFight then tag, tagC = 'LIVE', GOOD end
+        ImGui.TextColored(tagC[1], tagC[2], tagC[3], tagC[4], tag)
+        ImGui.SameLine()
+        local targetDisp = (rt.currentTargetName ~= '' and rt.currentTargetName ~= 'None') and rt.currentTargetName or 'No target'
+        ImGui.TextColored(1, 1, 1, 1, targetDisp)
+        miniRightText(string.format('%.1fs', dur), MUTED)
+
+        -- Line 2: the number
+        ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], fmtNum(totalDps))
+        ImGui.SameLine()
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], 'dps')
+        miniRightText(fmtNum(rt.totalDamage) .. ' dmg', GOOD)
+
+        -- Line 3: player / pet split
+        if hasPet then
+            local pFrac = rt.totalDamage > 0 and (rt.playerDamage / rt.totalDamage) or 0
+            local splitText = string.format('You %s (%d%%)   Pet %s (%d%%)', fmtNum(playerDps), playerPct, fmtNum(petDps), petPct)
+            if core.drawStatusProgressBar then
+                core.drawStatusProgressBar(pFrac, MINI_WIDTH, 15, splitText, GOLD[1], GOLD[2], GOLD[3], 0.75)
+            else
+                ImGui.ProgressBar(pFrac, MINI_WIDTH, 15, splitText)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', string.format('Player %s damage / Pet %s damage', fmtNum(rt.playerDamage), fmtNum(rt.petDamage)))
+            end
+        end
+
+        -- Group meter (Box Network): only when there is someone besides us
+        if cfg.compactGroup and boxnet() then
+            local rows, summary = cachedMeterRows()
+            if #rows > 1 then
+                ImGui.Spacing()
+                ImGui.Separator()
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], summary.live and 'Group (live)' or 'Group (last fight)')
+                miniRightText(fmtNum(summary.dps) .. ' dps', ARC)
+                drawMeterTable(rows, summary, 'MiniGroupMeter', false, 15)
+            end
+        end
+
+        ImGui.Spacing()
+        ImGui.Separator()
+
+        -- Buttons
+        if ImGui.SmallButton(cfg.paused and 'Resume##MiniPauseBtn' or 'Pause##MiniPauseBtn') then
+            cfg.paused = not cfg.paused
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Reset##MiniResetBtn') then resetCurrentFight() end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Clear the current fight') end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Report##MiniReportBtn') then reportDPS() end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report your parse to /' .. tostring(cfg.reportChannel or 'group')) end
+        if cfg.compactGroup and boxnet() then
+            ImGui.SameLine()
+            if ImGui.SmallButton('Group##MiniGroupRptBtn') then reportGroupDPS() end
+            if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report the group meter to /' .. tostring(cfg.reportChannel or 'group')) end
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Full##MiniFullBtn') then
+            cfg.compact = false
+            saveConfig()
+        end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Open the full DPS Parser window') end
+    end
+
+    preEnd()
+    ImGui.End()
+    core.popTheme()
+end
+
+-- ============================================================================
+-- Main Full DPS Window Renderer
+-- ============================================================================
+local function drawDpsGui()
+    if not ctrl.show_dps or cfg.compact then return end
+    
+    core.pushTheme()
+    core.preBeginWindow('dps')
+    local open, draw = ImGui.Begin("Triune DPS Parser v" .. VERSION .. "###TriuneDPSWindow", ctrl.show_dps, core.windowFlags and core.windowFlags('dps', 0) or 0)
+    ctrl.show_dps = open
+    if not open then
+        ctrl.show_dps = false
+        rt.guiOpen = false
+        rt.inspectorOpen = false
+        if core.preEndWindow then core.preEndWindow('dps', false) end
+        ImGui.End()
+        core.popTheme()
+        core.saveLoadout(true)
+        return
+    end
+    if draw then
+        core.postBeginWindow('dps')
+        local dur = getCurrentFightDuration()
+        local totalDps = getFightDPS(rt.totalDamage, dur)
+        local playerDps = getFightDPS(rt.playerDamage, dur)
+        local petDps = getFightDPS(rt.petDamage, dur)
+        local playerPct = rt.totalDamage > 0 and math.floor((rt.playerDamage / rt.totalDamage * 100) + 0.5) or 0
+        local petPct = rt.totalDamage > 0 and math.floor((rt.petDamage / rt.totalDamage * 100) + 0.5) or 0
+        
+        -- Header Stats Banner
+        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Target:")
+        ImGui.SameLine()
+        ImGui.TextColored(1, 1, 1, 1, rt.currentTargetName)
+        ImGui.SameLine(core.px(220))
+        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Status:")
+        ImGui.SameLine()
+        if cfg.paused then
+            ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], "PAUSED")
+        elseif rt.inFight then
+            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], "COMBAT")
+        else
+            ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "IDLE")
+        end
+        ImGui.SameLine(core.px(360))
+        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Duration:")
+        ImGui.SameLine()
+        ImGui.Text(string.format("%.1fs", dur))
+        
+        ImGui.Separator()
+        
+        -- Control Action Toolbar (Sequential SameLine without hardcoded offsets to prevent overlaps)
+        if ImGui.Button(cfg.paused and "Resume" or "Pause", core.px(70), core.px(24)) then
+            cfg.paused = not cfg.paused
+        end
+        ImGui.SameLine()
+        if ImGui.Button("End Fight", core.px(75), core.px(24)) then
+            endFightSession()
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Reset", core.px(65), core.px(24)) then
+            resetCurrentFight()
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Report", core.px(70), core.px(24)) then
+            reportDPS()
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Compact Mode", core.px(95), core.px(24)) then
+            cfg.compact = true
+            saveConfig()
+        end
+        ImGui.SameLine()
+        if ImGui.Button("Clear History", core.px(95), core.px(24)) then
+            rt.history = {}
+            rt.inspectorOpen = false
+            rt.inspectedFight = nil
+            touched()
+        end
+        
+        ImGui.Separator()
+        
+        -- Key Performance Metrics Summary Cards
+        ImGui.BeginChild("MainDpsSummaryCards", 0, core.px(65), true)
+        
+        -- Combined DPS Card
+        ImGui.BeginGroup()
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "COMBINED DPS")
+        ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(totalDps))
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Total Dmg", rt.totalDamage))
+        ImGui.EndGroup()
+        
+        ImGui.SameLine(core.px(160))
+        -- Player DPS Card
+        ImGui.BeginGroup()
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "PLAYER DPS")
+        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], tostring(playerDps))
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", rt.playerDamage, playerPct))
+        ImGui.EndGroup()
+        
+        ImGui.SameLine(core.px(320))
+        -- Pet DPS Card
+        ImGui.BeginGroup()
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "PET DPS")
+        ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(petDps))
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", rt.petDamage, petPct))
+        ImGui.EndGroup()
+        
+        ImGui.EndChild()
+        
+        -- Contribution Progress Bar
+        local pFrac = rt.totalDamage > 0 and (rt.playerDamage / rt.totalDamage) or 0
+        ImGui.ProgressBar(pFrac, -1, core.px(14), string.format("Player %d%%  |  Pet %d%%", playerPct, petPct))
+        
+        ImGui.Spacing()
+        
+        -- Category Breakdown Metric Bar (recomputed only when a hit landed)
+        local liveTotals = liveTotalsOf(rt)
+        local mPct = rt.totalDamage > 0 and math.floor((liveTotals.melee / rt.totalDamage * 100) + 0.5) or 0
+        local skPct = rt.totalDamage > 0 and math.floor((liveTotals.skill / rt.totalDamage * 100) + 0.5) or 0
+        local spPct = rt.totalDamage > 0 and math.floor((liveTotals.spell / rt.totalDamage * 100) + 0.5) or 0
+        local dotPct = rt.totalDamage > 0 and math.floor((liveTotals.dot / rt.totalDamage * 100) + 0.5) or 0
+        local dsPct = rt.totalDamage > 0 and math.floor((liveTotals.ds / rt.totalDamage * 100) + 0.5) or 0
+        
+        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Live Categories:")
+        ImGui.SameLine()
+        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], string.format("Melee: %d (%d%%) | Skills: %d (%d%%) | Spells: %d (%d%%) | DoTs: %d (%d%%) | DS: %d (%d%%)",
+            liveTotals.melee, mPct, liveTotals.skill, skPct, liveTotals.spell, spPct, liveTotals.dot, dotPct, liveTotals.ds, dsPct))
+            
+        ImGui.Spacing()
+        
+        -- Navigation Tabs
+        if ImGui.BeginTabBar("MainDpsTabBar") then
+            
+            -- TAB 1: Live Overview
+            if ImGui.BeginTabItem("Live Overview##MainOverviewTab") then
+                rt.activeTab = 1
+                ImGui.Spacing()
+                
+                local playerTotalAttacks = rt.playerHits + rt.playerMisses
+                local playerAcc = playerTotalAttacks > 0 and math.floor((rt.playerHits / playerTotalAttacks * 100) + 0.5) or 0
+                local petTotalAttacks = rt.petHits + rt.petMisses
+                local petAcc = petTotalAttacks > 0 and math.floor((rt.petHits / petTotalAttacks * 100) + 0.5) or 0
+                
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Player Hits:")
+                ImGui.SameLine(core.px(100))
+                ImGui.Text(string.format("%d hits / %d misses (Accuracy: %d%%)", rt.playerHits, rt.playerMisses, playerAcc))
+                
+                if rt.petDamage > 0 or rt.petHits > 0 then
+                    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], "Pet Hits:")
+                    ImGui.SameLine(core.px(100))
+                    ImGui.Text(string.format("%d hits / %d misses (Accuracy: %d%%)", rt.petHits, rt.petMisses, petAcc))
+                end
+                
+                ImGui.Spacing()
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Current Encounter Attack Breakdown:")
+                local combinedMap = liveOverviewOf(rt)
+                renderBreakdownTable(combinedMap, true, "MainOverviewTable")
+                
+                ImGui.EndTabItem()
+            end
+            
+            -- TAB 2: Player Details
+            if ImGui.BeginTabItem("Player Details##MainPlayerTab") then
+                rt.activeTab = 2
+                ImGui.Spacing()
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Player Damage Breakdown:")
+                renderBreakdownTable(rt.playerBreakdown, false, "MainPlayerTable")
+                ImGui.EndTabItem()
+            end
+            
+            -- TAB 3: Multi-Pet Details (Settings: "Show Pet Breakdown Tab")
+            if cfg.showPetBreakdown ~= false and ImGui.BeginTabItem("Pet Details##MainPetTab") then
+                rt.activeTab = 3
+                ImGui.Spacing()
+                renderMultiPetDetails(rt.petBreakdown, "MainMultiPetTabBar", "MainPetTable")
+                ImGui.EndTabItem()
+            end
+            
+            -- TAB 4: History Log with In-Tab Encounter Inspection & Category Breakdown
+            if ImGui.BeginTabItem("Fight History##MainHistoryTab") then
+                rt.activeTab = 4
+                ImGui.Spacing()
+                
+                if rt.inspectedFight ~= nil then
+                    -- Render In-Tab Encounter Inspector for the selected fight
+                    renderHistoricalInspector(rt.inspectedFight, true)
+                else
+                    -- Render History List Table
+                    if #rt.history == 0 then
+                        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "No past encounters logged in this session.")
+                    else
+                        ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "Click any fight target name or Inspect button to view full fight details.")
+                        ImGui.Spacing()
+                        
+                        if ImGui.BeginTable("HistoryTable", 10, bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)) then
+                            ImGui.TableSetupColumn("Time", ImGuiTableColumnFlags.WidthFixed, core.px(55))
+                            ImGui.TableSetupColumn("Target", ImGuiTableColumnFlags.WidthStretch, 1.5)
+                            ImGui.TableSetupColumn("Dur", ImGuiTableColumnFlags.WidthFixed, core.px(35))
+                            ImGui.TableSetupColumn("Total Dmg", ImGuiTableColumnFlags.WidthFixed, core.px(65))
+                            ImGui.TableSetupColumn("DPS", ImGuiTableColumnFlags.WidthFixed, core.px(45))
+                            ImGui.TableSetupColumn("Melee Dmg", ImGuiTableColumnFlags.WidthFixed, core.px(65))
+                            ImGui.TableSetupColumn("Skill Dmg", ImGuiTableColumnFlags.WidthFixed, core.px(60))
+                            ImGui.TableSetupColumn("Spell/DoT", ImGuiTableColumnFlags.WidthFixed, core.px(65))
+                            ImGui.TableSetupColumn("Player/Pet", ImGuiTableColumnFlags.WidthFixed, core.px(70))
+                            ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, core.px(105))
+                            ImGui.TableHeadersRow()
+                            
+                            for _, h in ipairs(rt.history) do
+                                -- Widget labels built once per archived fight, not per frame.
+                                local labels = h.labels
+                                if not labels then
+                                    local id = tostring(h.id)
+                                    labels = { sel = h.targetName .. "##HistTar_" .. id, insp = "Inspect##HistInsp_" .. id, rpt = "Report##HistRpt_" .. id }
+                                    h.labels = labels
+                                end
+                                ImGui.TableNextRow()
+                                ImGui.TableNextColumn()
+                                ImGui.Text(h.timestamp)
+                                
+                                -- Selectable Target Name
+                                ImGui.TableNextColumn()
+                                if ImGui.Selectable(labels.sel, false) then
+                                    rt.inspectedFight = h
+                                end
+                                
+                                ImGui.TableNextColumn()
+                                ImGui.Text(string.format("%.0fs", h.duration))
+                                ImGui.TableNextColumn()
+                                ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], tostring(h.totalDmg))
+                                ImGui.TableNextColumn()
+                                ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(h.peakDps))
+                                
+                                -- Categorized Damage Columns
+                                ImGui.TableNextColumn()
+                                ImGui.Text(tostring(h.meleeDmg or 0))
+                                ImGui.TableNextColumn()
+                                ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], tostring(h.skillDmg or 0))
+                                ImGui.TableNextColumn()
+                                local magicDmg = (h.spellDmg or 0) + (h.dotDmg or 0)
+                                ImGui.TextColored(PURPLE[1], PURPLE[2], PURPLE[3], PURPLE[4], tostring(magicDmg))
+                                
+                                ImGui.TableNextColumn()
+                                local pPct = h.totalDmg > 0 and math.floor((h.playerDmg / h.totalDmg * 100) + 0.5) or 0
+                                local histPetPct = h.totalDmg > 0 and math.floor((h.petDmg / h.totalDmg * 100) + 0.5) or 0
+                                ImGui.Text(string.format("%d%% / %d%%", pPct, histPetPct))
+                                
+                                -- Action Buttons
+                                ImGui.TableNextColumn()
+                                if ImGui.Button(labels.insp, core.px(50), core.px(18)) then
+                                    rt.inspectedFight = h
+                                end
+                                ImGui.SameLine()
+                                if ImGui.Button(labels.rpt, core.px(48), core.px(18)) then
+                                    reportHistoricalFight(h)
+                                end
+                            end
+                            
+                            ImGui.EndTable()
+                        end
+                    end
+                end
+                
+                ImGui.EndTabItem()
+            end
+            
+            -- TAB: Group (Box Network meter)
+            if ImGui.BeginTabItem("Group##MainGroupTab") then
+                local bn = boxnet()
+                if not bn then
+                    ImGui.TextDisabled('Box Network plugin not connected - your other boxes cannot share their parses.')
+                else
+                    local rows, summary = cachedMeterRows()
+                    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], summary.live and 'Group DPS (live)' or 'Group DPS (last fight)')
+                    ImGui.SameLine()
+                    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], fmtNum(summary.dps) .. ' dps')
+                    ImGui.SameLine()
+                    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], fmtNum(summary.dmg) .. ' dmg')
+                    ImGui.SameLine()
+                    if summary.live then
+                        ImGui.TextDisabled(string.format('%d of %d fighting', summary.fighting, summary.count))
+                    else
+                        ImGui.TextDisabled(string.format('%d member%s', summary.count, summary.count == 1 and '' or 's'))
+                    end
+                    ImGui.SameLine()
+                    if ImGui.SmallButton('Report Group##MainGroupRpt') then reportGroupDPS() end
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report the meter to /' .. tostring(cfg.reportChannel or 'group')) end
+                    ImGui.Spacing()
+                    if #rows <= 1 then
+                        ImGui.TextDisabled(cfg.meterScope == 'group'
+                            and 'No other boxes in your group have shared a parse yet (they send a live line every 2s while fighting and a summary when the fight ends). Settings tab: Meter Scope -> All Boxes to include boxes outside the group.'
+                            or 'No parses from other boxes yet (they send a live line every 2s while fighting and a summary when the fight ends).')
+                    end
+                    drawMeterTable(rows, summary, 'MainGroupMeter', true, 18)
+                end
+                ImGui.EndTabItem()
+            end
+
+            -- TAB 5: Settings
+            if ImGui.BeginTabItem("Settings##MainSettingsTab") then
+                rt.activeTab = 5
+                ImGui.Spacing()
+                
+                local changed = false
+                
+                local newCompact, cChanged = ImGui.Checkbox("Compact Mini-Window Mode", cfg.compact)
+                if cChanged then
+                    cfg.compact = newCompact
+                    changed = true
+                end
+                
+                local newTimeout, tChanged = ImGui.SliderFloat("Combat Timeout (sec)", cfg.combatTimeout, 2.0, 20.0, "%.1f sec")
+                if tChanged then
+                    cfg.combatTimeout = newTimeout
+                    changed = true
+                end
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip("Seconds of damage inactivity before automatically ending the current fight.")
+                end
+                
+                local channels = { 'group', 'say', 'guild', 'raid' }
+                local currentIdx = 1
+                for idx, ch in ipairs(channels) do
+                    if ch == cfg.reportChannel then currentIdx = idx break end
+                end
+                
+                if ImGui.BeginCombo("Default Report Channel", channels[currentIdx]) then
+                    for idx, ch in ipairs(channels) do
+                        local isSel = (idx == currentIdx)
+                        local _, chPressed = ImGui.Selectable(ch, isSel)
+                        if chPressed then
+                            cfg.reportChannel = ch
+                            changed = true
+                        end
+                    end
+                    ImGui.EndCombo()
+                end
+                
+                local newReset, rChanged = ImGui.Checkbox("Auto-Reset on Zone Change", cfg.autoResetOnZone)
+                if rChanged then
+                    cfg.autoResetOnZone = newReset
+                    changed = true
+                end
+                
+                local newPetShow, pChanged = ImGui.Checkbox("Show Pet Breakdown Tab", cfg.showPetBreakdown)
+                if pChanged then
+                    cfg.showPetBreakdown = newPetShow
+                    changed = true
+                end
+
+                ImGui.Spacing()
+                ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Group Meter (Box Network)")
+                local scopeLabel = cfg.meterScope == 'all' and 'All Boxes' or 'Group Members'
+                if ImGui.BeginCombo("Meter Scope", scopeLabel) then
+                    local _, grpPressed = ImGui.Selectable('Group Members', cfg.meterScope ~= 'all')
+                    if grpPressed then cfg.meterScope = 'group'; changed = true end
+                    local _, allPressed = ImGui.Selectable('All Boxes', cfg.meterScope == 'all')
+                    if allPressed then cfg.meterScope = 'all'; changed = true end
+                    ImGui.EndCombo()
+                end
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip("Group Members: only your boxes that are in your group.\nAll Boxes: every box on this computer that shares a parse, grouped or not.")
+                end
+                local newCg, cgChanged = ImGui.Checkbox("Show Group Meter in Compact Window", cfg.compactGroup)
+                if cgChanged then
+                    cfg.compactGroup = newCg
+                    changed = true
+                end
+                
+                if changed then
+                    saveConfig()
+                end
+                
+                ImGui.EndTabItem()
+            end
+            
+            ImGui.EndTabBar()
+        end
+        
+        -- Modal Popup Window Handling (Forced ImGui Focus)
+        if rt.shouldOpenModal then
+            rt.shouldOpenModal = false
+            ImGui.OpenPopup("Encounter Inspector##InspectModalWin")
+        end
+        
+        local _, modalDraw = ImGui.BeginPopupModal("Encounter Inspector##InspectModalWin", true, bit.bor(ImGuiWindowFlags.AlwaysAutoResize))
+        if modalDraw then
+            if rt.inspectedFight then
+                renderHistoricalInspector(rt.inspectedFight, false)
+            else
+                ImGui.Text("No fight selected.")
+                if ImGui.Button("Close", core.px(80), core.px(22)) then
+                    ImGui.CloseCurrentPopup()
+                end
+            end
+            ImGui.EndPopup()
+        end
+    end
+    
+    if core.preEndWindow then core.preEndWindow('dps', false) end
+    ImGui.End()
+    core.popTheme()
+end
+
+-- ============================================================================
+-- Slash Command Bindings (/dps and /triunedps)
+-- ============================================================================
+local function dpsCommandHandler(cmd, arg1, arg2)
+    if not core then return end
+    ctrl = core.ctrl
+    local sub = (cmd or ''):lower()
+    if sub == '' or sub == 'toggle' or sub == 'ui' then
+        ctrl.show_dps = not ctrl.show_dps
+        if not ctrl.show_dps then
+            rt.guiOpen = false
+            rt.inspectorOpen = false
+            saveConfig()
+            print("\127300000[Triune DPS]\127777777 Window Closed.")
+        else
+            ctrl.show_dps = true
+            rt.guiOpen = true
+            print(string.format("\127300000[Triune DPS]\127777777 Window Opened."))
+        end
+    elseif sub == 'show' or sub == 'open' then
+        ctrl.show_dps = true
+        rt.guiOpen = true
+    elseif sub == 'hide' or sub == 'close' then
+        ctrl.show_dps = false
+        rt.guiOpen = false
+        rt.inspectorOpen = false
+        saveConfig()
+        print("\127300000[Triune DPS]\127777777 Window Closed.")
+    elseif sub == 'compact' or sub == 'mini' then
+        cfg.compact = not cfg.compact
+        saveConfig()
+        print(string.format("\127300000[Triune DPS]\127777777 Compact mode: %s.", cfg.compact and "ON" or "OFF"))
+    elseif sub == 'reset' or sub == 'clear' then
+        resetCurrentFight()
+        print("\127300000[Triune DPS]\127777777 Current fight statistics reset.")
+    elseif sub == 'pause' then
+        cfg.paused = true
+        print("\127300000[Triune DPS]\127777777 DPS tracking paused.")
+    elseif sub == 'resume' or sub == 'start' then
+        cfg.paused = false
+        print("\127300000[Triune DPS]\127777777 DPS tracking resumed.")
+    elseif sub == 'report' then
+        local channel = (arg1 and arg1 ~= '') and arg1:lower() or nil
+        reportDPS(channel)
+    elseif sub == 'group' then
+        -- /dps group [channel]: the group meter (Box Network) to chat
+        local channel = (arg1 and arg1 ~= '') and arg1:lower() or nil
+        reportGroupDPS(channel)
+    else
+        print("\127300000[Triune DPS]\127777777 Commands: /dps [show|hide|toggle|compact|reset|pause|resume|report <channel>|group <channel>]")
+    end
+    core.saveLoadout(true)
+end
+
+-- ============================================================================
+-- Plugin lifecycle
+-- ============================================================================
+local boundCommands = {}
+
+function plugin.onInit(coreApi)
+    core = coreApi
+    refresh()
+    if ctrl and ctrl.show_dps == nil then ctrl.show_dps = false end
+    cachedConfigPath = nil
+    loadConfig()
+    local okZone, zone = pcall(function() return mq.TLO.Zone.ShortName() end)
+    rt.lastZoneShort = (okZone and zone and zone ~= '' and zone ~= 'NULL') and zone or nil
+    registerEvents()
+    for _, cmd in ipairs({ '/dps', '/triunedps' }) do
+        local ok = pcall(mq.bind, cmd, dpsCommandHandler)
+        if ok then table.insert(boundCommands, cmd) end
+    end
+    print(string.format("\127300000[Triune DPS]\127777777 v%s loaded! Use /dps or /ac dps to toggle window.", VERSION))
+end
+
+function plugin.onDestroy()
+    saveConfig()
+    cachedConfigPath = nil
+    unregisterEvents()
+    if rt.boxesUnsub then pcall(rt.boxesUnsub) end
+    rt.boxesUnsub, rt.boxesApi, rt.boxesGen = nil, nil, nil
+    rt.boxes = {}
+    if mq and mq.unbind then
+        for _, cmd in ipairs(boundCommands) do pcall(mq.unbind, cmd) end
+    end
+    boundCommands = {}
+end
+
+-- Fight bookkeeping that used to run in the script's main loop: archive the
+-- encounter when the target dies or damage goes quiet for cfg.combatTimeout.
+local function tick()
+    ensureBoxSubscription()
+    -- Keep the per-line lookups warm (they refresh themselves once a second)
+    -- and the meter rows fresh for the open window, so the draw only reads.
+    getMyPlayerName()
+    getPetName()
+    if ctrl and ctrl.show_dps and (cfg.compact and cfg.compactGroup or not cfg.compact) and boxnet() then
+        cachedMeterRows()
+    end
+    if not rt.inFight then return end
+    shareLive()
+    local okId, tId = pcall(function() return mq.TLO.Target.ID() end)
+    local okDead, tDead = pcall(function() return mq.TLO.Target.Dead() or mq.TLO.Target.Type() == 'Corpse' end)
+    local targetId = (okId and tId and tId > 0) and tId or 0
+    local isDead = (okDead and tDead == true)
+
+    if isDead and targetId > 0 and targetId == rt.currentTargetId then
+        endFightSession()
+    elseif rt.lastDamageTime > 0 then
+        local inactiveSec = (mq.gettime() - rt.lastDamageTime) / 1000.0
+        if inactiveSec >= cfg.combatTimeout then
+            endFightSession()
+        end
+    end
+end
+
+function plugin.onTick()
+    if not core then return end
+    refresh()
+    tick()
+end
+
+-- Host-driven zone change: the authoritative reset (the chat event above only
+-- resets when the zone short name differs, so both paths never double-reset)
+function plugin.onZoned(zoneShort)
+    if not cfg.autoResetOnZone then return end
+    if zoneShort and zoneShort ~= '' and zoneShort ~= rt.lastZoneShort then
+        rt.lastZoneShort = zoneShort
+        resetCurrentFight()
+    end
+end
+
+function plugin.onDrawUI()
+    if not core then return end
+    refresh()
+    drawDpsGui()
+    drawMiniDpsGui()
+end
+
+function plugin.onDrawSettings()
+    if not core then return end
+    refresh()
+    core.accent(GOLD, 'DPS Parser')
+    local isWinOpen = (ctrl.show_dps == true)
+    if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##dpsToggleWin', core.px(250), core.px(24)) then
+        ctrl.show_dps = not isWinOpen
+        core.saveLoadout(true)
+    end
+    local compact = ImGui.Checkbox('Compact Mini HUD mode##dpsCompact', cfg.compact == true)
+    if compact ~= (cfg.compact == true) then cfg.compact = compact; saveConfig() end
+    local paused = ImGui.Checkbox('Pause tracking##dpsPaused', cfg.paused == true)
+    if paused ~= (cfg.paused == true) then cfg.paused = paused end
+    ImGui.TextDisabled(string.format('Status: %s | Target: %s | Fights archived: %d',
+        cfg.paused and 'PAUSED' or (rt.inFight and 'COMBAT' or 'IDLE'), tostring(rt.currentTargetName or 'None'), #rt.history))
+end
+
+-- /ac dps | dpsui | dpsparser toggles the window (was: /lua run triune_dps)
+function plugin.onCommand(cmd, args)
+    if cmd ~= 'dps' and cmd ~= 'dpsui' and cmd ~= 'dpsparser' then return false end
+    refresh()
+    local sub = args and args[2] and tostring(args[2]):lower() or 'toggle'
+    dpsCommandHandler(sub, args and args[3], args and args[4])
+    return true
+end
+
+plugin.help = {
+    '  \ag/ac dps [show|hide|compact|reset|pause|resume|report <chan>|group <chan>]\ax - DPS Parser window & controls (also /dps); group = Box Network meter to chat',
+}
+
+-- Exposed for tests
+plugin.cfg = cfg
+plugin.rt = rt
+plugin.onBoxDps = onBoxDps
+plugin.boxList = boxList
+plugin.meterRows = meterRows
+plugin.reportGroupDPS = reportGroupDPS
+plugin.fmtNum = fmtNum
+plugin.shareFight = shareFight
+plugin.shareLive = shareLive
+plugin.ensureBoxSubscription = ensureBoxSubscription
+plugin.tick = tick
+plugin.dpsCommandHandler = dpsCommandHandler
+plugin.registeredEvents = function() return registeredEvents end
+
+return plugin
