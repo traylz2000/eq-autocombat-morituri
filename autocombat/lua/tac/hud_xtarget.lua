@@ -136,60 +136,60 @@ local function renderXtSettingsContent()
     ImGui.Separator()
 
 
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##xtLock', ctrl.xt_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##xtLock', ctrl.xt_lock or false)
     if lockVal ~= (ctrl.xt_lock or false) then
         ctrl.xt_lock = lockVal
         core.saveLoadout(true)
     end
 
-    local empVal = ImGui.Checkbox('Show Empty Slots##xtEmpty', ctrl.xt_show_empty or false)
+    local empVal = ImGui.Checkbox('Show empty slots##xtEmpty', ctrl.xt_show_empty or false)
     if empVal ~= (ctrl.xt_show_empty or false) then
         ctrl.xt_show_empty = empVal
         core.saveLoadout(true)
     end
 
-    local totVal = ImGui.Checkbox('Show Target of Target##xtTot', ctrl.xt_show_tot ~= false)
+    local totVal = ImGui.Checkbox('Show target of target##xtTot', ctrl.xt_show_tot ~= false)
     if totVal ~= (ctrl.xt_show_tot ~= false) then
         ctrl.xt_show_tot = totVal
         core.saveLoadout(true)
     end
 
-    local aggVal = ImGui.Checkbox('Show Aggro %##xtAggro', ctrl.xt_show_aggro ~= false)
+    local aggVal = ImGui.Checkbox('Show aggro %##xtAggro', ctrl.xt_show_aggro ~= false)
     if aggVal ~= (ctrl.xt_show_aggro ~= false) then
         ctrl.xt_show_aggro = aggVal
         core.saveLoadout(true)
     end
 
-    local dstVal = ImGui.Checkbox('Show Distance & LoS##xtDist', ctrl.xt_show_dist ~= false)
+    local dstVal = ImGui.Checkbox('Show distance & line of sight##xtDist', ctrl.xt_show_dist ~= false)
     if dstVal ~= (ctrl.xt_show_dist ~= false) then
         ctrl.xt_show_dist = dstVal
         core.saveLoadout(true)
     end
 
-    local petVal = ImGui.Checkbox('Show Pets & Mercenaries##xtPets', ctrl.xt_show_pets or false)
+    local petVal = ImGui.Checkbox('Show pets & mercenaries##xtPets', ctrl.xt_show_pets or false)
     if petVal ~= (ctrl.xt_show_pets or false) then
         ctrl.xt_show_pets = petVal
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then core.setTooltip('Include your own pets, group pets, and mercenaries in the list (hidden by default).') end
 
-    local pcVal = ImGui.Checkbox('Show Friendly Players##xtPcs', ctrl.xt_show_pcs or false)
+    local pcVal = ImGui.Checkbox('Show friendly players##xtPcs', ctrl.xt_show_pcs or false)
     if pcVal ~= (ctrl.xt_show_pcs or false) then
         ctrl.xt_show_pcs = pcVal
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then core.setTooltip('Include PC slots (Specific PC, Group Tank/Assist/Puller, Raid Assist) in the list (hidden by default).') end
 
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('xtarget', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##xtAlpha', ctrl.xt_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('xtarget', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##xtAlpha', ctrl.xt_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.xt_alpha or 0.85) then
         ctrl.xt_alpha = newAlpha
         core.saveLoadout(true)
     end
 
-    ImGui.SetNextItemWidth(core.px(120))
-    local newH = ImGui.SliderInt('Bar Height##xtHeight', ctrl.xt_bar_height or 16, 10, 24)
+    core.formLabel('Bar height', 120)
+    local newH = ImGui.SliderInt('##xtHeight', ctrl.xt_bar_height or 16, 10, 24)
     if newH ~= (ctrl.xt_bar_height or 16) then
         ctrl.xt_bar_height = newH
         core.saveLoadout(true)

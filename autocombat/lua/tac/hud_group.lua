@@ -159,51 +159,51 @@ local function renderGwSettingsContent()
 
     accent(GOLD, 'Group Window Settings')
     ImGui.Separator()
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##gwLock', ctrl.gw_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##gwLock', ctrl.gw_lock or false)
     if lockVal ~= (ctrl.gw_lock or false) then
         ctrl.gw_lock = lockVal
         core.saveLoadout(true)
     end
-    local selfVal = ImGui.Checkbox('Include Self in Group##gwSelf', ctrl.gw_include_self ~= false)
+    local selfVal = ImGui.Checkbox('Include yourself##gwSelf', ctrl.gw_include_self ~= false)
     if selfVal ~= (ctrl.gw_include_self ~= false) then
         ctrl.gw_include_self = selfVal
         core.saveLoadout(true)
     end
-    local manaVal = ImGui.Checkbox('Show Mana Bars##gwMana', ctrl.gw_show_mana ~= false)
+    local manaVal = ImGui.Checkbox('Show mana bars##gwMana', ctrl.gw_show_mana ~= false)
     if manaVal ~= (ctrl.gw_show_mana ~= false) then
         ctrl.gw_show_mana = manaVal
         core.saveLoadout(true)
     end
-    local endVal = ImGui.Checkbox('Show Endurance Bars##gwEnd', ctrl.gw_show_endurance or false)
+    local endVal = ImGui.Checkbox('Show endurance bars##gwEnd', ctrl.gw_show_endurance or false)
     if endVal ~= (ctrl.gw_show_endurance or false) then
         ctrl.gw_show_endurance = endVal
         core.saveLoadout(true)
     end
-    local boxVal = ImGui.Checkbox('Show Box Network Characters##gwBoxes', ctrl.gw_show_boxes == true)
+    local boxVal = ImGui.Checkbox('Show Box Network characters##gwBoxes', ctrl.gw_show_boxes == true)
     if boxVal ~= (ctrl.gw_show_boxes == true) then
         ctrl.gw_show_boxes = boxVal
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then core.setTooltip('Off by default: the window lists only your group. Turn on to also list your other boxed characters (Box Network) that are not in this group, with live vitals from their heartbeat.') end
-    local petVal = ImGui.Checkbox('Show Pet Bars##gwPets', ctrl.gw_show_pets ~= false)
+    local petVal = ImGui.Checkbox('Show pet bars##gwPets', ctrl.gw_show_pets ~= false)
     if petVal ~= (ctrl.gw_show_pets ~= false) then
         ctrl.gw_show_pets = petVal
         core.saveLoadout(true)
     end
-    local roleVal = ImGui.Checkbox('Show Role Badges##gwRoles', ctrl.gw_show_roles ~= false)
+    local roleVal = ImGui.Checkbox('Show role badges##gwRoles', ctrl.gw_show_roles ~= false)
     if roleVal ~= (ctrl.gw_show_roles ~= false) then
         ctrl.gw_show_roles = roleVal
         core.saveLoadout(true)
     end
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('group', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##gwAlpha', ctrl.gw_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('group', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##gwAlpha', ctrl.gw_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.gw_alpha or 0.85) then
         ctrl.gw_alpha = newAlpha
         core.saveLoadout(true)
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newH = ImGui.SliderInt('Bar Height##gwHeight', ctrl.gw_bar_height or 14, 10, 24)
+    core.formLabel('Bar height', 120)
+    local newH = ImGui.SliderInt('##gwHeight', ctrl.gw_bar_height or 14, 10, 24)
     if newH ~= (ctrl.gw_bar_height or 14) then
         ctrl.gw_bar_height = newH
         core.saveLoadout(true)

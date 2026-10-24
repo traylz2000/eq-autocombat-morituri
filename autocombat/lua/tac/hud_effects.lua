@@ -120,57 +120,49 @@ local function renderEffSettingsContent()
     local curSortIdx = core.idxOf(sortModes, curSort)
     if curSortIdx < 1 then curSortIdx = 1 end
 
-    ImGui.Text('Sort Order:')
-    ImGui.SetNextItemWidth(core.px(180))
+    core.formLabel('Sort by', 180)
     local newSortIdx = ImGui.Combo('##effSortCombo', curSortIdx, sortModes)
     if newSortIdx ~= curSortIdx and sortModes[newSortIdx] then
         ctrl.eff_sort_by = sortModes[newSortIdx]
         onFilterChanged()
     end
 
-    for idx, sm in ipairs(sortModes) do
-        local isSel = (curSort == sm)
-        if ImGui.MenuItem(sm .. '##menuSort_' .. idx, nil, isSel) then
-            ctrl.eff_sort_by = sm
-            onFilterChanged()
-        end
-    end
 
     ImGui.Separator()
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##effLock', ctrl.eff_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##effLock', ctrl.eff_lock or false)
     if lockVal ~= (ctrl.eff_lock or false) then
         ctrl.eff_lock = lockVal
         core.saveLoadout(true)
     end
 
-    local bVal = ImGui.Checkbox('Show Long Buffs##effBuffs', ctrl.eff_show_buffs ~= false)
+    local bVal = ImGui.Checkbox('Show long buffs##effBuffs', ctrl.eff_show_buffs ~= false)
     if bVal ~= (ctrl.eff_show_buffs ~= false) then
         ctrl.eff_show_buffs = bVal
         onFilterChanged()
     end
 
-    local sVal = ImGui.Checkbox('Show Songs & Disciplines##effSongs', ctrl.eff_show_songs ~= false)
+    local sVal = ImGui.Checkbox('Show songs & disciplines##effSongs', ctrl.eff_show_songs ~= false)
     if sVal ~= (ctrl.eff_show_songs ~= false) then
         ctrl.eff_show_songs = sVal
         onFilterChanged()
     end
 
-    local dVal = ImGui.Checkbox('Show Detrimental (Debuffs)##effDet', ctrl.eff_show_detrimental ~= false)
+    local dVal = ImGui.Checkbox('Show debuffs##effDet', ctrl.eff_show_detrimental ~= false)
     if dVal ~= (ctrl.eff_show_detrimental ~= false) then
         ctrl.eff_show_detrimental = dVal
         onFilterChanged()
     end
 
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('effects', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##effAlpha', ctrl.eff_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('effects', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##effAlpha', ctrl.eff_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.eff_alpha or 0.85) then
         ctrl.eff_alpha = newAlpha
         core.saveLoadout(true)
     end
 
-    ImGui.SetNextItemWidth(core.px(120))
-    local newH = ImGui.SliderInt('Bar Height##effHeight', ctrl.eff_bar_height or 18, 12, 28)
+    core.formLabel('Bar height', 120)
+    local newH = ImGui.SliderInt('##effHeight', ctrl.eff_bar_height or 18, 12, 28)
     if newH ~= (ctrl.eff_bar_height or 18) then
         ctrl.eff_bar_height = newH
         core.saveLoadout(true)

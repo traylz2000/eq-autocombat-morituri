@@ -1280,14 +1280,14 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     accent(GOLD, 'Cooldown Monitor')
-    local lockVal = ImGui.Checkbox('Lock Popout Position & Size##cdLock', ctrl.cooldown_locked or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##cdLock', ctrl.cooldown_locked or false)
     if lockVal ~= (ctrl.cooldown_locked or false) then
         ctrl.cooldown_locked = lockVal
         core.saveLoadout(true)
     end
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('cooldowns', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Popout Opacity##cdAlpha', ctrl.cooldown_alpha or 0.90, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('cooldowns', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##cdAlpha', ctrl.cooldown_alpha or 0.90, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.cooldown_alpha or 0.90) then
         ctrl.cooldown_alpha = newAlpha
         core.saveLoadout(true)

@@ -4,6 +4,10 @@
 
 ## 2026-10-24
 
+- **HUD settings read like the main window (`lua/tac/hud_*.lua`, `lua/moriac.lua`).** The Group, XTarget, Effects, Gems, Cooldowns, Target & Player HUD and Target window settings (right-click menus and Setup -> Plugins -> Config) now put labels on the left in one column: *Scale*, *Opacity*, *Bar height*, *Sort by*, *Orientation*. Checkbox labels are plain sentences ("Lock position & size", "Show pet bars"). The Effects menu lost its second copy of the sort list (the *Sort by* dropdown stays). The Target window's "Header Button on Main Window" is now **Pin to sidebar**, like every other window.
+  - Plugins can use `core.formLabel`, `core.section` and `core.cardTitle`, the helpers the main window uses.
+  - Tests: Suites 77, 78 and 97 updated for the new labels (the Effects MenuItem sort list assertion is retired).
+
 - **Plugin windows: one way to show and close them (`lua/moriac.lua`, `lua/tac/*.lua`).**
   - The big "Window: Visible (Click to Hide)" / "Hidden (Click to Show)" buttons at the top of 21 plugin settings panels are gone. **Setup -> Plugins -> Config** now has one **Show *window*** checkbox for each window the plugin has (both of the Target & Player HUD's windows, both NMS Loot windows, and so on), next to *Enabled* and *Pin to sidebar*. The settings area in that dialog is bigger.
   - Chat's box reopens chat windows you closed one by one, the same as `/tacchat show`. The Hot Buttons box shows or hides every hotbar.

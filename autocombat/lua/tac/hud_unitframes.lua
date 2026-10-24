@@ -620,50 +620,50 @@ local function renderTargetWindowSettingsContent()
     ImGui.Spacing()
 
     local hdrOn = targetWindowHeaderButton()
-    local newHdr = ImGui.Checkbox('Header Button on Main Window##twHdr', hdrOn)
+    local newHdr = ImGui.Checkbox('Pin to sidebar##twHdr', hdrOn)
     if newHdr ~= hdrOn then setTargetWindowHeaderButton(newHdr) end
     if ImGui.IsItemHovered() and core.setTooltip then
-        core.setTooltip('Show a "Target" button on the main window header that opens / closes the Target window.')
+        core.setTooltip('List the Target window in the main window sidebar for one-click open / close.')
     end
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##twLock', ctrl.tw_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##twLock', ctrl.tw_lock or false)
     if lockVal ~= (ctrl.tw_lock or false) then
         ctrl.tw_lock = lockVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local totVal = ImGui.Checkbox('Show Target of Target##twTot', ctrl.tw_show_tot ~= false)
+    local totVal = ImGui.Checkbox('Show target of target##twTot', ctrl.tw_show_tot ~= false)
     if totVal ~= (ctrl.tw_show_tot ~= false) then
         ctrl.tw_show_tot = totVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local castVal = ImGui.Checkbox('Show Target Cast Bar##twCast', ctrl.tw_show_castbar ~= false)
+    local castVal = ImGui.Checkbox('Show target cast bar##twCast', ctrl.tw_show_castbar ~= false)
     if castVal ~= (ctrl.tw_show_castbar ~= false) then
         ctrl.tw_show_castbar = castVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local buffsVal = ImGui.Checkbox('Show Target Buffs##twBuffs', ctrl.tw_show_buffs ~= false)
+    local buffsVal = ImGui.Checkbox('Show target buffs##twBuffs', ctrl.tw_show_buffs ~= false)
     if buffsVal ~= (ctrl.tw_show_buffs ~= false) then
         ctrl.tw_show_buffs = buffsVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('target_window', 'Scale', 120) end
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('target_window', '', 120) end
     if ImGui.IsItemHovered() and core.setTooltip then
         core.setTooltip('Size of the whole Target window (text, bars, chips). Pick 1.5x or 2x for a frame that reads across the screen.')
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##twAlpha', ctrl.tw_alpha or 0.85, 0.20, 1.0, '%.2f')
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##twAlpha', ctrl.tw_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.tw_alpha or 0.85) then
         ctrl.tw_alpha = newAlpha
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newH = ImGui.SliderInt('Bar Height##twHeight', ctrl.tw_bar_height or 22, 10, 40)
+    core.formLabel('Bar height', 120)
+    local newH = ImGui.SliderInt('##twHeight', ctrl.tw_bar_height or 22, 10, 40)
     if newH ~= (ctrl.tw_bar_height or 22) then
         ctrl.tw_bar_height = newH
         if core.saveLoadout then core.saveLoadout(true) end
     end
     if ctrl.tw_show_buffs ~= false then
-        ImGui.SetNextItemWidth(core.px(120))
-        local newRows = ImGui.SliderInt('Buff Rows##twRows', ctrl.tw_buff_rows or 2, 0, 6)
+        core.formLabel('Buff rows', 120)
+        local newRows = ImGui.SliderInt('##twRows', ctrl.tw_buff_rows or 2, 0, 6)
         if newRows ~= (ctrl.tw_buff_rows or 2) then
             ctrl.tw_buff_rows = newRows
             if core.saveLoadout then core.saveLoadout(true) end
@@ -695,22 +695,22 @@ local function renderUfSettingsContent()
     end
     ImGui.Spacing()
 
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##ufLock', ctrl.uf_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##ufLock', ctrl.uf_lock or false)
     if lockVal ~= (ctrl.uf_lock or false) then
         ctrl.uf_lock = lockVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local hidePetVal = ImGui.Checkbox('Auto-Hide Pet Section When No Pets##ufHidePet', ctrl.uf_hide_empty_pets ~= false)
+    local hidePetVal = ImGui.Checkbox('Hide the pet section with no pet##ufHidePet', ctrl.uf_hide_empty_pets ~= false)
     if hidePetVal ~= (ctrl.uf_hide_empty_pets ~= false) then
         ctrl.uf_hide_empty_pets = hidePetVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local showEndVal = ImGui.Checkbox('Show Endurance Bar##ufEnd', ctrl.uf_show_endurance ~= false)
+    local showEndVal = ImGui.Checkbox('Show endurance bar##ufEnd', ctrl.uf_show_endurance ~= false)
     if showEndVal ~= (ctrl.uf_show_endurance ~= false) then
         ctrl.uf_show_endurance = showEndVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local showCastVal = ImGui.Checkbox('Show Cast Bars (Player & Target)##ufCast', ctrl.uf_show_castbar ~= false)
+    local showCastVal = ImGui.Checkbox('Show cast bars (yours and the target\'s)##ufCast', ctrl.uf_show_castbar ~= false)
     if showCastVal ~= (ctrl.uf_show_castbar ~= false) then
         ctrl.uf_show_castbar = showCastVal
         if core.saveLoadout then core.saveLoadout(true) end
@@ -718,12 +718,12 @@ local function renderUfSettingsContent()
     if ImGui.IsItemHovered() and core.setTooltip then
         core.setTooltip('A cast bar under the target HP bar (what the target is casting) and one in the player section (your own cast, with the seconds left). The rows stay reserved while idle so the bars below never move.')
     end
-    local showXpVal = ImGui.Checkbox('Show XP & AAXP Bars##ufXp', ctrl.uf_show_xp ~= false)
+    local showXpVal = ImGui.Checkbox('Show XP & AA XP bars##ufXp', ctrl.uf_show_xp ~= false)
     if showXpVal ~= (ctrl.uf_show_xp ~= false) then
         ctrl.uf_show_xp = showXpVal
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    local showParcelsVal = ImGui.Checkbox('Show Parcels Waiting Badge##ufParcels', ctrl.uf_show_parcels ~= false)
+    local showParcelsVal = ImGui.Checkbox('Show a badge when parcels are waiting##ufParcels', ctrl.uf_show_parcels ~= false)
     if showParcelsVal ~= (ctrl.uf_show_parcels ~= false) then
         ctrl.uf_show_parcels = showParcelsVal
         if core.saveLoadout then core.saveLoadout(true) end
@@ -731,21 +731,21 @@ local function renderUfSettingsContent()
     if ImGui.IsItemHovered() and core.setTooltip then
         core.setTooltip('Shows a parcel badge on the player section when parcels are waiting at a parcel merchant (parcels plugin), like the client player window icon.')
     end
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('unit_frames', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##ufAlpha', ctrl.uf_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('unit_frames', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##ufAlpha', ctrl.uf_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.uf_alpha or 0.85) then
         ctrl.uf_alpha = newAlpha
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newH = ImGui.SliderInt('Bar Height##ufHeight', ctrl.uf_bar_height or 14, 10, 24)
+    core.formLabel('Bar height', 120)
+    local newH = ImGui.SliderInt('##ufHeight', ctrl.uf_bar_height or 14, 10, 24)
     if newH ~= (ctrl.uf_bar_height or 14) then
         ctrl.uf_bar_height = newH
         if core.saveLoadout then core.saveLoadout(true) end
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newRows = ImGui.SliderInt('Target Box Buff Rows##ufTbRows', ctrl.uf_target_buff_rows or 2, 0, 6)
+    core.formLabel('Target buff rows', 120)
+    local newRows = ImGui.SliderInt('##ufTbRows', ctrl.uf_target_buff_rows or 2, 0, 6)
     if newRows ~= (ctrl.uf_target_buff_rows or 2) then
         ctrl.uf_target_buff_rows = newRows
         if core.saveLoadout then core.saveLoadout(true) end
@@ -753,8 +753,8 @@ local function renderUfSettingsContent()
     if ImGui.IsItemHovered() and core.setTooltip then
         core.setTooltip('Rows of target buff chips reserved in the fixed-height target box at the top of the window. The box never resizes, so the player bars below stay put; extra buffs scroll inside the box.')
     end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newMaxB = ImGui.SliderInt('Max Buffs##ufMaxB', ctrl.uf_buff_max or 30, 5, 50)
+    core.formLabel('Max buffs', 120)
+    local newMaxB = ImGui.SliderInt('##ufMaxB', ctrl.uf_buff_max or 30, 5, 50)
     if newMaxB ~= (ctrl.uf_buff_max or 30) then
         ctrl.uf_buff_max = newMaxB
         if core.saveLoadout then core.saveLoadout(true) end

@@ -248,15 +248,14 @@ local function renderGemSettingsContent()
     accent(GOLD, 'Spell Gem Bar Options')
     ImGui.Separator()
 
-    local lockVal = ImGui.Checkbox('Lock Window Position & Size##gemLock', ctrl.gem_lock or false)
+    local lockVal = ImGui.Checkbox('Lock position & size##gemLock', ctrl.gem_lock or false)
     if lockVal ~= (ctrl.gem_lock or false) then
         ctrl.gem_lock = lockVal
         core.saveLoadout(true)
     end
 
     -- Orientation selection
-    ImGui.Text('Orientation:')
-    ImGui.SameLine()
+    core.formLabel('Orientation')
     if ImGui.RadioButton('Auto##gemOrientAuto', ctrl.gem_orientation == 'Auto' or not ctrl.gem_orientation) then
         ctrl.gem_orientation = 'Auto'
         core.saveLoadout(true)
@@ -272,21 +271,21 @@ local function renderGemSettingsContent()
         core.saveLoadout(true)
     end
 
-    local badgeVal = ImGui.Checkbox('Show Gem Numbers (#1..#N)##gemBadges', ctrl.gem_show_badges ~= false)
+    local badgeVal = ImGui.Checkbox('Show gem numbers##gemBadges', ctrl.gem_show_badges ~= false)
     if badgeVal ~= (ctrl.gem_show_badges ~= false) then
         ctrl.gem_show_badges = badgeVal
         core.saveLoadout(true)
     end
 
-    local timerVal = ImGui.Checkbox('Show Cooldown Timers##gemTimer', ctrl.gem_show_timer ~= false)
+    local timerVal = ImGui.Checkbox('Show cooldown timers##gemTimer', ctrl.gem_show_timer ~= false)
     if timerVal ~= (ctrl.gem_show_timer ~= false) then
         ctrl.gem_show_timer = timerVal
         core.saveLoadout(true)
     end
 
-    if core.drawWindowScaleControl then core.drawWindowScaleControl('spell_gems', 'Scale', 120) end
-    ImGui.SetNextItemWidth(core.px(120))
-    local newAlpha = ImGui.SliderFloat('Opacity##gemAlpha', ctrl.gem_alpha or 0.85, 0.20, 1.0, '%.2f')
+    if core.drawWindowScaleControl then core.formLabel('Scale', 120); core.drawWindowScaleControl('spell_gems', '', 120) end
+    core.formLabel('Opacity', 120)
+    local newAlpha = ImGui.SliderFloat('##gemAlpha', ctrl.gem_alpha or 0.85, 0.20, 1.0, '%.2f')
     if newAlpha ~= (ctrl.gem_alpha or 0.85) then
         ctrl.gem_alpha = newAlpha
         core.saveLoadout(true)

@@ -7238,6 +7238,12 @@ function runtime.initPluginManager()
             popTheme              = UI.popTheme,
             accent                = UI.accent,
             setTooltip            = UI.setTooltip,
+            -- Main-window layout helpers, so plugin settings read the same:
+            -- formLabel('Opacity') then the widget with a '##id' label;
+            -- section(key, label, open) is a remembered collapsing header.
+            formLabel             = UI.formLabel,
+            section               = function(key, label, defaultOpen) return UI.pageSection('plg_' .. tostring(key), label, defaultOpen) end,
+            cardTitle             = UI.cardTitle,
             preBeginWindow        = UI.preBeginWindow,
             postBeginWindow       = UI.postBeginWindow,
             preEndWindow          = UI.preEndWindow,
