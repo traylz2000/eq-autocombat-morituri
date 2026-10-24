@@ -17,7 +17,7 @@ Step-by-step instructions with a check after each step are on the [main project 
 3. Copy this repo's `autocombat/lua` and `autocombat/config` folders over your MacroQuest folder. Overwrite if asked. Your own settings are never touched.
 4. Start `MacroQuest.exe`, then log into Project Morituri.
 
-MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac`.
+MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac` (or the short form `/lua run mac`). Only one copy runs at a time: starting the other name while one is running just prints a note.
 
 **Coming from Triune or the earlier Morituri port?** Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
 

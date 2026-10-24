@@ -71,6 +71,7 @@ You can delete the Desktop folder now.
    ```
    /lua run moriac
    ```
+   (`/lua run mac` is a shorter way to type the same thing.)
 5. Look at the top of the MoriAC window. It should show **all four** of your classes. If one is missing, type `/ac redetect` and press Enter.
 
 You are done installing. To set up your spells and start fighting, read **[First run](autocombat/README.md#first-run)**.
@@ -88,7 +89,8 @@ Type these in the EverQuest chat box:
 | `/ac pause` | Pause auto combat |
 | `/ac restart` | Save and reload MoriAC |
 | `/ac redetect` | Detect your four classes again |
-| `/lua stop moriac` | Turn MoriAC off completely |
+| `/lua run mac` | Start MoriAC (short for `/lua run moriac`) |
+| `/lua stop moriac` | Turn MoriAC off completely (`/lua stop mac` if you started it with `mac`) |
 
 The **Help** page in the MoriAC window lists every command.
 

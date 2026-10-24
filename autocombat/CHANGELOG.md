@@ -4,6 +4,10 @@
 
 ## 2026-10-24
 
+- **`/lua run mac` starts MoriAC** (short for Morituri Auto Combat). `lua/mac.lua` loads `moriac.lua` under the name `mac`, so `/ac restart` comes back as `mac` and the exit hint says `/lua stop mac`.
+  - Only one copy can run. Starting `mac` while `moriac` is running (or the other way round) prints "already running as /lua run moriac" and stops, so two copies never bind `/ac` and drive the character together.
+  - Tests: Suite M6 runs `mac.lua` and the guard both ways; Suite M4's restart assertion is updated.
+
 - **HUD settings read like the main window (`lua/tac/hud_*.lua`, `lua/moriac.lua`).** The Group, XTarget, Effects, Gems, Cooldowns, Target & Player HUD and Target window settings (right-click menus and Setup -> Plugins -> Config) now put labels on the left in one column: *Scale*, *Opacity*, *Bar height*, *Sort by*, *Orientation*. Checkbox labels are plain sentences ("Lock position & size", "Show pet bars"). The Effects menu lost its second copy of the sort list (the *Sort by* dropdown stays). The Target window's "Header Button on Main Window" is now **Pin to sidebar**, like every other window.
   - Plugins can use `core.formLabel`, `core.section` and `core.cardTitle`, the helpers the main window uses.
   - The same pass for Floating Damage (*Text scale*, *Effects intensity*, *Damage tier scale*), Box Net (*Allowlist*, *Heartbeat every*, *Peer timeout*), Auto AA, Cursor and DPS settings.

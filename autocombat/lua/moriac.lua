@@ -4,7 +4,7 @@
 -- plugin host). A fork of Triune AutoCombat for Project Morituri's 4-class
 -- characters, with a rebuilt main window.
 -- ----------------------------------------------------------------------------
--- Standalone MacroQuest ImGui script. Run with:  /lua run moriac
+-- Standalone MacroQuest ImGui script. Run with:  /lua run moriac  (or /lua run mac)
 -- Loads moriac_data.lua from your MQ config dir for the era-correct spell +
 -- activated-AA lists, and persists each character's loadout and settings to
 -- moriac_loadout_<server>_<char>.lua next to it (triune_* files from before
@@ -39,6 +39,18 @@ local ImGui             = require('ImGui')
 local scriptDir         = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 package.path            = scriptDir .. "?.lua;" .. package.path
 local VERSION           = '0.9'
+-- One copy only: /lua run mac (lua/mac.lua) starts this same file, and two
+-- copies would both bind /ac and both drive the character.
+do
+    local other = (rawget(_G, 'MORIAC_SCRIPT_NAME') == 'mac') and 'moriac' or 'mac'
+    if select(2, pcall(function()
+        local sc = mq.TLO.Lua.Script(other)
+        return (sc() and sc.Status() == 'RUNNING') == true
+    end)) == true then
+        print(string.format('\ay[MoriAC]\ax already running as /lua run %s. Use /ac, or /lua stop %s first.', other, other))
+        return
+    end
+end
 local open              = true
 -- File-backed diagnostic logger. Hooked into print() right away so every
 -- chat line from here on (core and plugins) is captured in its ring buffer;
@@ -6696,7 +6708,7 @@ end
 -- the game in mq2lua (first in-game report). The main loop picks the request
 -- up between passes (runtime.performRestart) and ends the script through its
 -- normal shutdown path.
-runtime.SCRIPT_NAME = 'moriac'
+runtime.SCRIPT_NAME = rawget(_G, 'MORIAC_SCRIPT_NAME') or 'moriac'   -- 'mac' when started through lua/mac.lua
 function runtime.restartScript()
     runtime.restartRequested = true
 end
@@ -25304,11 +25316,12 @@ end)
 runtime.initPluginManager()
 mq.imgui.init('TriunePluginsUI', UI.drawPlugins)
 mq.imgui.init('TriuneAutoCombat', UI.draw)
-print('\ag[MoriAC]\ax loaded v' ..
-    VERSION ..
-    '. Data: ' ..
-    (DATA_OK and 'moriac_data.lua OK' or 'MISSING -- copy config/moriac_data.lua') ..
-    '. Use /ac run | /ac pause | /ac status | /ac spellbook | /ac <mode>. /lua stop moriac to exit.')
+-- (built in a function: a long concatenation here costs main-chunk registers)
+function runtime.loadedBanner()
+    return string.format('\ag[MoriAC]\ax loaded v%s. Data: %s. Use /ac run | /ac pause | /ac status | /ac spellbook | /ac <mode>. /lua stop %s to exit.',
+        VERSION, DATA_OK and 'moriac_data.lua OK' or 'MISSING -- copy config/moriac_data.lua', runtime.SCRIPT_NAME)
+end
+print(runtime.loadedBanner())
 function runtime.checkStartupPluginStatus()
     if not navLoaded() then
         mq.cmd('/popup [MoriAC] WARNING: MQ2Nav is NOT loaded! Load via /plugin mq2nav')
