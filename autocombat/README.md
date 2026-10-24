@@ -113,6 +113,7 @@ Type `/ac help` in game for the full list.
 | Command | What it does |
 |---|---|
 | `/ac` | Start or pause |
+| `/moriac ...` | Same as `/ac ...` (`/triune ...` also still works) |
 | `/ac run` / `/ac pause` | Start / pause |
 | `/ac manual`, `/ac puller camp`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
 | `/ac ma <name>` | Set the Main Assist |

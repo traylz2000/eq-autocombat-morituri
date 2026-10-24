@@ -9089,101 +9089,81 @@ UI.HELP_CONDITIONS = {
         { when = 'add is loose',         desc = 'Casts when an unmezzed or uncontrolled add is detected on your Extended Target list.' },
 }
 
-function UI.drawHelpTab()
-
-    if ImGui.CollapsingHeader('Slash Commands', ImGuiTreeNodeFlags.DefaultOpen) then
-        accent(GOLD, 'Commands (Alias: /ac or /triune):')
-        local tableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-        if ImGui.BeginTable('##HelpCmdTable', 2, tableFlags) then
-            ImGui.TableSetupColumn('Command', ImGuiTableColumnFlags.WidthFixed, UI.px(180))
-            ImGui.TableSetupColumn('Description', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableHeadersRow()
-
-            local commands = UI.HELP_COMMANDS
-
-            for _, entry in ipairs(commands) do
-                ImGui.TableNextRow()
-                ImGui.TableNextColumn()
-                accent(ARC, entry.cmd)
-                ImGui.TableNextColumn()
-                ImGui.Text(entry.desc)
+-- Help page rows: { key, colour, description } per section, built once.
+function UI.helpSections()
+    if UI.helpSectionCache then return UI.helpSectionCache end
+    local cmds, modes, targets, whens = {}, {}, {}, {}
+    for _, e in ipairs(UI.HELP_COMMANDS) do cmds[#cmds + 1] = { e.cmd, ARC, e.desc } end
+    for _, primary in ipairs(MODES.PRIMARY) do
+        if MODES.SUBMODES[primary] then
+            for _, sub in ipairs(MODES.SUBMODES[primary]) do
+                modes[#modes + 1] = { primary .. ' (' .. sub .. ')', GOOD, MODES.SUB_DESC[primary .. ':' .. sub] or '' }
             end
-            ImGui.EndTable()
+        else
+            modes[#modes + 1] = { primary, GOOD, MODES.DESC[primary] or '' }
         end
     end
+    for _, e in ipairs(UI.HELP_TARGETS) do targets[#targets + 1] = { e.opt, e.color, e.desc } end
+    for _, e in ipairs(UI.HELP_CONDITIONS) do whens[#whens + 1] = { e.when, ARC, e.desc } end
+    UI.helpSectionCache = {
+        { key = 'helpCmds', title = 'Slash commands (/ac, also /moriac)', col = 'Command', rows = cmds },
+        { key = 'helpModes', title = 'Combat modes', col = 'Mode', rows = modes },
+        { key = 'helpTargets', title = 'Targets (who a line is used on)', col = 'Target', rows = targets },
+        { key = 'helpWhens', title = 'Conditions (when a line fires)', col = 'Condition', rows = whens },
+    }
+    return UI.helpSectionCache
+end
 
+function UI.drawHelpTab()
+    ImGui.SetNextItemWidth(UI.px(260))
+    local q = ImGui.InputTextWithHint('##helpFind', 'Search commands, modes, targets...', runtime.helpQuery or '')
+    if type(q) == 'string' then runtime.helpQuery = q end
+    local ql = (runtime.helpQuery or ''):lower()
+    if ql ~= '' then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Clear##helpFindClear') then runtime.helpQuery = ''; ql = '' end
+    end
+    ImGui.Spacing()
 
-    if ImGui.CollapsingHeader('Combat Modes', ImGuiTreeNodeFlags.DefaultOpen) then
-        accent(GOLD, 'Available Combat Modes & Behavior:')
-        local tableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-        if ImGui.BeginTable('##HelpModeTable', 2, tableFlags) then
-            ImGui.TableSetupColumn('Mode', ImGuiTableColumnFlags.WidthFixed, UI.px(180))
-            ImGui.TableSetupColumn('Behavior Description', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableHeadersRow()
-
-            for _, primaryName in ipairs(MODES.PRIMARY) do
-                if MODES.SUBMODES[primaryName] then
-                    for _, subName in ipairs(MODES.SUBMODES[primaryName]) do
-                        local fullKey = primaryName .. ':' .. subName
+    local anyShown = false
+    for _, sec in ipairs(UI.helpSections()) do
+        local rows = sec.rows
+        if ql ~= '' then
+            rows = {}
+            for _, r in ipairs(sec.rows) do
+                if r[1]:lower():find(ql, 1, true) or r[3]:lower():find(ql, 1, true) then rows[#rows + 1] = r end
+            end
+        end
+        if #rows > 0 then
+            anyShown = true
+            local open
+            if ql ~= '' then
+                if ImGui.SetNextItemOpen then pcall(ImGui.SetNextItemOpen, true) end
+                open = ImGui.CollapsingHeader(string.format('%s (%d)###sec_%s', sec.title, #rows, sec.key))
+            else
+                open = UI.pageSection(sec.key, sec.title, sec.key == 'helpCmds')
+            end
+            if open then
+                local flags = bit.bor(ImGuiTableFlags.RowBg or 0, ImGuiTableFlags.SizingFixedFit or 0, ImGuiTableFlags.BordersInnerH or 0)
+                if ImGui.BeginTable('##' .. sec.key .. 'Table', 2, flags) then
+                    ImGui.TableSetupColumn(sec.col, ImGuiTableColumnFlags.WidthFixed, UI.px(200))
+                    ImGui.TableSetupColumn('What it does', ImGuiTableColumnFlags.WidthStretch)
+                    ImGui.TableHeadersRow()
+                    for _, r in ipairs(rows) do
                         ImGui.TableNextRow()
                         ImGui.TableNextColumn()
-                        accent(GOOD, primaryName .. ' (' .. subName .. ')')
+                        accent(r[2], r[1])
                         ImGui.TableNextColumn()
-                        ImGui.TextWrapped(MODES.SUB_DESC[fullKey] or '')
+                        ImGui.TextWrapped(r[3])
                     end
-                else
-                    ImGui.TableNextRow()
-                    ImGui.TableNextColumn()
-                    accent(GOOD, primaryName)
-                    ImGui.TableNextColumn()
-                    ImGui.TextWrapped(MODES.DESC[primaryName] or '')
+                    ImGui.EndTable()
                 end
             end
-            ImGui.EndTable()
         end
     end
+    if not anyShown then ImGui.TextDisabled('Nothing matches "' .. (runtime.helpQuery or '') .. '".') end
 
-    if ImGui.CollapsingHeader('Spell & Ability Target Filters', ImGuiTreeNodeFlags.DefaultOpen) then
-        accent(GOLD, 'Target Resolution Options (Spell Gems, Clickies, AAs, Discs, Actions):')
-        local tableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)
-        if ImGui.BeginTable('##HelpTargetTable', 2, tableFlags) then
-            ImGui.TableSetupColumn('Target Option', ImGuiTableColumnFlags.WidthFixed, UI.px(180))
-            ImGui.TableSetupColumn('Targeting Behavior & Resolution', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableHeadersRow()
-
-            local targets = UI.HELP_TARGETS
-
-            for _, entry in ipairs(targets) do
-                ImGui.TableNextRow()
-                ImGui.TableNextColumn()
-                accent(entry.color, entry.opt)
-                ImGui.TableNextColumn()
-                ImGui.TextWrapped(entry.desc)
-            end
-            ImGui.EndTable()
-        end
-
-        ImGui.Spacing()
-        accent(GOLD, 'Cast Conditions ("When" Triggers):')
-        if ImGui.BeginTable('##HelpWhenTable', 2, tableFlags) then
-            ImGui.TableSetupColumn('Condition', ImGuiTableColumnFlags.WidthFixed, UI.px(180))
-            ImGui.TableSetupColumn('Activation Criteria', ImGuiTableColumnFlags.WidthStretch)
-            ImGui.TableHeadersRow()
-
-            local conditions = UI.HELP_CONDITIONS
-
-            for _, entry in ipairs(conditions) do
-                ImGui.TableNextRow()
-                ImGui.TableNextColumn()
-                accent(ARC, entry.when)
-                ImGui.TableNextColumn()
-                ImGui.TextWrapped(entry.desc)
-            end
-            ImGui.EndTable()
-        end
-
-        ImGui.Spacing()
-        accent(GOLD, 'AA exclusion groups (AAs page, Group setting):')
+    if ql == '' and UI.pageSection('helpAaGroups', 'AA exclusion groups', false) then
         ImGui.TextWrapped(
             'Put AAs that grant the same effect (e.g. Bloodlust and Rage of Rallos Zek, which both let every proc fire on every swing) ' ..
             'in the same letter group. Only one AA per group runs at a time: the one listed highest on the AAs page fires first, and the ' ..
@@ -25229,6 +25209,8 @@ end
 
 mq.unbind('/triune')
 mq.bind('/triune', triuneCommand)
+mq.unbind('/moriac')
+mq.bind('/moriac', triuneCommand)
 
 mq.unbind('/moriacrun')
 mq.bind('/moriacrun', runtime.triuneToggle)

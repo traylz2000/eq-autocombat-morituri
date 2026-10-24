@@ -4,6 +4,10 @@
 
 ## 2026-10-24
 
+- **Help page is searchable (`lua/moriac.lua`).** One box filters every reference table at once (slash commands, combat modes, targets, conditions) by name or description. Typing *heal* shows only the matching commands, targets and conditions, each section with its match count. With no search, the sections are remembered collapsibles (commands open). Long descriptions wrap instead of running off the page.
+- **`/moriac` command alias**, the same as `/ac`. `/triune` still works.
+- Confirmed in game: 4-class detection and the Spells page (see PROJECT.md).
+
 - **Fix: `/ac restart` crashed the game** (in-game report: "MacroQuest caught a crash", `mq2lua.dll`, `vsprintf_s_l`). Inherited from upstream: `/ac restart` and the Settings *Restart* button ran `/lua stop moriac` **from inside a callback**, the `/ac` bind or the ImGui render callback. That stopped the Lua state mid-callback, which this project's own rules list as an MQ crash.
   - `runtime.restartScript()` now only requests the restart. The main loop picks it up between passes (`runtime.performRestart`): it saves, queues `/timed 15 /lua run moriac`, and leaves the loop, so the script ends through its normal shutdown (stop movement, save, close log) before the relaunch fires.
   - Tests: Suite 101 checks that the callback path never stops itself. The smoke test requests a restart, steps the real main loop, and checks that the relaunch was queued, no `/lua stop` was sent, and the script ended.
