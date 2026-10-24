@@ -254,6 +254,7 @@ local function sanitizeModeConfig(c)
     if c.show_parcels == nil then c.show_parcels = false end
     if c.show_nmsloot == nil then c.show_nmsloot = false end
     if c.show_gm_commands == nil then c.show_gm_commands = false end
+    if type(c.ui_page) ~= 'string' then c.ui_page = 'overview' end
     if c.cooldown_alpha == nil then c.cooldown_alpha = 0.90 end
     if c.cooldown_locked == nil then c.cooldown_locked = false end
     if c.cooldown_view_mode == nil then c.cooldown_view_mode = 'table' end
@@ -510,6 +511,7 @@ local function defaultCtrl()
         gem_show_timer           = true,
         burn                     = false,
         compact                  = false,
+        ui_page                  = 'overview', -- main window sidebar page (UI.PAGES id)
         ui_scale                 = 1.0,
         window_scale             = {},
         mini_lock                = false,
@@ -789,7 +791,7 @@ function runtime.quartetHasPetClass()
 end
 
 local COMBO_OPTIONS = {
-    FRIENDLY = { 'Myself', 'Main Assist', 'Tank', 'Lowest-HP Ally', 'Me, then Group', 'Group, then Me', 'Whole Group', 'Pet' },
+    FRIENDLY = { 'Myself', 'Main Assist', 'Tank', 'Lowest-HP Ally', 'Me, then Group', 'Group, then Me', 'Group + Pets', 'Whole Group', 'Pet' },
     ENEMY    = { 'Current Target', 'Assist Target', 'Nearest Add', 'Unmezzed Add', 'All Enemies' },
     TARGETS  = {},
     WHENS    = { 'HP <=', 'target HP <=', 'target HP between', 'my HP <=', 'my Mana <=', 'missing buff', 'missing pet',
@@ -8129,6 +8131,38 @@ function runtime.initPluginManager()
     -- of buttons drawn.
     pm.HEADER_BUTTONS_PER_ROW = 8
     function pm.invalidateHeaderButtons() pm.headerButtonCache = nil end
+
+    -- Body of the main window's Windows menu (call between BeginPopup /
+    -- EndPopup or BeginMenu / EndMenu): every active plugin window as a
+    -- checkable item, then the standalone scripts. Returns items drawn.
+    function pm.drawWindowsMenu()
+        local nowWm = os.clock()
+        local wm = pm.windowsMenuCache
+        if not wm or (nowWm - wm.at) >= 1.0 then
+            wm = { at = nowWm, entries = pm.windowPlugins(false), scripts = pm.headerScripts() }
+            pm.windowsMenuCache = wm
+        end
+        local drawn = 0
+        for _, e in ipairs(wm.entries) do
+            local label = tostring(e.window.label or e.id)
+            if ImGui.MenuItem(label .. '##wmPlg_' .. e.id, nil, pm.isWindowOpen(e.id)) then
+                pm.toggleWindow(e.id)
+            end
+            if ImGui.IsItemHovered() and e.window.tooltip then UI.setTooltip('%s', tostring(e.window.tooltip)) end
+            drawn = drawn + 1
+        end
+        if #wm.scripts > 0 then
+            if drawn > 0 then ImGui.Separator() end
+            for _, sc in ipairs(wm.scripts) do
+                if ImGui.MenuItem(pm.scriptButtonLabel(sc) .. '##wmScr_' .. tostring(sc.file), nil, pm.isScriptRunning(sc)) then
+                    pm.toggleScript(sc)
+                end
+                drawn = drawn + 1
+            end
+        end
+        if drawn == 0 then ImGui.TextDisabled('No plugin windows are enabled (Setup -> Plugins).') end
+        return drawn
+    end
     function pm.drawHeaderButtons(buttonsOnRow)
         -- windowPlugins / headerScripts allocate and sort per call; rebuild
         -- the ordered lists at most once a second (plugin enable/disable and
@@ -8794,90 +8828,6 @@ function UI.toggleTool(scriptName, stopCmd)
     return 'started'
 end
 
-function UI.drawHeaderBar()
-    UI.updateTracker()
-
-    -- Toolbar buttons (with compact vertical padding)
-    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 5, 2)
-
-    if ImGui.Button('Compact Mode##hdrCompact') then
-        ctrl.compact = true
-        runtime.saveLoadout(true)
-    end
-    if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Switches Triune AutoCombat into a sleek compact HUD overlay window.')
-    end
-
-    -- Plugin window toggles (Spellbook, Map, DPS, Cursor, Cooldowns, HUDs, ...).
-    -- Which plugins get a button here is chosen per plugin on Settings -> Plugins.
-    -- initPluginManager runs plugin chunks / onInit and must never execute on
-    -- the render thread; it is always initialised before the first frame.
-    -- (No early return here: it would skip the PopStyleVar below.)
-    local pm = runtime.pluginManager
-    if pm and type(pm.drawHeaderButtons) == 'function' then
-        -- Compact Mode already occupies the first slot of the first row; the
-        -- manager keeps rows to 8 buttons (pm.HEADER_BUTTONS_PER_ROW). An
-        -- error here would abort the whole ImGui frame ("Missing End()"), so
-        -- it is contained and reported once instead.
-        local ok, drawn = pcall(pm.drawHeaderButtons, 1)
-        if not ok then
-            if runtime.lastHeaderButtonErr ~= tostring(drawn) then
-                runtime.lastHeaderButtonErr = tostring(drawn)
-                print('\ar[Triune]\ax header buttons failed: ' .. tostring(drawn))
-            end
-            drawn = 0
-        end
-        if drawn == 0 then
-            ImGui.SameLine()
-            ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], '(no plugin / script buttons - enable them on Settings -> Plugins)')
-        end
-    elseif pm then
-        ImGui.SameLine()
-        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], '(plugin manager incomplete - /lua stop triune, then /lua run triune)')
-    end
-
-    ImGui.PopStyleVar()
-
-    if not DATA_OK then
-        accent(WARN,
-            'No triune_data.lua found in your MQ config folder -- run extract_spells.py and copy it there. Spell/AA lists will be empty.')
-    end
-    if not navLoaded() then
-        accent(WARN,
-            'MQ2Nav plugin is NOT loaded. Pathing, hunter roaming, chase, and return-to-camp require MQ2Nav.')
-        ImGui.SameLine()
-        if ImGui.Button('Load MQ2Nav##hdrLoadNav') then
-            mq.cmd('/plugin mq2nav'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-        end
-        if ImGui.IsItemHovered() then
-            UI.setTooltip('Executes /plugin mq2nav to load the MQ2Nav plugin.')
-        end
-    elseif not navMeshLoaded() then
-        local curZone = mq.TLO.Zone.ShortName() or 'current zone'
-        accent(WARN,
-            string.format('No NavMesh loaded for zone "%s". Pathing, roaming, and chase require a zone mesh.', curZone))
-        ImGui.SameLine()
-        if ImGui.Button('Reload Mesh##hdrReloadMesh') then
-            mq.cmd('/nav reload'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-        end
-        if ImGui.IsItemHovered() then
-            UI.setTooltip('Executes /nav reload to attempt reloading the zone navmesh.')
-        end
-    end
-    if not stickLoaded() then
-        accent(WARN,
-            'MQ2MoveUtils plugin is NOT loaded. Melee stick, combat positioning, and unstuck require MQ2MoveUtils.')
-        ImGui.SameLine()
-        if ImGui.Button('Load MQ2MoveUtils##hdrLoadMoveUtils') then
-            mq.cmd('/plugin mq2moveutils'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
-        end
-        if ImGui.IsItemHovered() then
-            UI.setTooltip('Executes /plugin mq2moveutils to load the MQ2MoveUtils plugin.')
-        end
-    end
-    ImGui.Separator()
-end
-
 function UI.drawClassPicker()
     local CLASS_PICKER_OPTIONS = { '-- None --', 'War', 'Clr', 'Pal', 'Rng', 'SK', 'Dru', 'Mnk', 'Brd', 'Rog', 'Shm', 'Nec',
         'Wiz', 'Mag', 'Enc', 'Bst', 'Ber' }
@@ -8981,6 +8931,7 @@ UI.HELP_TARGETS = {
         { opt = 'F: Lowest-HP Ally',  color = GOOD, desc = 'Scans yourself and all group members, automatically targeting the ally with the lowest current HP percentage. Ideal for reactive heals.' },
         { opt = 'F: Me, then Group',  color = GOOD, desc = 'Checks you first, then present, living group members in range. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
         { opt = 'F: Group, then Me',  color = GOOD, desc = 'Checks present, living group members in range first, then you. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
+        { opt = 'F: Group + Pets',    color = GOOD, desc = 'Single-target heals and buffs for everyone: you, present group members in range, all of your pets (every pet class) and group members\' pets. The most hurt one whose condition is met is picked first.' },
         { opt = 'F: Whole Group',     color = GOOD, desc = 'Targets your character to cast group-wide spells (group heals, group buffs, group auras).' },
         { opt = 'F: Pet',             color = GOOD, desc = 'Targets your summoned pet. On multi-class quartet characters with multiple pets, prioritizes the pet class matching the spell, lowest HP pet, or pet missing the buff.' },
 }
@@ -9006,7 +8957,6 @@ UI.HELP_CONDITIONS = {
 }
 
 function UI.drawHelpTab()
-    if not ImGui.BeginTabItem('Help') then return end
 
     if ImGui.CollapsingHeader('Slash Commands', ImGuiTreeNodeFlags.DefaultOpen) then
         accent(GOLD, 'Commands (Alias: /ac or /triune):')
@@ -9106,8 +9056,6 @@ function UI.drawHelpTab()
             'in the same letter group. Only one AA per group runs at a time: the one listed highest in the AAs tab fires first, and the ' ..
             'next one fires as soon as that effect drops, so they chain back-to-back instead of overlapping and wasting one.')
     end
-
-    ImGui.EndTabItem()
 end
 
 -- Per gem row per frame this did ~8 TLO calls in fresh pcall closures;
@@ -9577,10 +9525,8 @@ function UI.drawGemTabHeader(gemsTable)
 end
 
 function UI.drawGemTab()
-    if not ImGui.BeginTabItem('Spell Gems') then return end
     UI.drawGemTabHeader(loadout.gems)
     UI.drawGemList(loadout.gems, 'gem', true, true)
-    ImGui.EndTabItem()
 end
 
 function UI.addClickieFromCursor()
@@ -9659,7 +9605,6 @@ function UI.addClickieFromCursor()
 end
 
 function UI.drawClickieTab()
-    if not ImGui.BeginTabItem('Clickies') then return end
     ImGui.TextWrapped('Clickable Items: Manage inventory and equipped items with activatable spell effects. Click [+ Add Item on Cursor] while holding an item to add it.')
     if ImGui.IsItemHovered() then
         UI.setTooltip('Configure automated clickies (inventory/worn items). Items are clicked automatically when conditions are met.')
@@ -9846,12 +9791,10 @@ function UI.drawClickieTab()
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
-    ImGui.EndTabItem()
 end
 
 -- UI: Innate Combat Abilities & Skills tab
 function UI.drawAbilitiesTab()
-    if not ImGui.BeginTabItem('Abilities') then return end
     ImGui.TextWrapped('Innate Combat Abilities & Skills (/doability) -- Kick, Bash, Slam, Mend, Backstab, Monk strikes, Taunt, Disarm, Frenzy, etc.')
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip('Innate class actions and combat abilities operate independently of spell gems and fire automatically when ready or when conditions are met.')
@@ -10037,7 +9980,6 @@ function UI.drawAbilitiesTab()
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
-    ImGui.EndTabItem()
 end
 
 -- UI: activated AAs tab
@@ -10079,7 +10021,6 @@ function runtime.aaGroupBusyCached(name, a)
 end
 
 function UI.drawAATab()
-    if not ImGui.BeginTabItem('AAs') then return end
     ImGui.TextWrapped('Activated Alternate Advancements (each has its own timer -- all fire when ready). Grouped by cooldown. Use Grp to chain AAs that do the same thing.')
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip(
@@ -10236,7 +10177,6 @@ function UI.drawAATab()
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
-    ImGui.EndTabItem()
 end
 
 function runtime.wrapText(text, maxLineLen)
@@ -10406,7 +10346,6 @@ function runtime.showAATabTooltip(name, cls, secNum, tier)
 end
 
 function UI.drawDiscTab()
-    if not ImGui.BeginTabItem('Disciplines') then return end
     ImGui.TextWrapped(
         'Disciplines (/disc) -- no cooldown data from the extractor to group by tier, so listed flat per class. '
         ..
@@ -10543,7 +10482,6 @@ function UI.drawDiscTab()
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
-    ImGui.EndTabItem()
 end
 
 local function setManualHunterPetHold(on, force)
@@ -10769,33 +10707,6 @@ function UI.drawBurnButton(idSuffix, w, h, onLabel, offLabel)
     end
 end
 
-function UI.drawActionControls()
-    UI.drawStartPauseButton('##btnRun', 130, 24)
-    ImGui.SameLine()
-    UI.drawBurnButton('##btnBurn', 130, 24)
-
-    ImGui.SameLine(0, UI.px(14))
-    local modeStr = ctrl.mode or 'Manual'
-    if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
-        modeStr = string.format('%s (%s)', ctrl.mode, ctrl.submode)
-    end
-    ImGui.AlignTextToFramePadding()
-    ImGui.TextDisabled('Mode:')
-    ImGui.SameLine()
-    if ctrl.running then
-        accent(GOLD, modeStr)
-        ImGui.SameLine()
-        accent(GOOD, '[RUNNING]')
-    else
-        accent(MUTED, modeStr)
-        ImGui.SameLine()
-        accent(WARN, '[PAUSED]')
-    end
-    if ImGui.IsItemHovered() then
-        UI.setTooltip('Active combat mode and engine execution state.')
-    end
-end
-
 function UI.drawStatusProgressBar(fraction, w, h, text, r, g, b, a)
     local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
     local pCount = 0
@@ -10973,7 +10884,6 @@ end
 
 -- UI: status tab
 function UI.drawStatusTab()
-    if not ImGui.BeginTabItem('Status') then return end
 
     -- 1. Live Engine & Mode Overview with Integrated Session Tracker
     local inCombat = hasActualNPCXtarget()
@@ -11762,8 +11672,6 @@ function UI.drawStatusTab()
             accent(GOOD, 'No active hostile combatants on Extended Target list.')
         end
     end
-
-    ImGui.EndTabItem()
 end
 
 -- Called from several UI panels every frame; each call does Spawn / Target
@@ -12067,7 +11975,6 @@ end
 
 -- UI: control tab
 function UI.drawControlTab()
-    if not ImGui.BeginTabItem('Control') then return end
     accent(GOLD, 'Combat Mode')
     UI.drawModeCombos('CtrlTab', 160, 140)
 
@@ -13153,12 +13060,9 @@ function UI.drawControlTab()
             accent(MUTED, 'Backline stays back at Chase Distance and assists MA with ranged/spells without moving to melee.')
         end
     end
-
-    ImGui.EndTabItem()
 end
 
 function UI.drawPetControlTab()
-    if not ImGui.BeginTabItem('Pets') then return end
 
     local petSlots, extraPets = getMultiPetList()
 
@@ -13591,8 +13495,6 @@ function UI.drawPetControlTab()
         end
         ImGui.EndPopup()
     end
-
-    ImGui.EndTabItem()
 end
 
 -- ============================================================================
@@ -14495,12 +14397,8 @@ function UI.clampMedBreak(kind, startMoved)
 end
 
 function UI.drawSettingsTab()
-    if not ImGui.BeginTabItem('Settings') then return end
-
-    if ImGui.BeginTabBar('settingsSubTabBar') then
-        if ImGui.BeginTabItem('General Settings##settingsGeneral') then
-            -- 1. Character Classes & Profile
-            UI.drawClassPicker()
+    -- 1. Character Classes & Profile
+    UI.drawClassPicker()
 
     -- 2. Combat Style & Positioning
     if ImGui.CollapsingHeader('Combat Style & Positioning', ImGuiTreeNodeFlags.DefaultOpen) then
@@ -15084,24 +14982,6 @@ function UI.drawSettingsTab()
         ImGui.SameLine()
         ImGui.TextDisabled('also /ac restart')
     end
-
-    ImGui.EndTabItem()
-    end
-
-    if ImGui.BeginTabItem('Window Settings##settingsWindows') then
-        UI.drawWindowSettings()
-        ImGui.EndTabItem()
-    end
-
-    if ImGui.BeginTabItem('Plugins##settingsPlugins') then
-        UI.drawPluginsTab()
-        ImGui.EndTabItem()
-    end
-
-    ImGui.EndTabBar()
-    end
-
-    ImGui.EndTabItem()
 end
 
 -- ============================================================================
@@ -15689,11 +15569,267 @@ function UI.drawMiniGui()
     UI.popTheme()
 end
 
+-- ============================================================================
+-- Main window shell (Morituri UI rebuild)
+--   command bar  : Start/Pause, Burn, mode + submode, Windows menu, Compact
+--   status line  : running state and what the engine is doing right now
+--   issues strip : missing data / plugins / navmesh, each with its fix button
+--   sidebar      : grouped pages (the former tabs) + pinned plugin windows
+-- Replaces the v3 header button wall and the 10-tab (reorderable) tab bar.
+-- ctrl.ui_page holds the open page id.
+-- ============================================================================
+
+-- Enabled entries in a loadout collection: name -> entry maps (aas, discs,
+-- actions) count `enabled == true`; the clickie list counts `enabled ~= false`.
+function UI.countEnabled(coll, defaultOn)
+    local n = 0
+    for _, e in pairs(coll or {}) do
+        if type(e) == 'table' and (e.enabled == true or (defaultOn and e.enabled ~= false)) then n = n + 1 end
+    end
+    return n
+end
+
+function UI.countGems()
+    local n = 0
+    for _, g in ipairs(loadout.gems or {}) do
+        if type(g) == 'table' and g.spell and g.spell ~= '' then n = n + 1 end
+    end
+    return n
+end
+
+UI.PAGES = {
+    { id = 'overview', label = 'Overview',
+      tip = 'Engine, target, vitals, navigation and XTarget at a glance.',
+      draw = function() UI.drawStatusTab() end },
+    { id = 'control', group = 'Combat', label = 'Mode & Pulling',
+      tip = 'Options for the current mode: camp, pulling, waypoints, filters, Main Assist.',
+      draw = function() UI.drawControlTab() end },
+    { id = 'pets', group = 'Combat', label = 'Pets',
+      tip = 'Commands and status for each pet class.',
+      draw = function() UI.drawPetControlTab() end },
+    { id = 'spells', group = 'Actions', label = 'Spells',
+      tip = 'Spell lines in priority order: what to cast, on whom, and when.',
+      count = function() return UI.countGems() end,
+      draw = function() UI.drawGemTab() end },
+    { id = 'abilities', group = 'Actions', label = 'Abilities',
+      tip = 'Combat skills (Kick, Bash, Backstab, ...).',
+      count = function() return UI.countEnabled(loadout.actions) end,
+      draw = function() UI.drawAbilitiesTab() end },
+    { id = 'aas', group = 'Actions', label = 'AAs',
+      tip = 'Activated alternate abilities.',
+      count = function() return UI.countEnabled(loadout.aas) end,
+      draw = function() UI.drawAATab() end },
+    { id = 'discs', group = 'Actions', label = 'Disciplines',
+      tip = 'Combat disciplines.',
+      count = function() return UI.countEnabled(loadout.discs) end,
+      draw = function() UI.drawDiscTab() end },
+    { id = 'clickies', group = 'Actions', label = 'Clickies',
+      tip = 'Clickable items, in priority order.',
+      count = function() return UI.countEnabled(loadout.clickies, true) end,
+      draw = function() UI.drawClickieTab() end },
+    { id = 'settings', group = 'Setup', label = 'Settings',
+      tip = 'Classes, combat style, navigation, resting, pets, interface.',
+      draw = function() UI.drawSettingsTab() end },
+    { id = 'windows', group = 'Setup', label = 'Window Layout',
+      tip = 'Scale, saved positions and per-window options.',
+      draw = function() UI.drawWindowSettings() end },
+    { id = 'plugins', group = 'Setup', label = 'Plugins',
+      tip = 'Turn plugins on or off, pin their windows to the sidebar, plugin settings.',
+      draw = function() UI.drawPluginsTab() end },
+    { id = 'help', group = 'Setup', label = 'Help',
+      tip = 'Slash commands, combat modes and target filters.',
+      draw = function() UI.drawHelpTab() end },
+}
+
+function UI.currentPage()
+    if not UI.pageById then
+        UI.pageById = {}
+        for _, p in ipairs(UI.PAGES) do UI.pageById[p.id] = p end
+    end
+    return UI.pageById[ctrl.ui_page] or UI.PAGES[1]
+end
+
+function UI.openPage(id)
+    if ctrl.ui_page == id then return end
+    ctrl.ui_page = id
+    runtime.saveLoadout(true)
+end
+
+-- Sidebar counts walk the loadout; refreshed twice a second, not per frame.
+function UI.pageCount(p)
+    if not p.count then return nil end
+    local now = os.clock()
+    runtime.pageCountCache = runtime.pageCountCache or {}
+    local c = runtime.pageCountCache[p.id]
+    if not c or (now - c.at) >= 0.5 then
+        c = { at = now, n = p.count() }
+        runtime.pageCountCache[p.id] = c
+    end
+    return c.n
+end
+
+function UI.drawCommandBar()
+    UI.drawStartPauseButton('##cbRun', UI.px(78), 0)
+    ImGui.SameLine()
+    UI.drawBurnButton('##cbBurn', UI.px(78), 0, 'BURN ON', 'Burn')
+    ImGui.SameLine(0, UI.px(16))
+    ImGui.AlignTextToFramePadding()
+    ImGui.TextDisabled('Mode')
+    ImGui.SameLine()
+    UI.drawModeCombos('CmdBar', UI.px(92), UI.px(92))
+    ImGui.SameLine(0, UI.px(16))
+    if ImGui.Button('Windows##cbWindows') then ImGui.OpenPopup('##cbWindowsMenu') end
+    if ImGui.IsItemHovered() then UI.setTooltip('Open or close any plugin window (HUDs, map, chat, inventory, ...).') end
+    if ImGui.BeginPopup('##cbWindowsMenu') then
+        local pm = runtime.pluginManager
+        if pm and type(pm.drawWindowsMenu) == 'function' then
+            -- A plugin error here would abort the frame ("Missing End()"): contain it.
+            local ok, err = pcall(pm.drawWindowsMenu)
+            if not ok and runtime.lastWindowsMenuErr ~= tostring(err) then
+                runtime.lastWindowsMenuErr = tostring(err)
+                print('\ar[Triune]\ax Windows menu failed: ' .. tostring(err))
+            end
+        else
+            ImGui.TextDisabled('Plugin manager not ready.')
+        end
+        ImGui.EndPopup()
+    end
+    ImGui.SameLine()
+    if ImGui.Button('Compact##cbCompact') then
+        ctrl.compact = true
+        runtime.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Shrink Triune to the compact HUD (/ac compact).') end
+end
+
+-- RUNNING / PAUSED, then what the engine is doing (or, while paused, what
+-- the selected mode does). The activity text costs spawn lookups, so it is
+-- refreshed 4x a second.
+function UI.drawStatusLine()
+    local now = os.clock()
+    local sl = runtime.statusLineCache
+    if not sl or (now - sl.at) >= 0.25 or sl.running ~= ctrl.running then
+        local text, col
+        if ctrl.running then
+            text, col = UI.miniActivity()
+        else
+            local key = MODES.SUBMODES[ctrl.mode] and (tostring(ctrl.mode) .. ':' .. tostring(ctrl.submode)) or ctrl.mode
+            text, col = MODES.SUB_DESC[key] or MODES.DESC[ctrl.mode] or '', MUTED
+        end
+        sl = { at = now, running = ctrl.running, text = text, col = col }
+        runtime.statusLineCache = sl
+    end
+    if ctrl.running then accent(GOOD, 'RUNNING') else accent(WARN, 'PAUSED') end
+    ImGui.SameLine(); ImGui.TextDisabled('-')
+    ImGui.SameLine(); accent(sl.col, sl.text)
+    if ctrl.burn then
+        ImGui.SameLine(); accent(ERR, '[BURN]')
+    end
+    if ctrl.mode == 'Assist' and ctrl.ma_name and ctrl.ma_name ~= '' then
+        ImGui.SameLine(); ImGui.TextDisabled('MA:')
+        ImGui.SameLine(); ImGui.Text(tostring(ctrl.ma_name))
+    end
+end
+
+-- Problems that stop the bot from working, each with the command that fixes it.
+function UI.collectIssues()
+    local now = os.clock()
+    local c = runtime.issuesCache
+    if c and (now - c.at) < 1.0 then return c.list end
+    local list = {}
+    if not DATA_OK then
+        list[#list + 1] = { text = 'triune_data.lua not found - spell, disc and AA lists are empty',
+            tip = 'Copy config/triune_data.lua from this release into your MacroQuest config folder, then /ac restart.' }
+    end
+    if not navLoaded() then
+        list[#list + 1] = { text = 'MQ2Nav is not loaded', btn = 'Load', cmd = '/plugin mq2nav',
+            tip = 'Pathing, hunting, chase and return-to-camp need MQ2Nav.' }
+    elseif not navMeshLoaded() then
+        local zs = nil
+        pcall(function() zs = mq.TLO.Zone.ShortName() end)
+        list[#list + 1] = { text = string.format('No navmesh for %s', tostring(zs or 'this zone')), btn = 'Reload', cmd = '/nav reload',
+            tip = 'Pathing, hunting and chase need a navmesh for the zone (resources/MQ2Nav).' }
+    end
+    if not stickLoaded() then
+        list[#list + 1] = { text = 'MQ2MoveUtils is not loaded', btn = 'Load', cmd = '/plugin mq2moveutils',
+            tip = 'Melee stick, positioning and unstuck need MQ2MoveUtils.' }
+    end
+    runtime.issuesCache = { at = now, list = list }
+    return list
+end
+
+function UI.drawIssuesStrip()
+    local list = UI.collectIssues()
+    for i, it in ipairs(list) do
+        ImGui.AlignTextToFramePadding()
+        accent(WARN, '! ' .. it.text)
+        if it.tip and ImGui.IsItemHovered() then UI.setTooltip('%s', it.tip) end
+        if it.cmd then
+            ImGui.SameLine()
+            if ImGui.SmallButton(it.btn .. '##tacIssue' .. i) then
+                mq.cmd(it.cmd)
+                if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end
+                runtime.issuesCache = nil
+            end
+            if ImGui.IsItemHovered() then UI.setTooltip('Runs %s', it.cmd) end
+        end
+    end
+end
+
+function UI.drawSidebar()
+    local cur = UI.currentPage()
+    local lastGroup = nil
+    for _, p in ipairs(UI.PAGES) do
+        if p.group ~= lastGroup then
+            ImGui.Spacing()
+            accent(MUTED, string.upper(p.group))
+            lastGroup = p.group
+        end
+        local n = UI.pageCount(p)
+        local label = n and string.format('%s (%d)', p.label, n) or p.label
+        local _, pressed = ImGui.Selectable(label .. '##tacNav_' .. p.id, cur.id == p.id)
+        if pressed then UI.openPage(p.id) end
+        if p.tip and ImGui.IsItemHovered() then UI.setTooltip('%s', p.tip) end
+    end
+
+    -- Pinned plugin windows (the per-plugin "header button" choice on the
+    -- Plugins page); every window is also in the command bar's Windows menu.
+    local pm = runtime.pluginManager
+    if not (pm and type(pm.windowPlugins) == 'function') then return end
+    local now = os.clock()
+    local sw = runtime.sidebarWindowsCache
+    if not sw or (now - sw.at) >= 1.0 then
+        local ok, entries = pcall(pm.windowPlugins, true)
+        sw = { at = now, entries = ok and entries or {} }
+        runtime.sidebarWindowsCache = sw
+    end
+    if #sw.entries == 0 then return end
+    ImGui.Spacing()
+    accent(MUTED, 'WINDOWS')
+    if ImGui.IsItemHovered() then UI.setTooltip('Pinned plugin windows. Choose which are pinned on Setup -> Plugins.') end
+    for _, e in ipairs(sw.entries) do
+        local isOpen = pm.isWindowOpen(e.id)
+        local v = ImGui.Checkbox(tostring(e.window.label or e.id) .. '##tacNavWin_' .. e.id, isOpen)
+        if v ~= isOpen then pm.toggleWindow(e.id) end
+        if e.window.tooltip and ImGui.IsItemHovered() then UI.setTooltip('%s', tostring(e.window.tooltip)) end
+    end
+end
+
+function UI.drawActivePage()
+    local p = UI.currentPage()
+    accent(GOLD, p.label)
+    if p.tip then
+        ImGui.SameLine()
+        ImGui.TextDisabled(p.tip)
+    end
+    ImGui.Separator()
+    p.draw()
+end
+
 function UI.drawFullGui()
     if not open or ctrl.compact then return end
     UI.pushTheme()
-    ImGui.SetNextWindowSize(UI.px(830), UI.px(640), ImGuiCond.FirstUseEver)
-    local winFlags = ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0
+    ImGui.SetNextWindowSize(UI.px(900), UI.px(640), ImGuiCond.FirstUseEver)
     local show
     local clsList = {}
     for i = 1, CLASS_SLOTS do
@@ -15706,33 +15842,26 @@ function UI.drawFullGui()
     local charName = myName or (mq.TLO.Me.CleanName and mq.TLO.Me.CleanName()) or '(no character)'
     local winTitle = string.format('TAC v%s - %s (%s)###triune', VERSION, charName, clsText)
     UI.preBeginWindow('main')
-    open, show = ImGui.Begin(winTitle, open, UI.windowFlags('main', winFlags))
+    open, show = ImGui.Begin(winTitle, open, UI.windowFlags('main', 0))
     if not show then
         UI.preEndWindow('main')
         ImGui.End(); UI.popTheme(); return
     end
     UI.postBeginWindow('main')
 
-    UI.drawHeaderBar()
-    UI.drawActionControls()
+    UI.updateTracker()
+    UI.drawCommandBar()
+    UI.drawStatusLine()
+    UI.drawIssuesStrip()
+    ImGui.Separator()
 
-    local tabBarFlags = bit.bor(
-        (ImGuiTabBarFlags and ImGuiTabBarFlags.Reorderable) or 0,
-        (ImGuiTabBarFlags and ImGuiTabBarFlags.FittingPolicyScroll) or 0
-    )
-    if ImGui.BeginTabBar('triuneTabs_v2', tabBarFlags) then
-        UI.drawStatusTab()
-        UI.drawControlTab()
-        UI.drawPetControlTab()
-        UI.drawGemTab()
-        UI.drawAbilitiesTab()
-        UI.drawAATab()
-        UI.drawDiscTab()
-        UI.drawClickieTab()
-        UI.drawSettingsTab()
-        UI.drawHelpTab()
-        ImGui.EndTabBar()
-    end
+    ImGui.BeginChild('##tacSidebar', UI.px(150), 0, true)
+    UI.drawSidebar()
+    ImGui.EndChild()
+    ImGui.SameLine()
+    ImGui.BeginChild('##tacPage', 0, 0, false, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0)
+    UI.drawActivePage()
+    ImGui.EndChild()
 
     UI.preEndWindow('main')
     ImGui.End()
@@ -16686,7 +16815,8 @@ function runtime.computeIsHealAction(name, targetToken, entry)
     end
     -- Ally selectors are almost certainly heals if not offensive.
     if targetToken and (baseTok(targetToken) == 'Lowest-HP Ally'
-        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me') then
+        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me'
+        or baseTok(targetToken) == 'Group + Pets') then
         if not runtime.isDetrimentalAction(name, targetToken, entry) then
             return true
         end
@@ -16701,7 +16831,8 @@ function runtime.computeIsHealAction(name, targetToken, entry)
                     or lowerName:find('renewal') or lowerName:find('restoration') or lowerName:find('lay on hands')
                     or lowerName:find('burst of life') or lowerName:find('arbitration') or lowerName:find('touch')
                     or (targetToken and (baseTok(targetToken) == 'Lowest-HP Ally'
-                        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me')) then
+                        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me'
+                        or baseTok(targetToken) == 'Group + Pets')) then
                     return true
                 end
             end
@@ -17030,7 +17161,7 @@ runtime.BOX_BUFF_REQUEST_TTL = 120 -- seconds a queued request stays valid
 function runtime.isFriendlyBuffToken(token)
     local b = baseTok(token)
     return b == 'Myself' or b == 'Main Assist' or b == 'Tank' or b == 'Lowest-HP Ally'
-        or b == 'Me, then Group' or b == 'Group, then Me' or b == 'Whole Group'
+        or b == 'Me, then Group' or b == 'Group, then Me' or b == 'Group + Pets' or b == 'Whole Group'
 end
 
 -- Gems we could cast on another player: friendly 'missing buff' entries with a
@@ -18008,6 +18139,9 @@ function runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
     local candidates, seen = {}, {}
     local selfOnly = when == 'my HP <=' or when == 'my Mana <='
     local selfFirst = baseTok(token) == 'Me, then Group'
+    -- 'Group + Pets': also every pet of ours (one per pet class) and group
+    -- members' pets, most hurt first -- one heal line covers everyone.
+    local withPets = baseTok(token) == 'Group + Pets'
 
     local function addCandidate(id)
         id = tonumber(id) or 0
@@ -18025,8 +18159,8 @@ function runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
     end
 
     if selfOnly or selfFirst then addCandidate(selfId) end
+    local total = 0
     if not selfOnly then
-        local total = 0
         pcall(function() total = mq.TLO.Group.Members() or 0 end)
         for i = 0, total do
             local member = nil
@@ -18044,6 +18178,21 @@ function runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
         end
     end
     if not selfOnly and not selfFirst then addCandidate(selfId) end
+    if withPets and not selfOnly then
+        for _, pid in ipairs(getAllMyPets()) do addCandidate(pid) end
+        for i = 1, total do
+            pcall(function()
+                local m = mq.TLO.Group.Member(i)
+                if m and m() then addCandidate(m.Pet.ID()) end
+            end)
+        end
+        local hp = {}
+        for _, id in ipairs(candidates) do hp[id] = pctHP(id) end
+        table.sort(candidates, function(a, b)
+            if hp[a] ~= hp[b] then return hp[a] < hp[b] end
+            return a < b
+        end)
+    end
 
     for _, id in ipairs(candidates) do
         if runtime.conditionMet(when, pct, spellName, id, cls, 'F: ' .. baseTok(token), extra) then
@@ -18066,7 +18215,7 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
         id = runtime.maPcId()
     elseif b == 'Lowest-HP Ally' then
         id = runtime.lowestHpAlly(nil, true)
-    elseif b == 'Me, then Group' or b == 'Group, then Me' then
+    elseif b == 'Me, then Group' or b == 'Group, then Me' or b == 'Group + Pets' then
         id = runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
     elseif b == 'Pet' then
         id = runtime.resolvePetTargetId(when, spellName, cls, pct)
@@ -25517,7 +25666,7 @@ mq.event('TriuneSlain2', '#1# has been slain by #*#!', function(_, mobName)
     end
 end)
 
--- The plugin manager must exist before the first ImGui frame: UI.drawHeaderBar
+-- The plugin manager must exist before the first ImGui frame: the sidebar and Windows menu
 -- and UI.drawPlugins read it, and building it lazily from inside a render
 -- callback is exactly where a partially constructed manager could be observed.
 runtime.initPluginManager()

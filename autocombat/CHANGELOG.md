@@ -4,6 +4,30 @@
 
 ## 2026-10-24
 
+- **New spell target "Group + Pets" (`lua/triune.lua`).** One heal line now covers everyone: you, present group members in range, **all of your pets** (one per pet class), and group members' pets. The most hurt one whose condition is met is picked first. Before this, you had to pick between Myself, a group option, or Pet, and no single choice healed both people and pets.
+  - "Whole Group" is unchanged. It's still the option for group-wide spells, which target yourself (EQ group heals generally don't land on pets). "Me, then Group" and "Group, then Me" still skip pets.
+  - Counts as a heal selector (like Lowest-HP Ally) and as a friendly buff target, so a "missing buff" line on it also keeps buffs up on pets. Help -> Target Filters describes it.
+  - Tests: Suite M2.
+- **Main window rebuilt around a sidebar (`lua/triune.lua`).** The UI rebuild starts here (PROJECT.md, phase P2).
+  - **Command bar** across the top: Start/Pause, Burn, mode and submode, a **Windows** menu listing every plugin window and script, and Compact.
+  - **Status line**: RUNNING/PAUSED plus what the engine is doing right now (pulling X, fighting X, med break, ...). While paused it shows what the selected mode does. Burn and the Main Assist show here too.
+  - **Issues strip**: one line per real problem (no data file, MQ2Nav, navmesh, MQ2MoveUtils), each with its fix button. It replaces the full-width warning paragraphs.
+  - **Sidebar** in place of the 10 reorderable tabs: Overview / Combat (Mode & Pulling, Pets) / Actions (Spells, Abilities, AAs, Disciplines, Clickies, each with a count of active lines) / Setup (Settings, Window Layout, Plugins, Help). Window Layout and Plugins were sub-tabs inside Settings before. The open page is remembered (`ctrl.ui_page`).
+  - The **button wall is gone**. Plugins whose "header button" is on (Setup -> Plugins) are now pinned in the sidebar as checkboxes (checked = open). Everything else is in the Windows menu. The compact HUD keeps its buttons.
+  - Default window size is now 900x640, and the page area scrolls on its own.
+  - Removed `UI.drawHeaderBar` and `UI.drawActionControls` (replaced by the command bar and issues strip).
+- **Tests: `tests/smoke_ui.lua`.** A headless smoke test that runs the whole `triune.lua` (and every plugin) against a mocked MQ/ImGui, steps the main loop, and renders every page in every mode, paused and running, plus the compact HUD. Each frame has to finish without a Lua error and with balanced ImGui scopes. `tests/run.sh` runs it.
+  - Upstream assertions that grepped the old tab bar and header code now check the page registry instead.
+
+### In-game checklist (UI shell)
+- [ ] Sidebar switches pages; the page you were on is reopened after `/ac restart`.
+- [ ] Windows menu opens and closes plugin windows; pinned windows in the sidebar track open/closed state.
+- [ ] Unload MQ2Nav: the issues strip shows it with a working Load button.
+- [ ] Start/Pause, Burn and the mode combos in the command bar work; the status line follows the engine.
+
+### In-game checklist (Group + Pets)
+- [ ] A heal line set to Group + Pets with "HP <= 70%" heals a hurt pet when no player needs it, and the most hurt player or pet first.
+
 - **Morituri port onto upstream v3.2 (`lua/triune.lua`, `lua/tac/boxnet.lua`, `lua/tac/spellbook.lua`, `lua/tac/hud_group.lua`, `config/triune_data.lua`).** Project Morituri characters are a 4-class gestalt, not Triune's 3-class trio. This re-applies the Morituri port of v3.1 on top of v3.2.
   - New `CLASS_SLOTS = 4` constant, exposed to plugins as `core.CLASS_SLOTS`. Every class-slot loop (pet slots, class picker, status class badges, window title) uses it instead of a literal.
   - 4th class slot colour (Amethyst Violet). Default `DATA.era_expansion` is 8, and the Morituri `triune_data.lua` replaces the Triune one.
