@@ -34,6 +34,20 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
 
 ---
 
+## The main window
+
+- **Top bar:** Start/Pause, Burn, the mode pickers, the **Windows** menu (every plugin window) and **Compact** (a small HUD you can ghost over the game).
+- **Status line:** RUNNING/PAUSED and what MoriAC is doing right now. Below it, any problem (missing MQ2Nav, no navmesh...) with a button to fix it.
+- **Sidebar:**
+  - **Overview**
+  - **Combat:** Mode & Pulling, Pets
+  - **Actions:** Spells, Abilities, AAs, Disciplines, Clickies, each with a count of active lines
+  - **Setup:** Settings (with a *Find a setting* box), Window Layout, Plugins, Help
+  - plus any plugin windows you pinned
+- **Action pages:** a table of lines plus an edit panel for the selected one. Lines are tried top to bottom; untick **Auto** / **On** to stop one firing without deleting it.
+
+---
+
 ## Combat modes
 
 | Mode | Use it when | What MoriAC does |
@@ -45,11 +59,11 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
 | **Assist - Camp** | Boxed, stay put | Holds at camp and only fights what comes in. |
 | **Assist - Backline** | Boxed healers and casters | Stays at range and never runs into melee. |
 
-Set the Main Assist with `/ac ma <name>` or from the Control tab.
+Set the Main Assist with `/ac ma <name>` or on the **Mode & Pulling** page.
 
-**Combat style** (Settings tab, or `/ac style melee|ranged|spell`) decides how you fight: close to melee, shoot a bow from a distance, or stand back and only cast.
+**Combat style** (Setup -> Settings, or `/ac style melee|ranged|spell`) decides how you fight: close to melee, shoot a bow from a distance, or stand back and only cast.
 
-**Pulling** options live on the Control tab: pull with melee, a spell, your pet or a bow; an **Include list** (only pull these) and an **Ignore list** (never pull these); faction filters so you never pull a guard; and **waypoint routes** for patrolling a path (`/ac wp add` while walking).
+**Pulling** options live on the **Mode & Pulling** page: pull with melee, a spell, your pet or a bow; an **Include list** (only pull these) and an **Ignore list** (never pull these); faction filters so you never pull a guard; and **waypoint routes** for patrolling a path (`/ac wp add` while walking).
 
 **Burn mode** (`/ac burn`) fires anything you marked *Burn Only* - flip it on for named mobs.
 
@@ -57,12 +71,12 @@ Set the Main Assist with `/ac ma <name>` or from the Control tab.
 
 ## Windows and tools
 
-Everything below is built in. Open them from the buttons on the main window's header or with the command shown.
+Everything below is built in. Open them from the **Windows** menu at the top of the main window, from the sidebar (pin your favourites under Setup -> Plugins), or with the command shown.
 
 | Window | Command | What it is |
 |---|---|---|
-| Status | main window tab | Live view of what the bot is doing, your target, pets and XTarget threats. |
-| Pets | main window tab | Control up to three pets: attack, back off, hold, taunt, and the server's `#petcmd` commands. |
+| Overview | main window page | Your target and you side by side, pets, XTarget threats, session AA/plat rates, mode details and navigation diagnostics. |
+| Pets | main window page | Control up to four pets (one per pet class): attack, back off, hold, stances, and the server's `#petcmd` commands. |
 | Target & Player HUD | `/ac hud` | Compact unit frames for you, your target and your pets. |
 | Group | `/ac group` | Replacement group window with vitals, roles and click-to-target. |
 | XTarget | `/ac xtar` | Replacement extended target window with HP, aggro and distance. |
@@ -84,11 +98,11 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Cursor Manager | `/ac cursorui` | Clears whatever is stuck on your cursor. |
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
 | GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
-| Floating damage | Settings -> Plugins | Big animated numbers for crits. |
+| Floating damage | Setup -> Plugins | Big animated numbers for crits. |
 | Update Checker | `/ac update` | Tells you when a newer MoriAC release is out. Nothing is downloaded. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
-Each of these is a plugin in `lua/tac/`. Turn them on or off under **Settings -> Plugins**.
+Each of these is a plugin in `lua/tac/`. Turn them on or off under **Setup -> Plugins**.
 
 ---
 
@@ -118,11 +132,11 @@ Type `/ac help` in game for the full list.
 
 ## When something goes wrong
 
-- **Not moving or pulling?** Look at the Status tab. It shows whether MQ2Nav and MQ2MoveUtils are loaded and whether the zone has a navmesh, with buttons to load or reload them.
-- **Stuck on terrain?** MoriAC remembers where it got stuck and routes around it next time. Clear those spots under **Settings -> Navigation**.
+- **Not moving or pulling?** Look at the top of the main window: any missing MQ2Nav, MQ2MoveUtils or zone navmesh is listed there with a button to load or reload them.
+- **Stuck on terrain?** MoriAC remembers where it got stuck and routes around it next time. Clear those spots under **Setup -> Settings -> Navigation**.
 - **Need to report a bug?** Turn on **Log To File** (`/ac log on`) and, when it happens, run `/ac dump`. Attach the files from your MacroQuest `Logs/` folder (`moriac_<server>_<char>.log` and `moriac_dump_...log`). `/ac debug` prints extra detail to chat.
 - **Game feels slow with Lua scripts?** MoriAC sets MQ2Lua's `turboNum` to 10000 on first start (the default of 500 makes every Lua script crawl). If you set it higher yourself, Triune leaves it alone.
-- **A plugin broke?** It is isolated - it shows an error under Settings -> Plugins and the rest keeps running. Fix or disable it there.
+- **A plugin broke?** It is isolated - it shows an error under Setup -> Plugins and the rest keeps running. Fix or disable it there.
 
 ---
 
