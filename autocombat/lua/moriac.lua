@@ -6807,7 +6807,7 @@ function UI.drawWindowScaleControl(key, label, width)
     ImGui.SetNextItemWidth(UI.px(width or 130))
     local newIdx = ImGui.Combo((label or 'Scale') .. '##winScale_' .. tostring(key), curIdx, items)
     if ImGui.IsItemHovered() then
-        UI.setTooltip('Size of this window (text, buttons, bars). Global follows the UI Scale on Settings -> Window Layout; a preset overrides it for this window only.')
+        UI.setTooltip('Size of this window (text, buttons, bars). Global follows the UI Scale on Setup -> Window Layout; a preset overrides it for this window only.')
     end
     if newIdx ~= curIdx then
         if newIdx == 1 then
@@ -7372,7 +7372,7 @@ function runtime.initPluginManager()
             at = os.clock(),
         }
         pm.loadErrors[filename] = nil
-        print(string.format('\ay[MoriAC]\ax %s is not a MoriAC plugin (%s). Listed under Settings -> Plugins -> Standalone Scripts; run it with /lua run %s.',
+        print(string.format('\ay[MoriAC]\ax %s is not a MoriAC plugin (%s). Listed under Setup -> Plugins -> Standalone Scripts; run it with /lua run %s.',
             filename, tostring(reason), runName))
         return false, tostring(reason)
     end
@@ -7940,7 +7940,7 @@ function runtime.initPluginManager()
         local p = pm.plugins[id]
         if not p then
             ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4],
-                string.format('Plugin "%s" is not loaded. Drop %s.lua into %s and click Rescan on the Plugins tab.',
+                string.format('Plugin "%s" is not loaded. Drop %s.lua into %s and click Rescan on Setup -> Plugins.',
                     id, id, tostring(pm.dirPath or 'lua/tac')))
             return false
         end
@@ -8912,7 +8912,7 @@ UI.HELP_COMMANDS = (function() return {
         { cmd = '/ac importbar / /ac import',         desc = 'Auto-populate spell lines from currently memorized spell gems' },
         { cmd = '/ac status',                         desc = 'Print current running state and combat mode to chat' },
         { cmd = '/ac compact / /ac mini',             desc = 'Toggle auto-resizing Compact Mini-Window mode' },
-        { cmd = '/ac scale [0.75-2.0|reset]',         desc = 'UI scale for every MoriAC window (per-window overrides on Settings -> Window Layout)' },
+        { cmd = '/ac scale [0.75-2.0|reset]',         desc = 'UI scale for every MoriAC window (per-window overrides on Setup -> Window Layout)' },
         { cmd = '/ac hud / /ac uf',                   desc = 'Toggle popout Target & Player HUD unit frames window' },
         { cmd = '/ac target / /ac tw',                desc = 'Toggle the popout Target-only window (a big target frame)' },
         { cmd = '/ac cd / /ac cooldowns',             desc = 'Toggle popout Cooldown & Ability Monitor window' },
@@ -9082,10 +9082,10 @@ function UI.drawHelpTab()
         end
 
         ImGui.Spacing()
-        accent(GOLD, 'AA Exclusion Groups (AAs tab, Grp column):')
+        accent(GOLD, 'AA exclusion groups (AAs page, Group setting):')
         ImGui.TextWrapped(
             'Put AAs that grant the same effect (e.g. Bloodlust and Rage of Rallos Zek, which both let every proc fire on every swing) ' ..
-            'in the same letter group. Only one AA per group runs at a time: the one listed highest in the AAs tab fires first, and the ' ..
+            'in the same letter group. Only one AA per group runs at a time: the one listed highest on the AAs page fires first, and the ' ..
             'next one fires as soon as that effect drops, so they chain back-to-back instead of overlapping and wasting one.')
     end
 end
@@ -12569,30 +12569,34 @@ function UI.drawControlTab()
     end
 end
 
+UI.PET_STANCES = {
+    { 'taunt', 'Taunt', 'Pets taunt to hold aggro (#petcmd taunt).' },
+    { 'hold', 'Hold', 'Pets do not attack until told to (#petcmd hold).' },
+    { 'ghold', 'Greater hold', 'Hold that also ignores attackers (#petcmd ghold).' },
+    { 'spellhold', 'Spell hold', 'Pets do not cast spells (#petcmd spellhold).' },
+    { 'focus', 'Focus', 'Pets stay on their target (#petcmd focus).' },
+    { 'assist', 'Assist', 'Pets assist you automatically (#petcmd assist).' },
+}
+
 function UI.drawPetControlTab()
 
     local petSlots, extraPets = getMultiPetList()
 
-    -- 1. Global Pet Command Center (Compact Header & Telemetry)
-    accent(GOLD, 'Pet Command Center')
+    -- 1. Global pet orders
+    accent(GOLD, 'All pets')
     ImGui.SameLine()
-    if ImGui.SmallButton('Re-Scan Pets##rescanGlobal') then
+    if petState.petHoldActive then
+        accent(WARN, string.format('holding until the mob is at %d%%', ctrl.pet_assist_at or 100))
+    end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Re-scan##rescanGlobal') then
         reconcilePets()
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Re-scan zone for active pets belonging to your character and update tracking.')
-    end
-    ImGui.SameLine()
-    ImGui.TextDisabled('|')
-    ImGui.SameLine()
-    if petState.petHoldActive then
-        accent(WARN, string.format('Auto Hold: ACTIVE (Holding until target HP <= %d%%)', ctrl.pet_assist_at or 100))
-    else
-        accent(GOOD, 'Auto Hold: DISENGAGED / ENGAGED')
+        ImGui.SetTooltip('%s', 'Re-scan the zone for your pets and update tracking.')
     end
 
-    -- Pet Assist Slider & Auto Hold Toggle at Top
-    local petHoldVal = ImGui.Checkbox('Auto Pet Hold##petCtrlHold', ctrl.pet_hold_enabled ~= false)
+    local petHoldVal = ImGui.Checkbox('Hold pets until the mob is at##petCtrlHold', ctrl.pet_hold_enabled ~= false)
     if petHoldVal ~= (ctrl.pet_hold_enabled ~= false) then
         ctrl.pet_hold_enabled = petHoldVal
         runtime.saveLoadout(true)
@@ -12604,7 +12608,7 @@ function UI.drawPetControlTab()
     end
     ImGui.SameLine()
     ImGui.SetNextItemWidth(UI.px(160))
-    local petAssistVal = ImGui.SliderInt('Pet Assist At %##petCtrlAssist', ctrl.pet_assist_at or 100, 1, 100, '%d%%')
+    local petAssistVal = ImGui.SliderInt('##petCtrlAssist', ctrl.pet_assist_at or 100, 1, 100, '%d%% HP')
     if petAssistVal ~= ctrl.pet_assist_at then
         ctrl.pet_assist_at = petAssistVal
         runtime.saveLoadout(true)
@@ -12637,59 +12641,35 @@ function UI.drawPetControlTab()
     if ImGui.Button('Dismiss All##leaveGlobal') then sendPetCmd('leave', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Dismiss all active pets (#petcmd leave all).') end
 
-    -- Stance Toggles (compact 2-row layout)
-    ImGui.TextDisabled('All Stances:')
-    ImGui.SameLine()
-    ImGui.Text('Taunt')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##tntOnGlobal') then sendPetCmd('taunt on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##tntOffGlobal') then sendPetCmd('taunt off', 'all') end
-    ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
-    ImGui.Text('Hold')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##hldOnGlobal') then sendPetCmd('hold on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##hldOffGlobal') then sendPetCmd('hold off', 'all') end
-    ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
-    ImGui.Text('GHold')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##ghldOnGlobal') then sendPetCmd('ghold on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##ghldOffGlobal') then sendPetCmd('ghold off', 'all') end
-
-    ImGui.Text('SpellHold')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##sphOnGlobal') then sendPetCmd('spellhold on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##sphOffGlobal') then sendPetCmd('spellhold off', 'all') end
-    ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
-    ImGui.Text('Focus')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##fcsOnGlobal') then sendPetCmd('focus on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##fcsOffGlobal') then sendPetCmd('focus off', 'all') end
-    ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
-    ImGui.Text('Assist')
-    ImGui.SameLine()
-    if ImGui.SmallButton('ON##astOnGlobal') then sendPetCmd('assist on', 'all') end
-    ImGui.SameLine()
-    if ImGui.SmallButton('OFF##astOffGlobal') then sendPetCmd('assist off', 'all') end
+    -- Stances for every pet: one row each, On / Off.
+    local stanceFlags = (ImGuiTableFlags and ImGuiTableFlags.SizingFixedFit) or 0
+    if ImGui.BeginTable('##petStances', 6, stanceFlags) then
+        for i, st in ipairs(UI.PET_STANCES) do
+            if (i - 1) % 3 == 0 then ImGui.TableNextRow() end
+            ImGui.TableNextColumn()
+            ImGui.AlignTextToFramePadding()
+            ImGui.Text(st[2])
+            if ImGui.IsItemHovered() then UI.setTooltip('%s', st[3]) end
+            ImGui.TableNextColumn()
+            if ImGui.SmallButton('On##stOn_' .. st[1]) then sendPetCmd(st[1] .. ' on', 'all') end
+            ImGui.SameLine()
+            if ImGui.SmallButton('Off##stOff_' .. st[1]) then sendPetCmd(st[1] .. ' off', 'all') end
+        end
+        ImGui.EndTable()
+    end
 
     ImGui.Separator()
 
-    -- 2. Quartet Pet Telemetry & Individual Cards
-    accent(GOLD, 'Active Quartet Pet Telemetry')
+    -- 2. One card per pet class
     for _, slot in ipairs(petSlots) do
-        local slotHeader = string.format('Slot %d: [%s] ', slot.slotNum, slot.cls)
+      if slot.isPetCls or slot.petId then
+        local slotHeader = string.format('%s pet: ', slot.cls)
         local info = getPetSpawnInfo(slot.petId)
 
         if slot.petId then
-            slotHeader = slotHeader .. string.format('%s (Lvl %d %s, ID: %d)', info.cleanName, info.level, info.race, info.id)
-        elseif slot.isPetCls then
-            slotHeader = slotHeader .. '(Pet Missing / Not Summoned)'
+            slotHeader = slotHeader .. string.format('%s (L%d %s) %d%%', info.cleanName, info.level, info.race, tonumber(info.hpPct) or 0)
         else
-            slotHeader = slotHeader .. '(Non-Pet Class)'
+            slotHeader = slotHeader .. 'not summoned'
         end
 
         local headerOpen = ImGui.CollapsingHeader(slotHeader .. '###slotHeader' .. slot.slotNum, ImGuiTreeNodeFlags.DefaultOpen)
@@ -12842,6 +12822,7 @@ function UI.drawPetControlTab()
                 end
             end
         end
+      end
     end
 
     -- 3. Extra / Swarm Pets
@@ -14522,7 +14503,7 @@ UI.MINI_SECTIONS = {
     { key = 'mini_show_vitals',   label = 'My vitals',       tip = 'Your HP / Mana / Endurance bars.' },
     { key = 'mini_show_camp',     label = 'Camp row',        tip = 'Camp anchor (set / clear / distance) in the modes that use one.' },
     { key = 'mini_show_tracker',  label = 'Session tracker', tip = 'Session time, AA/hr and Plat/hr.' },
-    { key = 'mini_show_buttons',  label = 'Plugin buttons',  tip = 'The window / script toggle buttons chosen on Settings -> Plugins.' },
+    { key = 'mini_show_buttons',  label = 'Plugin buttons',  tip = 'Buttons for the windows / scripts pinned on Setup -> Plugins.' },
 }
 
 -- Handles the Combo widgets for the primary mode and its submode (shared by
@@ -14677,19 +14658,19 @@ function UI.miniBarHeight()
 end
 
 function UI.drawMiniHeader()
-    UI.drawStartPauseButton('##miniRun', 72, 22)
+    UI.drawStartPauseButton('##miniRun', UI.px(72), 0)
     ImGui.SameLine()
-    UI.drawBurnButton('##miniBurn', 64, 22, 'BURN!', 'Burn')
+    UI.drawBurnButton('##miniBurn', UI.px(64), 0, 'BURN!', 'Burn')
     ImGui.SameLine(0, UI.px(10))
-    UI.drawModeCombos('MiniMode', 86, 82)
+    UI.drawModeCombos('MiniMode', UI.px(86), UI.px(82))
     ImGui.SameLine(0, UI.px(10))
-    if ImGui.Button('Full##miniFull', UI.px(42), UI.px(22)) then
+    if ImGui.Button('Expand##miniFull') then
         ctrl.compact = false
         runtime.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then UI.setTooltip('Back to the full tabbed Morituri Auto Combat window.') end
+    if ImGui.IsItemHovered() then UI.setTooltip('Back to the full window.') end
     ImGui.SameLine()
-    if ImGui.Button('Menu##miniMenuBtn', UI.px(48), UI.px(22)) then
+    if ImGui.Button('Menu##miniMenuBtn') then
         ImGui.OpenPopup('##miniMenu')
     end
     if ImGui.IsItemHovered() then UI.setTooltip('Compact window options (also on right-click).') end
@@ -14697,26 +14678,7 @@ function UI.drawMiniHeader()
 end
 
 function UI.drawMiniActivity()
-    local modeStr = ctrl.mode or 'Manual'
-    if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
-        modeStr = string.format('%s / %s', ctrl.mode, ctrl.submode)
-    end
-    if ctrl.running then
-        accent(GOOD, '• RUNNING')
-    else
-        accent(WARN, '• PAUSED')
-    end
-    if ImGui.IsItemHovered() then
-        UI.setTooltip('%s\n%s', modeStr, MODES.SUB_DESC[tostring(ctrl.mode) .. ':' .. tostring(ctrl.submode)] or MODES.DESC[ctrl.mode] or '')
-    end
-    ImGui.SameLine(); ImGui.TextDisabled('|')
-    ImGui.SameLine()
-    local text, col = UI.miniActivity()
-    accent(col, text)
-    if ctrl.burn then
-        ImGui.SameLine(); ImGui.TextDisabled('|')
-        ImGui.SameLine(); accent({ 1.0, 0.30, 0.30, 1.0 }, 'BURN')
-    end
+    UI.drawStatusLine(true)
     UI.miniMeasure()
 end
 
@@ -14747,7 +14709,7 @@ function UI.drawMiniTarget()
             end
         else
             accent(MUTED, 'none set')
-            if ImGui.IsItemHovered() then UI.setTooltip('Pick a Main Assist on the Control tab of the full window.') end
+            if ImGui.IsItemHovered() then UI.setTooltip('Pick a Main Assist on the Mode & Pulling page of the full window.') end
         end
         UI.miniMeasure()
     end
@@ -14929,36 +14891,15 @@ function UI.drawMiniButtons()
         drawn = 0
     end
     if drawn == 0 then
-        ImGui.TextDisabled('(no plugin buttons - pick them on Settings -> Plugins)')
+        ImGui.TextDisabled('(no pinned windows - pin them on Setup -> Plugins)')
     end
     UI.miniMeasure()
 end
 
 function UI.drawMiniWarnings()
-    if not navLoaded() then
-        accent(WARN, '[!] MQ2Nav not loaded')
-        if ImGui.IsItemHovered() then UI.setTooltip('MQ2Nav is required for pathing and navigation.') end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Load##miniLoadNav') then mq.cmd('/plugin mq2nav'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end end
-        if ImGui.IsItemHovered() then UI.setTooltip('/plugin mq2nav') end
-        UI.miniMeasure()
-    elseif not navMeshLoaded() then
-        local curZone = mq.TLO.Zone.ShortName() or 'zone'
-        accent(WARN, string.format('[!] No navmesh for %s', curZone))
-        if ImGui.IsItemHovered() then UI.setTooltip('No navmesh loaded for %s. Pathing, roaming and chase need one.', curZone) end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Reload##miniReloadMesh') then mq.cmd('/nav reload'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end end
-        if ImGui.IsItemHovered() then UI.setTooltip('/nav reload') end
-        UI.miniMeasure()
-    end
-    if not stickLoaded() then
-        accent(WARN, '[!] MQ2MoveUtils not loaded')
-        if ImGui.IsItemHovered() then UI.setTooltip('MQ2MoveUtils is required for melee stick and positioning.') end
-        ImGui.SameLine()
-        if ImGui.SmallButton('Load##miniLoadMoveUtils') then mq.cmd('/plugin mq2moveutils'); if runtime.invalidatePluginProbes then runtime.invalidatePluginProbes() end end
-        if ImGui.IsItemHovered() then UI.setTooltip('/plugin mq2moveutils') end
-        UI.miniMeasure()
-    end
+    if #UI.collectIssues() == 0 then return end
+    UI.drawIssuesStrip()
+    UI.miniMeasure()
 end
 
 -- Ghost mode for the compact window: ctrl.mini_ghost is the saved switch;
@@ -15039,7 +14980,7 @@ function UI.drawMiniGui()
     -- The X on the mini window returns to the full window; it used to write
     -- the script-level `open` flag and so terminated the whole script.
     local miniOpen
-    miniOpen, show = ImGui.Begin('Morituri Auto Combat Mini v' .. VERSION .. '###triuneMini', true, flags)
+    miniOpen, show = ImGui.Begin('MoriAC v' .. VERSION .. '###triuneMini', true, flags)
     if not miniOpen then
         ctrl.compact = false
         UI.preEndWindow('mini', true)
@@ -15225,21 +15166,27 @@ function UI.drawCommandBar()
 end
 
 -- RUNNING / PAUSED, then what the engine is doing (or, while paused, what
--- the selected mode does). The activity text costs spawn lookups, so it is
--- refreshed 4x a second.
-function UI.drawStatusLine()
+-- the selected mode does -- just its name when `compact`, so the
+-- auto-sizing compact HUD stays narrow). The activity text costs spawn
+-- lookups, so it is refreshed 4x a second.
+function UI.drawStatusLine(compact)
     local now = os.clock()
-    local sl = runtime.statusLineCache
+    runtime.statusLineCache = runtime.statusLineCache or {}
+    local ck = compact and 'compact' or 'full'
+    local sl = runtime.statusLineCache[ck]
     if not sl or (now - sl.at) >= 0.25 or sl.running ~= ctrl.running then
         local text, col
         if ctrl.running then
             text, col = UI.miniActivity()
+        elseif compact then
+            text = MODES.SUBMODES[ctrl.mode] and string.format('%s / %s', tostring(ctrl.mode), tostring(ctrl.submode)) or tostring(ctrl.mode)
+            col = MUTED
         else
             local key = MODES.SUBMODES[ctrl.mode] and (tostring(ctrl.mode) .. ':' .. tostring(ctrl.submode)) or ctrl.mode
             text, col = MODES.SUB_DESC[key] or MODES.DESC[ctrl.mode] or '', MUTED
         end
         sl = { at = now, running = ctrl.running, text = text, col = col }
-        runtime.statusLineCache = sl
+        runtime.statusLineCache[ck] = sl
     end
     if ctrl.running then accent(GOOD, 'RUNNING') else accent(WARN, 'PAUSED') end
     ImGui.SameLine(); ImGui.TextDisabled('-')
@@ -24567,7 +24514,7 @@ local function triuneCommand(...)
         print('  \ag/ac status\ax - Print running state and mode')
         print('  \ag/ac compact | mini\ax - Toggle compact mini-window mode')
         print('  \ag/ac ghost [on|off]\ax - Ghost mode for the compact window: the frame fades when the mouse is away')
-        print('  \ag/ac scale [0.75-2.0|reset]\ax - Scale every MoriAC window (per-window overrides on Settings -> Window Layout)')
+        print('  \ag/ac scale [0.75-2.0|reset]\ax - Scale every MoriAC window (per-window overrides on Setup -> Window Layout)')
         print('  \ag/ac hud | uf | targetwin\ax - Toggle popout Target & Player HUD window')
         print('  \ag/ac target | tw | targetwindow\ax - Toggle the popout Target-only window')
         print('  \ag/ac help | h | ?\ax - Print slash command summary')

@@ -3853,7 +3853,7 @@ function UI.drawBoxTab()
     local bn = boxnet()
     if not bn then
         ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], 'The Box Network plugin (boxnet) is not loaded or is disabled.')
-        ImGui.TextDisabled('Enable it on Settings -> Plugins to see your other characters\' inventories here.')
+        ImGui.TextDisabled('Enable it on Setup -> Plugins to see your other characters\' inventories here.')
         return
     end
     if not bn.available() then

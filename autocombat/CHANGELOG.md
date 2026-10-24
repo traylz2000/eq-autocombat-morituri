@@ -4,6 +4,17 @@
 
 ## 2026-10-24
 
+- **Pets page tidied (`lua/moriac.lua`).**
+  - "All pets" header with the hold state shown only while holding. "Hold pets until the mob is at [x% HP]" now reads as one sentence.
+  - The two rows of `Taunt ON OFF | Hold ON OFF | ...` became a 3x2 stance grid with tooltips (`UI.PET_STANCES`).
+  - One card per pet class, titled like "Mag pet: Gobekn (L55 Elemental) 98%" or "Nec pet: not summoned". Classes without pets no longer get an empty card.
+- **Compact HUD made consistent with the full window.** Phase P7, core part.
+  - Its activity line is the full window's status line, in a compact form that shows just the mode name while paused, so the auto-sizing HUD stays narrow.
+  - Its warnings are the same issues list, so the data-file problem shows there too.
+  - Start/Burn/Menu sizes follow the UI scale.
+  - "Full" is now "Expand", and the title is "MoriAC v0.9".
+- Text that pointed at old tab names ("Control tab", "Settings -> Plugins", "AAs tab, Grp column") now names the new pages (Mode & Pulling, Setup -> Plugins / Window Layout, the AAs page's Group setting).
+
 - **Settings page reorganised (`lua/moriac.lua`).** Phase P6.
   - **"Find a setting..." box.** Type e.g. *mana*, *door*, *log* or *fov* and only the matching sections are shown, expanded. It matches section titles plus keyword lists. A message appears when nothing matches.
   - **Remembered collapsible sections:** Classes, Combat style & positioning (both open by default), Navigation, Retargeting while moving, Resting & med breaks, Pets, Interface & diagnostics (closed by default, so the page is no longer one long scroll).
