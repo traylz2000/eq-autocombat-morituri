@@ -1116,6 +1116,112 @@ local function parseClassLine(text)
     return nil
 end
 
+-- EverQuest level titles (51 / 55 / 60 / 65) -> class. Only trusted from the
+-- Inventory window's class field (IW_Class), which shows titles like
+-- "Dread Lord" or "Arch Convoker" once a class reaches 51: words such as
+-- "Master" or "Fury" are too generic to match anywhere else.
+runtime.CLASS_TITLES = {
+    CHAMPION = 'War', MYRMIDON = 'War', WARLORD = 'War', OVERLORD = 'War',
+    VICAR = 'Clr', TEMPLAR = 'Clr', HIGHPRIEST = 'Clr', ARCHON = 'Clr',
+    CAVALIER = 'Pal', KNIGHT = 'Pal', CRUSADER = 'Pal', LORDPROTECTOR = 'Pal',
+    PATHFINDER = 'Rng', OUTRIDER = 'Rng', WARDER = 'Rng', FORESTSTALKER = 'Rng',
+    REAVER = 'SK', REVENANT = 'SK', GRAVELORD = 'SK', DREADLORD = 'SK',
+    WANDERER = 'Dru', PRESERVER = 'Dru', HIEROPHANT = 'Dru', STORMWARDEN = 'Dru',
+    DISCIPLE = 'Mnk', MASTER = 'Mnk', GRANDMASTER = 'Mnk', TRANSCENDENT = 'Mnk',
+    MINSTREL = 'Brd', TROUBADOUR = 'Brd', VIRTUOSO = 'Brd', MAESTRO = 'Brd',
+    RAKE = 'Rog', BLACKGUARD = 'Rog', ASSASSIN = 'Rog', DECEIVER = 'Rog',
+    MYSTIC = 'Shm', LUMINARY = 'Shm', ORACLE = 'Shm', PROPHET = 'Shm',
+    HERETIC = 'Nec', DEFILER = 'Nec', WARLOCK = 'Nec', ARCHLICH = 'Nec',
+    CHANNELER = 'Wiz', EVOKER = 'Wiz', SORCERER = 'Wiz', ARCANIST = 'Wiz',
+    ELEMENTALIST = 'Mag', CONJURER = 'Mag', ARCHMAGE = 'Mag', ARCHCONVOKER = 'Mag',
+    ILLUSIONIST = 'Enc', BEGUILER = 'Enc', PHANTASMIST = 'Enc', COERCER = 'Enc',
+    PRIMALIST = 'Bst', ANIMIST = 'Bst', SAVAGELORD = 'Bst', FERALLORD = 'Bst',
+    BRAWLER = 'Ber', VEHEMENT = 'Ber', RAGER = 'Ber', FURY = 'Ber',
+}
+
+-- Every class named in a piece of text, in order: "Cleric / Necromancer",
+-- "CLR MAG NEC SHM", "Shadow Knight, Magician" (a gestalt UI may put several
+-- on one line; parseClassLine only ever returned the first). Two-word names
+-- are tried as a pair before their single words. allowTitles also accepts
+-- level titles (runtime.CLASS_TITLES).
+function runtime.parseClassesInLine(text, allowTitles)
+    local out = {}
+    if type(text) ~= 'string' or text == '' or text == 'NULL' then return out end
+    local up = text:gsub('^%s*%d+[%s%.:]*', ''):upper()
+    if up:find('^%s*LEVEL') or up:find('^%s*LVL') then return out end
+    local function add(c)
+        for _, e in ipairs(out) do if e == c then return end end
+        out[#out + 1] = c
+    end
+    local function lookup(tok)
+        local k = tostring(tok or ''):upper():gsub('[^%a]', '')
+        if k == '' then return nil end
+        return MQSHORT[k] or (allowTitles and runtime.CLASS_TITLES[k]) or nil
+    end
+    for seg in text:gmatch('[^/,;|+&\r\n]+') do
+        local whole = lookup(seg)
+        if whole then
+            add(whole)
+        else
+            local words = {}
+            for w in seg:gmatch('%a+') do words[#words + 1] = w end
+            local i = 1
+            while i <= #words do
+                local pair = words[i + 1] and lookup(words[i] .. words[i + 1])
+                if pair then
+                    add(pair); i = i + 2
+                else
+                    local one = lookup(words[i])
+                    if one then add(one) end
+                    i = i + 1
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Adds every class found in `text` to `found` (no duplicates).
+function runtime.addClassesFromText(found, text, allowTitles)
+    for line in tostring(text or ''):gmatch('[^\r\n]+') do
+        for _, c in ipairs(runtime.parseClassesInLine(line, allowTitles)) do
+            local dup = false
+            for _, e in ipairs(found) do if e == c then dup = true; break end end
+            if not dup then found[#found + 1] = c end
+        end
+    end
+end
+
+-- The Inventory window fields class detection reads, with their raw text:
+-- { name, text } for /ac classdump.
+function runtime.classFieldTexts()
+    local out = {}
+    pcall(function()
+        local invWin = mq.TLO.Window('InventoryWindow')
+        if not invWin or not invWin() then return end
+        for _, name in ipairs({ 'IW_ClassAbbr', 'IW_Class', 'IW_ClassList' }) do
+            local child = invWin.Child(name)
+            if child and child() then
+                local parts = {}
+                pcall(function()
+                    local t = child.Text()
+                    if t and t ~= '' and t ~= 'NULL' then parts[#parts + 1] = tostring(t) end
+                end)
+                pcall(function()
+                    for i = 1, 10 do
+                        local li = child.List(i)()
+                        if li and li ~= '' and li ~= 'NULL' then parts[#parts + 1] = tostring(li) end
+                    end
+                end)
+                out[#out + 1] = { name = name, text = table.concat(parts, '\n') }
+            else
+                out[#out + 1] = { name = name, text = nil }
+            end
+        end
+    end)
+    return out
+end
+
 local classesFromInventoryWindow
 do
     local function scanOneNode(node, found)
@@ -1126,16 +1232,7 @@ do
                 for i = 1, items do
                     local ok, text = pcall(function() return node.List(i)() end)
                     if ok and text and text ~= '' and text ~= 'NULL' then
-                        local norm = parseClassLine(text)
-                        if norm then
-                            local dup = false
-                            for _, existing in ipairs(found) do
-                                if existing == norm then
-                                    dup = true; break
-                                end
-                            end
-                            if not dup then found[#found + 1] = norm end
-                        end
+                        runtime.addClassesFromText(found, text, false)
                     end
                 end
             end
@@ -1143,18 +1240,7 @@ do
         pcall(function()
             local text = node.Text()
             if text and text ~= '' and text ~= 'NULL' then
-                for line in text:gmatch('[^\r\n]+') do
-                    local norm = parseClassLine(line)
-                    if norm then
-                        local dup = false
-                        for _, existing in ipairs(found) do
-                            if existing == norm then
-                                dup = true; break
-                            end
-                        end
-                        if not dup then found[#found + 1] = norm end
-                    end
-                end
+                runtime.addClassesFromText(found, text, false)
             end
         end)
     end
@@ -1185,102 +1271,16 @@ do
             mq.delay(250)
         end
 
+        -- Every class field is read and the results combined (a gestalt
+        -- character can show some classes in one field and the rest in
+        -- another); the first field to name a class sets its slot order.
+        -- Level titles are only trusted from IW_Class.
         local found = {}
-
-        -- 1. Check IW_ClassAbbr ("SHD\nMAG\nBST")
-        pcall(function()
-            local invWin = mq.TLO.Window('InventoryWindow')
-            if not invWin or not invWin() then return end
-            local abbrChild = invWin.Child('IW_ClassAbbr')
-            if abbrChild and abbrChild() then
-                local text = abbrChild.Text()
-                if text and text ~= '' and text ~= 'NULL' then
-                    for line in text:gmatch('[^\r\n]+') do
-                        local norm = parseClassLine(line)
-                        if norm then
-                            local dup = false
-                            for _, existing in ipairs(found) do
-                                if existing == norm then
-                                    dup = true; break
-                                end
-                            end
-                            if not dup then found[#found + 1] = norm end
-                        end
-                    end
-                end
-            end
-        end)
-
-        -- 2. Check IW_Class ("DreadLord\nArchConvoker\nFeralLord")
-        if #found == 0 then
-            pcall(function()
-                local invWin = mq.TLO.Window('InventoryWindow')
-                if not invWin or not invWin() then return end
-                local clsChild = invWin.Child('IW_Class')
-                if clsChild and clsChild() then
-                    local text = clsChild.Text()
-                    if text and text ~= '' and text ~= 'NULL' then
-                        for line in text:gmatch('[^\r\n]+') do
-                            local norm = parseClassLine(line)
-                            if norm then
-                                local dup = false
-                                for _, existing in ipairs(found) do
-                                    if existing == norm then
-                                        dup = true; break
-                                    end
-                                end
-                                if not dup then found[#found + 1] = norm end
-                            end
-                        end
-                    end
-                end
-            end)
+        for _, f in ipairs(runtime.classFieldTexts()) do
+            if f.text then runtime.addClassesFromText(found, f.text, f.name == 'IW_Class') end
         end
 
-        -- 3. Check IW_ClassList
-        if #found == 0 then
-            pcall(function()
-                local invWin = mq.TLO.Window('InventoryWindow')
-                if not invWin or not invWin() then return end
-                local listChild = invWin.Child('IW_ClassList')
-                if listChild and listChild() then
-                    for i = 1, 10 do
-                        local ok, text = pcall(function() return listChild.List(i)() end)
-                        if ok and text and text ~= '' and text ~= 'NULL' then
-                            local norm = parseClassLine(text)
-                            if norm then
-                                local dup = false
-                                for _, existing in ipairs(found) do
-                                    if existing == norm then
-                                        dup = true; break
-                                    end
-                                end
-                                if not dup then found[#found + 1] = norm end
-                            end
-                        end
-                    end
-                    if #found == 0 then
-                        local okText, rawText = pcall(function() return listChild.Text() end)
-                        if okText and rawText and rawText ~= '' and rawText ~= 'NULL' then
-                            for line in rawText:gmatch('[^\r\n]+') do
-                                local norm = parseClassLine(line)
-                                if norm then
-                                    local dup = false
-                                    for _, existing in ipairs(found) do
-                                        if existing == norm then
-                                            dup = true; break
-                                        end
-                                    end
-                                    if not dup then found[#found + 1] = norm end
-                                end
-                            end
-                        end
-                    end
-                end
-            end)
-        end
-
-        -- 4. Tree Walk fallback
+        -- Last resort: walk the whole window for anything naming a class.
         if #found == 0 then
             pcall(function()
                 local invWin = mq.TLO.Window('InventoryWindow')
@@ -1289,6 +1289,7 @@ do
                 end
             end)
         end
+        while #found > CLASS_SLOTS do table.remove(found) end
 
         if not wasOpen and force then
             mq.cmd('/windowstate InventoryWindow close')
@@ -5095,8 +5096,98 @@ local function spellClassInfo(name)
             end
         end
     end
+    -- Not one of our detected classes' spells: name its real owner from the
+    -- data file rather than pinning it on the first class (a missed class
+    -- detection used to label every one of that class's spells as class 1).
+    for abbr in pairs(DATA.spells or {}) do
+        local list = lookupSpells(abbr)
+        for _, it in ipairs(list or {}) do
+            if it[1] == name then
+                local kind = mapTLOCategoryToKind(nil, name)
+                if not kind or kind == 'other' then kind = it[4] or 'other' end
+                return abbr, (it[3] == 1), kind
+            end
+        end
+    end
     local fallbackKind = mapTLOCategoryToKind(nil, name)
     return myClasses[1] or 'War', true, fallbackKind
+end
+
+-- Caches built from the class list; dropped whenever it changes.
+function runtime.classesChanged()
+    clearFilteredSpellsCache()
+    runtime.catalogRows = nil
+    runtime.clientAbilitiesCache = nil
+    runtime.gemBadgeCache = {}
+end
+
+-- Spell lines whose class does not own their spell (imported while a class
+-- was not detected) get the owning class. Returns how many were fixed.
+function runtime.fixGemClasses()
+    local fixed = 0
+    for _, g in ipairs(loadout.gems or {}) do
+        if type(g) == 'table' and g.spell and g.spell ~= '' then
+            local owns = false
+            if g.cls then
+                for _, it in ipairs(lookupSpells(g.cls) or {}) do
+                    if it[1] == g.spell then owns = true; break end
+                end
+            end
+            if not owns then
+                local cls = spellClassInfo(g.spell)
+                if cls and cls ~= g.cls then
+                    g.cls = cls
+                    fixed = fixed + 1
+                end
+            end
+        end
+    end
+    return fixed
+end
+
+-- A saved loadout can hold fewer classes than the character has (older
+-- builds read only the first class on each line of the Inventory window).
+-- Re-detect and keep the fuller list. Must run on the main coroutine
+-- (detection may open the Inventory window and wait).
+function runtime.healClasses()
+    if myClasses and #myClasses >= CLASS_SLOTS then return false end
+    local detected = detectClasses(false)
+    if not detected or #detected <= #(myClasses or {}) then return false end
+    print(string.format('\ag[MoriAC]\ax Classes updated from your Inventory window: %s (the saved setup had %s).',
+        table.concat(detected, ' / '), (#(myClasses or {}) > 0) and table.concat(myClasses, ' / ') or 'none'))
+    myClasses = detected
+    runtime.classesChanged()
+    local fixed = runtime.fixGemClasses()
+    if fixed > 0 then
+        print(string.format('\ag[MoriAC]\ax Re-assigned %d spell line(s) to the class that owns the spell.', fixed))
+    end
+    runtime.saveLoadout(true)
+    return true
+end
+
+-- /ac classdump: what class detection reads, raw, for bug reports.
+function runtime.dumpClassFields()
+    local wasOpen = false
+    pcall(function() wasOpen = mq.TLO.Window('InventoryWindow').Open() end)
+    if not wasOpen then
+        mq.cmd('/windowstate InventoryWindow open')
+        mq.delay(250)
+    end
+    print('\ag[MoriAC]\ax Class detection sources (InventoryWindow):')
+    for _, f in ipairs(runtime.classFieldTexts()) do
+        if f.text then
+            local parsed = {}
+            runtime.addClassesFromText(parsed, f.text, f.name == 'IW_Class')
+            print(string.format('  %s = "%s" -> %s', f.name, (f.text:gsub('\n', ' | ')),
+                #parsed > 0 and table.concat(parsed, ', ') or '(no class found)'))
+        else
+            print(string.format('  %s: not in this UI', f.name))
+        end
+    end
+    local mc = ''
+    pcall(function() mc = mq.TLO.Me.Class.Name() or '' end)
+    print(string.format('  Me.Class = %s | current classes: %s', tostring(mc), table.concat(myClasses or {}, ' / ')))
+    if not wasOpen then mq.cmd('/windowstate InventoryWindow close') end
 end
 
 
@@ -6631,6 +6722,7 @@ function runtime.onCharacterChanged()
     lvlMin, lvlMax = 1, 65
     if ALLDATA[myName] then
         runtime.applyEntry(ALLDATA[myName])
+        runtime.healClasses()
         scanKnownDiscs()
     else
         local detected = detectClasses(true)
@@ -9532,6 +9624,47 @@ function UI.drawGemTabHeader(gemsTable)
     if ImGui.IsItemHovered() then UI.setTooltip('%s', string.format('Out of combat, refresh a buff once it has %d seconds or less left (0 = only when it drops).', newRefSec)) end
 end
 
+-- Gems whose memorized spell is not what the spell lines expect there
+-- (e.g. a loadout saved before the bar was changed). Rechecked once a second.
+function UI.barMismatch()
+    local now = os.clock()
+    local c = runtime.barMismatchCache
+    if c and (now - c.at) < 1.0 then return c.n end
+    local n = 0
+    if not (runtime.isSwitchingSpells or next(runtime.pendingMem or {})) then
+        for slot = 1, getNumGems() do
+            local memmed = nil
+            pcall(function() memmed = mq.TLO.Me.Gem(slot).Name() end)
+            if memmed == 'NULL' then memmed = nil end
+            local primary = runtime.getPrimarySpellForGem(slot)
+            if (memmed and memmed ~= '' and not primary) or (primary and not isGemMatching(slot, primary)) then
+                n = n + 1
+            end
+        end
+    end
+    runtime.barMismatchCache = { at = now, n = n }
+    return n
+end
+
+function UI.drawBarMismatchNotice(gems)
+    local n = UI.barMismatch()
+    if n == 0 then return end
+    ImGui.AlignTextToFramePadding()
+    accent(WARN, string.format('%d gem(s) on your spell bar differ from these lines.', n))
+    ImGui.SameLine()
+    if ImGui.SmallButton('Use my spell bar##barImport') then
+        runtime.importCurrentGems(gems)
+        runtime.barMismatchCache = nil
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Replace the lines for gems 1-%d with what is memorized right now (lines for higher gems are kept).', getNumGems()) end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Memorize these lines##barMem') then
+        runtime.queueMemAll()
+        runtime.barMismatchCache = nil
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Keep the lines and memorize their spells into the gems instead.') end
+end
+
 function UI.drawSpellTable(gems, h)
     local sel = runtime.actSel.spells
     if not ImGui.BeginTable('##spellLines', 9, UI.listTableFlags(), 0, h) then return end
@@ -9700,6 +9833,7 @@ end
 function UI.drawGemTab()
     local gems = loadout.gems
     UI.drawGemTabHeader(gems)
+    UI.drawBarMismatchNotice(gems)
     ImGui.Separator()
     local sel = runtime.actSel.spells
     if sel and (sel < 1 or sel > #gems) then sel = nil; runtime.actSel.spells = nil end
@@ -24457,6 +24591,10 @@ local function triuneCommand(...)
         runtime.setRunning(false)
     elseif cmd == 'restart' or cmd == 'reload' then
         runtime.restartScript()
+    elseif cmd == 'classdump' or cmd == 'classes' then
+        runtime.classDumpRequested = true -- runs on the main loop (may open the Inventory window)
+    elseif cmd == 'redetect' then
+        reDetectRequested = true
     elseif cmd == 'status' then
         local modeStr = ctrl.mode
         if MODES.SUBMODES[ctrl.mode] then modeStr = modeStr .. ' (' .. ctrl.submode .. ')' end
@@ -25394,7 +25532,18 @@ local function runMainLoop()
         if reDetectRequested then
             reDetectRequested = false
             local detected = detectClasses(true) -- safe here -- main loop coroutine can yield/delay
-            if detected then myClasses = detected end
+            if detected then
+                myClasses = detected
+                runtime.classesChanged()
+                local fixed = runtime.fixGemClasses()
+                if fixed > 0 then
+                    print(string.format('\ag[MoriAC]\ax Re-assigned %d spell line(s) to the class that owns the spell.', fixed))
+                end
+            end
+        end
+        if runtime.classDumpRequested then
+            runtime.classDumpRequested = false
+            runtime.dumpClassFields()
         end
         -- (Cursor items are cleared on-demand prior to actions/mems or post-cast completion)
         if runtime.pendingCursorClearAt and os.clock() >= runtime.pendingCursorClearAt then

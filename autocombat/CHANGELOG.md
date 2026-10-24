@@ -4,6 +4,17 @@
 
 ## 2026-10-24
 
+- **Fix: only 2 of 4 classes detected (first in-game report).** The title showed "Clr / Mag". Imported necro spells were labelled Clr, some lines were blank, and the Nec pets showed as "extra" pets.
+  - Cause: the Inventory-window parser took only the **first class on each line**, and the other class fields were only read when the first field found nothing. A 4-class Morituri character that shows two classes per line came out with two.
+  - `runtime.parseClassesInLine` now reads every class in a line. It splits on `/ , ; | + &` and handles two-word names ("Shadow Knight", "Arch Mage"). **Level titles** (51/55/60/65 for all 16 classes, e.g. "High Priest", "Dread Lord", "Arch Convoker") are recognised from `IW_Class` only.
+  - All three class fields (`IW_ClassAbbr`, `IW_Class`, `IW_ClassList`) are read and combined. The whole-window scan stays a last resort.
+  - **Self-heal at load** (`runtime.healClasses`): when the saved setup has fewer than 4 classes, MoriAC re-detects and keeps the fuller list, then says so in chat. This repairs setups saved by older builds without any clicks.
+  - **Spell lines re-labelled** (`runtime.fixGemClasses`): a line whose class doesn't own its spell gets the owning class. This runs after the self-heal and after Re-detect.
+  - Import Bar: a memorized spell from a class that wasn't detected is labelled with its real class from the data file, not your first class.
+  - New `/ac classdump`: prints the raw text of each Inventory class field and what was parsed from it. If detection is still wrong, send its output. `/ac redetect` does the same as the Re-detect button.
+- **Spells page: notice when your spell bar doesn't match the lines.** For example, a migrated setup saved before you re-memmed. It shows "N gem(s) on your spell bar differ from these lines" with **Use my spell bar** (Import Bar) or **Memorize these lines** (Mem All).
+- Tests: Suite M5 (parser layouts and titles, combined fields, real-class import, line repair).
+
 - **Pets page tidied (`lua/moriac.lua`).**
   - "All pets" header with the hold state shown only while holding. "Hold pets until the mob is at [x% HP]" now reads as one sentence.
   - The two rows of `Taunt ON OFF | Hold ON OFF | ...` became a 3x2 stance grid with tooltips (`UI.PET_STANCES`).
