@@ -22,7 +22,7 @@ local plugin = {
     id                 = 'floating_damage',
     name               = 'Floating Damage Text',
     version            = '2.1.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Renders animated floating critical hit damage numbers with impact pops, particle bursts, shockwaves, combo streaks and record callouts.',
     defaultEnabled     = true,
     tickInterval       = 0.05,
@@ -606,7 +606,7 @@ local lastDrawErrAt = -DRAW_ERR_INTERVAL
 local function reportDrawError(what, err, now)
     if (now - lastDrawErrAt) < DRAW_ERR_INTERVAL then return end
     lastDrawErrAt = now
-    print(string.format('\ar[Triune Floating Damage]\ax %s failed: %s', what, tostring(err)))
+    print(string.format('\ar[MoriAC Floating Damage]\ax %s failed: %s', what, tostring(err)))
 end
 
 local function drawCombo(dl, ImGui, ax, ay, now)

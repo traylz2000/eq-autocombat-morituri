@@ -18,7 +18,7 @@ local plugin = {
     id                 = 'spellbook',
     name               = 'Spellbook Browser',
     version            = '2.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Per-class spell database browser with scribed status, filters, spell info, and a mem-to-gem queue.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
@@ -890,7 +890,7 @@ local function drawWindow()
         )
     end
     core.preBeginWindow('spellbook')
-    local open, show = ImGui.Begin('Triune Spellbook Engine v' .. (core.VERSION or '') .. '###triuneSpellbook', ctrl.show_spellbook, core.windowFlags and core.windowFlags('spellbook', windowFlags) or windowFlags)
+    local open, show = ImGui.Begin('MoriAC Spellbook Engine v' .. (core.VERSION or '') .. '###triuneSpellbook', ctrl.show_spellbook, core.windowFlags and core.windowFlags('spellbook', windowFlags) or windowFlags)
     if not open then
         ctrl.show_spellbook = false
         if core.preEndWindow then core.preEndWindow('spellbook', false) end
@@ -1195,7 +1195,7 @@ function plugin.onCommand(cmd)
     refresh()
     ctrl.show_spellbook = not ctrl.show_spellbook
     core.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Spellbook Browser %s.', ctrl.show_spellbook and 'OPENED' or 'CLOSED'))
+    print(string.format('\ag[MoriAC]\ax Spellbook Browser %s.', ctrl.show_spellbook and 'OPENED' or 'CLOSED'))
     return true
 end
 

@@ -22,7 +22,7 @@ local plugin = {
     id                 = 'hud_xtarget',
     name               = 'Extended Target HUD',
     version            = '1.1.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Popout Extended Target window with HP bars, aggro %, distance/LoS, ToT, per-row Force/Ignore toggles, and right-click actions.',
     defaultEnabled     = true,
     tickInterval       = 0.25,
@@ -330,7 +330,7 @@ function plugin.onDrawUI()
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(3), core.px(2))
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
     local show
-    ctrl.show_xtarget_window, show = ImGui.Begin('Triune Extended Target v' .. (core.VERSION or '') .. '###triuneXTargetWindow', ctrl.show_xtarget_window, core.windowFlags and core.windowFlags('xtarget', winFlags) or winFlags)
+    ctrl.show_xtarget_window, show = ImGui.Begin('MoriAC Extended Target v' .. (core.VERSION or '') .. '###triuneXTargetWindow', ctrl.show_xtarget_window, core.windowFlags and core.windowFlags('xtarget', winFlags) or winFlags)
     if not ctrl.show_xtarget_window then
         if core.preEndWindow then core.preEndWindow('xtarget', true) end
         ImGui.End()

@@ -24,7 +24,7 @@ local plugin = {
     id                 = 'buffbot',
     name               = 'Buffbot Station',
     version            = '1.7.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Tell-driven buffbot: numbered spell menu, pet buffing, guild priority, ignore list, auto-med and anti-AFK.',
     defaultEnabled     = true,
     tickInterval       = 0.05,
@@ -72,7 +72,9 @@ local function delay(ms, cond)
 end
 
 local function configPath()
-    return (mq.configDir or 'config') .. '/triune_buffbot_config.lua'
+    local p = (mq.configDir or 'config') .. '/moriac_buffbot_config.lua'
+    if core and core.migrateConfigFile then core.migrateConfigFile(p) end
+    return p
 end
 
 local GOLD         = { 1.00, 0.70, 0.54, 1 }
@@ -862,7 +864,7 @@ local function preemptForGuild(cleanSender, isGuildMember)
         or "Pausing your buffs momentarily for a guild member priority request. Will resume shortly!"
     queueTell(rt.currentJob.sender, pauseMsg)
     logMsg(string.format("Preempting active buffs on non-guild player '%s' for guild member '%s'.", rt.currentJob.sender, cleanSender), true, false)
-    print(string.format('\ay[Triune Buffbot]\ax Preempting non-guild player \aw%s\ax for guild member \ag%s\ax...', rt.currentJob.sender, cleanSender))
+    print(string.format('\ay[MoriAC Buffbot]\ax Preempting non-guild player \aw%s\ax for guild member \ag%s\ax...', rt.currentJob.sender, cleanSender))
 end
 
 -- The "Queued ... you are #N in line" reply ladder shared by the player /
@@ -921,7 +923,7 @@ local function onTellReceived(line, sender, msg)
         local banMsg = (cfg.banMsg and cfg.banMsg ~= '') and cfg.banMsg or "You are banned from getting buffs."
         queueTell(cleanSender, banMsg)
         logMsg(string.format("Blocked request from banned player '%s'. Sent ban notice.", cleanSender), true, false)
-        print(string.format('\ay[Triune Buffbot]\ax Blocked tell from banned player \aw%s\ax: \ar"%s"\ax', cleanSender, banMsg))
+        print(string.format('\ay[MoriAC Buffbot]\ax Blocked tell from banned player \aw%s\ax: \ar"%s"\ax', cleanSender, banMsg))
         return
     end
 
@@ -943,7 +945,7 @@ local function onTellReceived(line, sender, msg)
 
     -- Log detection to UI and MQ console
     logMsg(string.format("Incoming tell from %s: '%s'", cleanSender, cleanMsg))
-    print(string.format('\ay[Triune Buffbot]\ax Incoming tell from \aw%s\ax: \ag"%s"\ax', cleanSender, cleanMsg))
+    print(string.format('\ay[MoriAC Buffbot]\ax Incoming tell from \aw%s\ax: \ag"%s"\ax', cleanSender, cleanMsg))
 
     -- Check 1-second rapid request delay (silent ignore to prevent tell spam)
     local now = os.time()
@@ -995,7 +997,7 @@ local function onTellReceived(line, sender, msg)
             local myGuild = getMyGuild() or "Unguilded"
             local requesterGuild = getSpawnGuild(spawn) or "None"
             logMsg(string.format("Blocked request from non-guild player '%s' (Guild: '%s', Bot Guild: '%s'). Sent guild notice.", cleanSender, requesterGuild, myGuild), true, false)
-            print(string.format('\ay[Triune Buffbot]\ax Blocked tell from non-guild player \aw%s\ax (Guild: %s, Bot: %s): \ar"%s"\ax', cleanSender, requesterGuild, myGuild, guildMsg))
+            print(string.format('\ay[MoriAC Buffbot]\ax Blocked tell from non-guild player \aw%s\ax (Guild: %s, Bot: %s): \ar"%s"\ax', cleanSender, requesterGuild, myGuild, guildMsg))
             return
         end
     end
@@ -1100,7 +1102,7 @@ local function onTellReceived(line, sender, msg)
             local petDesc = (#inRangePets == 1) and string.format("your pet (%s)", petNamesStr) or string.format("your %d pets (%s)", #inRangePets, petNamesStr)
 
             logMsg(string.format("Requester '%s' queued %d buff(s) for %s (%s, Line #%d): %s", cleanSender, #requestedGems, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
-            print(string.format('\ag[Triune Buffbot]\ax Queued %d buff(s) for \aw%s\ax (%s, %s) (Line #%d): %s', #requestedGems, cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
+            print(string.format('\ag[MoriAC Buffbot]\ax Queued %d buff(s) for \aw%s\ax (%s, %s) (Line #%d): %s', #requestedGems, cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
 
             tellQueued(cleanSender, string.format('%d buff(s) for %s', #requestedGems, petDesc), totalAhead, pctMana, isGuildMember,
                 string.format('Stand by, preparing to cast %d buff(s) on %s! (You are #1 in line)', #requestedGems, petDesc),
@@ -1188,10 +1190,10 @@ local function onTellReceived(line, sender, msg)
 
                 if #playerGems > 0 then
                     logMsg(string.format("Requester '%s' queued buffs for self (%d) AND %s (%d) (%s, Line #%d): %s", cleanSender, #playerGems, petDesc, #requestedGems, isGuildMember and "Guild" or "Public", lineNum, spellsText))
-                    print(string.format('\ag[Triune Buffbot]\ax Queued buffs for \aw%s\ax AND %s (%s, Line #%d): %s', cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
+                    print(string.format('\ag[MoriAC Buffbot]\ax Queued buffs for \aw%s\ax AND %s (%s, Line #%d): %s', cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
                 else
                     logMsg(string.format("Requester '%s' queued %d buff(s) for %s only (player level restricted) (%s, Line #%d): %s", cleanSender, #requestedGems, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
-                    print(string.format('\ag[Triune Buffbot]\ax Queued %d buff(s) for %s (%s, %s, Line #%d): %s', #requestedGems, cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
+                    print(string.format('\ag[MoriAC Buffbot]\ax Queued %d buff(s) for %s (%s, %s, Line #%d): %s', #requestedGems, cleanSender, petDesc, isGuildMember and "Guild" or "Public", lineNum, spellsText))
                 end
 
                 tellQueued(cleanSender, string.format('buffs for you AND your %s', petDesc), totalAhead, pctMana, isGuildMember,
@@ -1199,7 +1201,7 @@ local function onTellReceived(line, sender, msg)
                     string.format('Stand by, prioritizing your guild request! Preparing to cast buffs on you and your %s! (You are #1 in line)', petDesc))
             else
                 logMsg(string.format("Requester '%s' requested both, but no pet found in range. Queued player buffs only (%s, Line #%d): %s", cleanSender, isGuildMember and "Guild" or "Public", lineNum, spellsText), true, false)
-                print(string.format('\ag[Triune Buffbot]\ax Queued %d buff(s) for \aw%s\ax (No pet in range, %s, Line #%d): %s', #playerGems, cleanSender, isGuildMember and "Guild" or "Public", lineNum, spellsText))
+                print(string.format('\ag[MoriAC Buffbot]\ax Queued %d buff(s) for \aw%s\ax (No pet in range, %s, Line #%d): %s', #playerGems, cleanSender, isGuildMember and "Guild" or "Public", lineNum, spellsText))
 
                 if totalAhead > 0 then
                     queueTell(cleanSender, string.format('No active pet in range found, but queued %d buff(s) for you! You are #%d in line (%d ahead).', #playerGems, lineNum, totalAhead))
@@ -1259,7 +1261,7 @@ local function onTellReceived(line, sender, msg)
             local lineNum = totalAhead + 1
 
             logMsg(string.format("Requester '%s' (Lvl %d) selected %d buff(s) (%s, Line #%d): %s", cleanSender, requesterLevel, #requestedGems, isGuildMember and "Guild" or "Public", lineNum, spellsText))
-            print(string.format('\ag[Triune Buffbot]\ax Queued %d buff(s) for \aw%s\ax (Lvl %d, %s, Line #%d): %s', #requestedGems, cleanSender, requesterLevel, isGuildMember and "Guild" or "Public", lineNum, spellsText))
+            print(string.format('\ag[MoriAC Buffbot]\ax Queued %d buff(s) for \aw%s\ax (Lvl %d, %s, Line #%d): %s', #requestedGems, cleanSender, requesterLevel, isGuildMember and "Guild" or "Public", lineNum, spellsText))
 
             local castNow, castNowGuild
             if #requestedGems == 1 then
@@ -1510,13 +1512,13 @@ local function processBuffQueue()
 
     if request.isResumed then
         logMsg(string.format("Resuming buffs for %s (%s) with %d remaining spell(s): %s", targetLabel, isGuild and "Guild" or "Public", #gemsToCast, table.concat(spellSummaryList, ", ")))
-        print(string.format('\ag[Triune Buffbot]\ax Resuming %d buff(s) on \aw%s\ax: %s', #gemsToCast, targetLabel, table.concat(spellSummaryList, ", ")))
+        print(string.format('\ag[MoriAC Buffbot]\ax Resuming %d buff(s) on \aw%s\ax: %s', #gemsToCast, targetLabel, table.concat(spellSummaryList, ", ")))
         if cfg.guildPriorityResumeMsg and cfg.guildPriorityResumeMsg ~= '' then
             queueTell(ownerName, cfg.guildPriorityResumeMsg)
         end
     else
         logMsg(string.format("Buffing %s (%s) with %d spell(s): %s", targetLabel, isGuild and "Guild" or "Public", #gemsToCast, table.concat(spellSummaryList, ", ")))
-        print(string.format('\ag[Triune Buffbot]\ax Casting %d buff(s) on \aw%s\ax (%s): %s', #gemsToCast, targetLabel, isGuild and "Guild" or "Public", table.concat(spellSummaryList, ", ")))
+        print(string.format('\ag[MoriAC Buffbot]\ax Casting %d buff(s) on \aw%s\ax (%s): %s', #gemsToCast, targetLabel, isGuild and "Guild" or "Public", table.concat(spellSummaryList, ", ")))
     end
 
     -- Check Mana % before starting sequence
@@ -1859,7 +1861,7 @@ local function setEnabled(on)
     if on then
         rt.state = 'IDLE'
         logMsg("Buffbot station ACTIVE. Listening for tells...")
-        print('\ag[Triune Buffbot]\ax station \agACTIVE\ax. Listening for tells...')
+        print('\ag[MoriAC Buffbot]\ax station \agACTIVE\ax. Listening for tells...')
     else
         rt.state = 'STOPPED'
         rt.activeQueue = {}
@@ -1869,7 +1871,7 @@ local function setEnabled(on)
         rt.currentRequester = nil
         rt.preemptRequested = false
         logMsg("Buffbot station STOPPED.", true, false)
-        print('\ag[Triune Buffbot]\ax station \arSTOPPED\ax.')
+        print('\ag[MoriAC Buffbot]\ax station \arSTOPPED\ax.')
     end
 end
 
@@ -2240,7 +2242,7 @@ local function renderGUI()
 
     core.pushTheme()
     core.preBeginWindow('buffbot')
-    local open, visible = ImGui.Begin(string.format("Triune Buffbot v%s###TriuneBuffbotWin", VERSION), ctrl.show_buffbot, core.windowFlags and core.windowFlags('buffbot', 0) or 0)
+    local open, visible = ImGui.Begin(string.format("MoriAC Buffbot v%s###TriuneBuffbotWin", VERSION), ctrl.show_buffbot, core.windowFlags and core.windowFlags('buffbot', 0) or 0)
     if not open then
         ctrl.show_buffbot = false
         if core.preEndWindow then core.preEndWindow('buffbot', false) end
@@ -2387,7 +2389,7 @@ function plugin.onInit(coreApi)
     rt.currentRequester = nil
     rt.preemptRequested = false
     registerEvents()
-    logMsg("Triune Buffbot plugin loaded (station stopped).")
+    logMsg("MoriAC Buffbot plugin loaded (station stopped).")
 end
 
 function plugin.onDestroy()
@@ -2443,7 +2445,7 @@ function plugin.onCommand(cmd, args)
         setEnabled(not cfg.enabled)
     else
         ctrl.show_buffbot = not ctrl.show_buffbot
-        print(string.format('\ag[Triune]\ax Buffbot window %s (station %s).', ctrl.show_buffbot and 'OPENED' or 'CLOSED', cfg.enabled and 'ACTIVE' or 'STOPPED'))
+        print(string.format('\ag[MoriAC]\ax Buffbot window %s (station %s).', ctrl.show_buffbot and 'OPENED' or 'CLOSED', cfg.enabled and 'ACTIVE' or 'STOPPED'))
     end
     core.saveLoadout(true)
     return true

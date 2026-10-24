@@ -24,8 +24,8 @@ local plugin = {
     id                 = 'map',
     name               = 'Map & NPC Tracker',
     version            = '1.2.0',
-    author             = 'Triune',
-    description        = '2D in-game map with NPC tracking, click-to-move, Norrath zone atlas, and Triune camp / waypoint overlays.',
+    author             = 'MoriAC',
+    description        = '2D in-game map with NPC tracking, click-to-move, Norrath zone atlas, and MoriAC camp / waypoint overlays.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
     runOutOfCombatOnly = false,
@@ -204,7 +204,7 @@ local state = {
         isLoaded            = false,
         lastSyncTime        = 0,
         charName            = '',
-        loadoutPath         = nil, -- resolved triune_loadout.lua path
+        loadoutPath         = nil, -- where the camp / waypoint data came from
         campLoc             = nil, -- { x = 0, y = 0, z = 0 }
         campRadius          = 100,
         hunterRadius        = 1500,
@@ -495,7 +495,7 @@ local function saveConfig(silent)
         f:write("return " .. serializeValue(allData) .. "\n")
         f:close()
         if not silent then
-            print('\ag[Triune Map]\ax Settings and zoom saved to ' .. tostring(CONFIG_FILE))
+            print('\ag[MoriAC Map]\ax Settings and zoom saved to ' .. tostring(CONFIG_FILE))
         end
     end
 end
@@ -1677,7 +1677,7 @@ local function syncTriuneLoadout(verbose)
     local charCtrl = ctrl
     if type(charCtrl) ~= 'table' then
         td.isLoaded = false
-        if verbose then print('\ar[Triune Map]\ax Core config not available yet.') end
+        if verbose then print('\ar[MoriAC Map]\ax Core config not available yet.') end
         return
     end
 
@@ -1778,7 +1778,7 @@ local function syncTriuneLoadout(verbose)
     td.zoneHazards = hazards
 
     if verbose then
-        print(string.format('\ag[Triune Map]\ax Triune data synced from core -- WPs: %d | Camp: %s | Anchor: %s | Hazards: %d',
+        print(string.format('\ag[MoriAC Map]\ax MoriAC data synced from core -- WPs: %d | Camp: %s | Anchor: %s | Hazards: %d',
             #td.waypoints,
             ((td.campLoc and td.campLoc.x) and 'set' or 'none'),
             ((td.hunterAnchor and td.hunterAnchor.x) and 'set' or 'none'),
@@ -2917,7 +2917,7 @@ local function DrawMapCanvas(availW, availH)
         local nowTriEr = mq.gettime()
         if (nowTriEr - triuneOverlaysErrorAt) >= 5000 then
             triuneOverlaysErrorAt = nowTriEr
-            print('\ar[Triune Map]\ax Overlay draw error: ' .. tostring(triuneOvErr))
+            print('\ar[MoriAC Map]\ax Overlay draw error: ' .. tostring(triuneOvErr))
         end
     end
 
@@ -4269,7 +4269,7 @@ local function DrawSettingsTab()
     local l2, c2 = ImGui.Checkbox('Layer 2 (Objects / Details)##L2', cfg.layer2)
     if c2 then cfg.layer2 = l2; state.dirtySettings = true; state.dirtySettingsTime = mq.gettime() end
     ImGui.SameLine()
-    local l3, c3 = ImGui.Checkbox('Layer 3 (Waypoints / Triune Lines)##L3', cfg.layer3)
+    local l3, c3 = ImGui.Checkbox('Layer 3 (Waypoints / MoriAC Lines)##L3', cfg.layer3)
     if c3 then cfg.layer3 = l3; state.dirtySettings = true; state.dirtySettingsTime = mq.gettime() end
 
     local lb, cl = ImGui.Checkbox('Labels (Map Text & POIs)##LabelsCheck', cfg.layerLabels)
@@ -4305,12 +4305,12 @@ local function DrawSettingsTab()
     ImGui.PopItemWidth()
 
     ImGui.Spacing()
-    ImGui.TextColored(0.3, 0.8, 1.0, 1.0, 'Triune Combat & Waypoint Overlays')
+    ImGui.TextColored(0.3, 0.8, 1.0, 1.0, 'MoriAC Combat & Waypoint Overlays')
     ImGui.Separator()
 
     local td = state.triuneData
     if td.isLoaded then
-        ImGui.TextColored(0.2, 0.95, 0.35, 1.0, string.format('Triune Status: Synchronized (%s)', td.charName))
+        ImGui.TextColored(0.2, 0.95, 0.35, 1.0, string.format('MoriAC Status: Synchronized (%s)', td.charName))
         ImGui.SameLine()
         ImGui.TextDisabled(string.format('| WPs: %d | Hazards: %d | Anchor: %s', #td.waypoints, #td.zoneHazards,
             ((td.hunterAnchor and td.hunterAnchor.x and td.hunterAnchor.y) and 'set' or 'none')))
@@ -4318,11 +4318,11 @@ local function DrawSettingsTab()
             ImGui.TextDisabled(string.format('Source: %s', td.loadoutPath))
         end
     else
-        ImGui.TextColored(1.0, 0.7, 0.2, 1.0, 'Triune Status: core config not synced yet')
+        ImGui.TextColored(1.0, 0.7, 0.2, 1.0, 'MoriAC Status: core config not synced yet')
     end
 
     ImGui.SameLine()
-    if ImGui.Button('Sync Triune Data##SyncTriuneBtn') then
+    if ImGui.Button('Sync MoriAC Data##SyncTriuneBtn') then
         syncTriuneLoadout(true)
     end
 
@@ -4453,7 +4453,7 @@ local function DrawTriuneMapUI()
     windowFlags = bit.band(windowFlags, bit.bnot(ImGuiWindowFlags.NoCollapse or 0))
 
     local zoneDisplay = (state.viewMode == 'ATLAS') and string.format('Atlas: %s', (state.atlasSelectedZone and state.atlasSelectedZone.name) or state.atlasZoneShort) or state.currentZoneName
-    local title = string.format('Triune Map v%s — %s###TriuneMapMainWindow', VERSION, zoneDisplay)
+    local title = string.format('MoriAC Map v%s — %s###TriuneMapMainWindow', VERSION, zoneDisplay)
     core.preBeginWindow('map')
     local open, draw = ImGui.Begin(title, ctrl.show_map, core.windowFlags and core.windowFlags('map', windowFlags) or windowFlags)
 
@@ -4564,7 +4564,8 @@ end
 local function initialize()
     if initialized then return end
     initialized = true
-    CONFIG_FILE = mq.configDir and (mq.configDir .. '/triune_map_config.lua') or 'triune_map_config.lua'
+    CONFIG_FILE = mq.configDir and (mq.configDir .. '/moriac_map_config.lua') or 'moriac_map_config.lua'
+    if core and core.migrateConfigFile then core.migrateConfigFile(CONFIG_FILE) end
     initAtlasRegistry()
     -- Config first: the saved custom base path decides where scanMapFolders
     -- looks, and the saved folder name is applied once the scan has run.
@@ -4587,13 +4588,13 @@ local function initialize()
     autoloadRequiredPlugins()
 
     if not navLoaded() then
-        print('\ar[Triune Map WARNING]\ax MQ2Nav plugin is not loaded! Map click-to-move and path distance require MQ2Nav (/plugin mq2nav).')
+        print('\ar[MoriAC Map WARNING]\ax MQ2Nav plugin is not loaded! Map click-to-move and path distance require MQ2Nav (/plugin mq2nav).')
     elseif not navMeshLoaded() then
         local curZone = mq.TLO.Zone.ShortName() or 'current zone'
-        print(string.format('\ar[Triune Map WARNING]\ax No NavMesh loaded for zone "%s"! Map pathing requires a valid zone mesh (/nav reload).', curZone))
+        print(string.format('\ar[MoriAC Map WARNING]\ax No NavMesh loaded for zone "%s"! Map pathing requires a valid zone mesh (/nav reload).', curZone))
     end
     if not stickLoaded() then
-        print('\ar[Triune Map WARNING]\ax MQ2MoveUtils plugin is not loaded! Target stick movement requires MQ2MoveUtils (/plugin mq2moveutils).')
+        print('\ar[MoriAC Map WARNING]\ax MQ2MoveUtils plugin is not loaded! Target stick movement requires MQ2MoveUtils (/plugin mq2moveutils).')
     end
 
     syncTriuneLoadout()
@@ -4604,7 +4605,7 @@ local function initialize()
     if okP then updateSmartFloorBounds(pX or 0, pY or 0, pZ or 0) end
     scanZoneSpawns(true)
 
-    print(string.format('\ag[Triune Map]\ax v%s loaded -- In-Game Map, Norrath Atlas & NPC Tracker (plugin). Toggle with /ac map.', VERSION))
+    print(string.format('\ag[MoriAC Map]\ax v%s loaded -- In-Game Map, Norrath Atlas & NPC Tracker (plugin). Toggle with /ac map.', VERSION))
 end
 
 local function tick()
@@ -4711,7 +4712,7 @@ local function tick()
         else
             state.activeNavSpawnId = 0
             state.statusMsg = 'Nav failed: missing plugins.'
-            print('\ar[Triune Map WARNING]\ax Neither MQ2Nav nor MQ2MoveUtils is loaded! Cannot navigate to target. Load via \ay/plugin mq2nav\ax or \ay/plugin mq2moveutils\ax.')
+            print('\ar[MoriAC Map WARNING]\ax Neither MQ2Nav nor MQ2MoveUtils is loaded! Cannot navigate to target. Load via \ay/plugin mq2nav\ax or \ay/plugin mq2moveutils\ax.')
         end
     end
 
@@ -4740,7 +4741,7 @@ local function tick()
             pcall(function() mq.cmdf('/nav loc %f %f %f', ly, lx, lz) end)
         elseif not navState.meshLoaded then
             state.statusMsg = 'Nav failed: navmesh missing.'
-            print('\ar[Triune Map WARNING]\ax MQ2Nav navmesh not loaded! Cannot navigate to map coordinate (/nav reload).')
+            print('\ar[MoriAC Map WARNING]\ax MQ2Nav navmesh not loaded! Cannot navigate to map coordinate (/nav reload).')
         end
     end
 
@@ -4822,7 +4823,7 @@ function plugin.onCommand(cmd)
         state.requestedTab = 3
     end
     core.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Map & NPC Tracker %s.', ctrl.show_map and 'OPENED' or 'CLOSED'))
+    print(string.format('\ag[MoriAC]\ax Map & NPC Tracker %s.', ctrl.show_map and 'OPENED' or 'CLOSED'))
     return true
 end
 

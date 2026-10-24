@@ -25,7 +25,7 @@ local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
     version            = '1.2.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
     tickInterval       = 0.15,
@@ -881,18 +881,18 @@ function AA.printPriorityStatus()
     local unspent, myLevel = 0, 0
     pcall(function() unspent = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
     pcall(function() myLevel = tonumber(mq.TLO.Me.Level() or 0) or 0 end)
-    print(string.format('\ag[Triune]\ax Auto AA: %s | Unspent %d | Bank threshold %d | Cap spender "%s" (cost %d)',
+    print(string.format('\ag[MoriAC]\ax Auto AA: %s | Unspent %d | Bank threshold %d | Cap spender "%s" (cost %d)',
         ctrl.auto_spend_aa and '\agON\ax' or '\arOFF\ax', unspent, AA.threshold(),
         ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks', tonumber(ctrl.auto_spend_aa_cost) or 25))
     if AA.pendingAATrain then
-        print(string.format('\ag[Triune]\ax   Window purchase in progress: "%s" (step %s)', AA.pendingAATrain.name, tostring(AA.pendingAATrain.step)))
+        print(string.format('\ag[MoriAC]\ax   Window purchase in progress: "%s" (step %s)', AA.pendingAATrain.name, tostring(AA.pendingAATrain.step)))
     end
     local names = {}
     for nm, enabled in pairs(ctrl.auto_aa_priorities or {}) do
         if enabled then names[#names + 1] = nm end
     end
     if #names == 0 then
-        print('\ay[Triune]\ax   No prioritized AAs; only the cap spender runs.')
+        print('\ay[MoriAC]\ax   No prioritized AAs; only the cap spender runs.')
         return
     end
     table.sort(names, function(a, b) return a:lower() < b:lower() end)
@@ -906,7 +906,7 @@ function AA.printPriorityStatus()
         else
             verdict = '\ay' .. (AA.BLOCKER_TEXT[why] or why) .. '\ax'
         end
-        print(string.format('\ag[Triune]\ax   "%s"  Rank %d/%d  Cost %d  CanTrain %s  -> %s',
+        print(string.format('\ag[MoriAC]\ax   "%s"  Rank %d/%d  Cost %d  CanTrain %s  -> %s',
             nm, info.rank, info.maxRank, info.cost,
             info.canTrain == nil and 'n/a' or tostring(info.canTrain), verdict))
     end
@@ -944,7 +944,7 @@ function AA.notePriorityStatus(info, why, unspent)
     local prev = AA.prioStatus[info.name]
     AA.prioStatus[info.name] = { why = why, cost = info.cost, rank = info.rank, maxRank = info.maxRank, canTrain = info.canTrain, at = os.clock() }
     if why and why ~= 'points' and why ~= 'spacing' and why ~= 'backoff' and (not prev or prev.why ~= why) then
-        print(string.format('\ay[Triune]\ax Prioritized AA "%s" (Rank %d/%d, Cost %d, Unspent %d) skipped: %s.',
+        print(string.format('\ay[MoriAC]\ax Prioritized AA "%s" (Rank %d/%d, Cost %d, Unspent %d) skipped: %s.',
             info.name, info.rank, info.maxRank, info.cost, unspent, AA.BLOCKER_TEXT[why] or why))
     end
 end
@@ -1248,7 +1248,7 @@ function AA.finishSpecialTabRead()
     if names and #names > 0 then
         AA.specialTabAAs = names
         AA.specialTabReadDone = true
-        print(string.format('\ag[Triune]\ax Read %d abilities from AA Special tab.', #names))
+        print(string.format('\ag[MoriAC]\ax Read %d abilities from AA Special tab.', #names))
         AA.requestScan(0)
     end
 end
@@ -1459,7 +1459,7 @@ function AA.runPendingScan()
         local ok, err = pcall(AA.scanPlayerAAs, true)
         AA.scanning = false
         AA.scanCtx = nil
-        if not ok then print(string.format('\ar[Triune]\ax AA scan failed: %s', tostring(err))) end
+        if not ok then print(string.format('\ar[MoriAC]\ax AA scan failed: %s', tostring(err))) end
     end
 end
 
@@ -1625,7 +1625,7 @@ function AA.startAATrainWorkflow(targetName, allowStop)
         nextStepAt = os.clock() + 0.5,
         retries = 0
     }
-    print(string.format('\ag[Triune]\ax Initiating AA Window train sequence for "%s" (ID: %d, Tab: %d)...', targetName, aaId, prefTab))
+    print(string.format('\ag[MoriAC]\ax Initiating AA Window train sequence for "%s" (ID: %d, Tab: %d)...', targetName, aaId, prefTab))
     return true
 end
 
@@ -1725,7 +1725,7 @@ function AA.processAATrainWorkflow()
         else
             -- Nothing to click on: fail the task (the 30 s per-AA retry
             -- spacing applies) rather than driving a window that is closed.
-            print(string.format('\ar[Triune]\ax Failed to open AA Window after %d attempts. Aborting AA train sequence for "%s".', task.retries, task.name))
+            print(string.format('\ar[MoriAC]\ax Failed to open AA Window after %d attempts. Aborting AA train sequence for "%s".', task.retries, task.name))
             task.failed = 'window'
             task.step = 'finish'
             task.nextStepAt = now + 0.05
@@ -1898,7 +1898,7 @@ function AA.processAATrainWorkflow()
             else
                 -- AA not found in any window list; record attempt and close
                 if task.aaId and task.aaId > 0 then
-                    print(string.format('\ay[Triune]\ax Could not locate "%s" in AA Window lists (ID: %d). Recording attempt.', task.name, task.aaId))
+                    print(string.format('\ay[MoriAC]\ax Could not locate "%s" in AA Window lists (ID: %d). Recording attempt.', task.name, task.aaId))
                 end
                 task.failed = 'notfound'
                 task.step = 'finish'
@@ -1940,7 +1940,7 @@ function AA.processAATrainWorkflow()
             mq.cmdf('/nomodkey /notify %s TrainButton leftmouseup', winName)
         end
 
-        print(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
+        print(string.format('\ag[MoriAC]\ax Clicked Train Button in AA Window for "%s".', task.name))
         -- Only a fireworks / Special-tab ability is summoned afterwards; a
         -- regular AA configured as the cap spender must not trigger /alt act.
         local isFw = task.name and (task.name:lower():find('firework') ~= nil
@@ -2004,9 +2004,9 @@ function AA.processAATrainWorkflow()
             if AA.skipLogged ~= key then
                 AA.skipLogged = key
                 if task.skipped == 'trained' then
-                    print(string.format('\ay[Triune]\ax AA window shows "%s" already at max rank; nothing to buy.', task.name))
+                    print(string.format('\ay[MoriAC]\ax AA window shows "%s" already at max rank; nothing to buy.', task.name))
                 else
-                    print(string.format('\ay[Triune]\ax AA window prices "%s" at %d AA (have %d); waiting for points.',
+                    print(string.format('\ay[MoriAC]\ax AA window prices "%s" at %d AA (have %d); waiting for points.',
                         task.name, task.rowCost or 0, task.have or 0))
                 end
             end
@@ -2023,7 +2023,7 @@ function AA.processAATrainWorkflow()
             AA.trainBackoff[task.name] = now + AA.TRAIN_FAIL_BACKOFF
             if not AA.trainFailLogged[task.name] then
                 AA.trainFailLogged[task.name] = true
-                print(string.format('\ay[Triune]\ax AA purchase of "%s" did not go through (%s); not retrying it for %d minutes.',
+                print(string.format('\ay[MoriAC]\ax AA purchase of "%s" did not go through (%s); not retrying it for %d minutes.',
                     task.name, task.failed == 'notfound' and 'not found in the AA window' or 'no points were spent after Train', math.floor(AA.TRAIN_FAIL_BACKOFF / 60)))
             end
             AA.requestScan(1.0)
@@ -2152,7 +2152,7 @@ function AA.checkAutoSpendAA(allowStop)
             end
             local target = candidates[1]
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
+            print(string.format('\ag[MoriAC]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
                 target.isSpecial and 'Special tab ability' or 'prioritized ability',
                 target.name, target.rank, target.maxRank, target.cost, unspent))
             return AA.startAATrainWorkflow(target.name, allowStop)
@@ -2186,7 +2186,7 @@ function AA.checkAutoSpendAA(allowStop)
         local key = outstanding .. ':' .. outstandingWhy
         if AA.capHoldLogged ~= key then
             AA.capHoldLogged = key
-            print(string.format('\ay[Triune]\ax Cap spender on hold: prioritized "%s" is still outstanding (%s); only checked priorities are bought.',
+            print(string.format('\ay[MoriAC]\ax Cap spender on hold: prioritized "%s" is still outstanding (%s); only checked priorities are bought.',
                 outstanding, AA.BLOCKER_TEXT[outstandingWhy] or outstandingWhy))
         end
         return false
@@ -2210,14 +2210,14 @@ function AA.checkAutoSpendAA(allowStop)
         -- If user has Fireworks / Special tab ability configured as cap spender, buy it natively:
         if (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) and unspent >= cost then
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
+            print(string.format('\ag[MoriAC]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             return AA.startAATrainWorkflow(effectiveName, allowStop)
         end
 
         if cost > 0 and unspent >= cost then
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
+            print(string.format('\ag[MoriAC]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             return AA.startAATrainWorkflow(effectiveName, allowStop)
         end
@@ -2320,7 +2320,7 @@ function AA.manualSpendAA(targetName)
     end
 
     if unspent < cost then
-        print(string.format('\ay[Triune]\ax Cannot purchase %s: have %d unspent AA, need %d AA.', fallbackName, unspent, cost))
+        print(string.format('\ay[MoriAC]\ax Cannot purchase %s: have %d unspent AA, need %d AA.', fallbackName, unspent, cost))
         return false
     end
 
@@ -2368,7 +2368,7 @@ function AA.scheduleFireworksSummon(fwId, reason)
     local delay = AA.fireworksSummonDelay()
     AA.pendingFireworksSummon = { id = tonumber(fwId) or 17788, at = os.clock() + delay, tries = 0, reason = reason }
     AA.lastAutoSummonAt = os.clock() -- keep the periodic auto-summon from racing this one
-    print(string.format('\ag[Triune]\ax Fireworks summon scheduled in %.1fs (/alt act %d) after purchasing "%s".',
+    print(string.format('\ag[MoriAC]\ax Fireworks summon scheduled in %.1fs (/alt act %d) after purchasing "%s".',
         delay, AA.pendingFireworksSummon.id, tostring(reason or 'fireworks AA')))
 end
 
@@ -2384,13 +2384,13 @@ function AA.processPendingFireworksSummon()
         AA.lastAutoSummonAt = now
         mq.cmdf('/alt act %d', job.id)
         rt.pendingCursorClearAt = now + 0.4
-        print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
+        print(string.format('\ag[MoriAC]\ax Summoning fireworks (/alt act %d).', job.id))
         return true
     end
     job.tries = (job.tries or 0) + 1
     if job.tries >= AA.FIREWORKS_SUMMON_MAX_TRIES then
         AA.pendingFireworksSummon = nil
-        print(string.format('\ay[Triune]\ax Fireworks AA still not reported as purchased after %d checks; skipping the post-purchase summon.', job.tries))
+        print(string.format('\ay[MoriAC]\ax Fireworks AA still not reported as purchased after %d checks; skipping the post-purchase summon.', job.tries))
         return false
     end
     job.at = now + AA.fireworksSummonDelay()
@@ -2430,7 +2430,7 @@ function AA.checkAutoSummonFireworks()
 
     AA.lastAutoSummonAt = now
     mq.cmdf('/alt act %d', aaId)
-    print(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
+    print(string.format('\ag[MoriAC]\ax Auto-summoning fireworks via /alt act %d.', aaId))
     rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
@@ -2438,11 +2438,11 @@ end
 function AA.manualSummonFireworks()
     local aaId = tonumber(ctrl.auto_spend_aa_id) or 17788
     if not AA.hasFireworksAA(aaId) then
-        print(string.format('\ay[Triune]\ax Cannot summon fireworks: the "%s" AA has not been purchased yet.', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
+        print(string.format('\ay[MoriAC]\ax Cannot summon fireworks: the "%s" AA has not been purchased yet.', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
         return false
     end
     mq.cmdf('/alt act %d', aaId)
-    print(string.format('\ag[Triune]\ax Summoning fireworks via /alt act %d (Summon Firework)...', aaId))
+    print(string.format('\ag[MoriAC]\ax Summoning fireworks via /alt act %d (Summon Firework)...', aaId))
     rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
@@ -2457,7 +2457,7 @@ function AA.drawWindow()
     core.pushTheme()
     ImGui.SetNextWindowSize(core.px(760), core.px(560), ImGuiCond.FirstUseEver)
     core.preBeginWindow('auto_aa')
-    local open, show = ImGui.Begin('Triune Auto AA v' .. (core.VERSION or '') .. '###triuneAutoAA', ctrl.show_auto_aa, core.windowFlags and core.windowFlags('auto_aa', 0) or 0)
+    local open, show = ImGui.Begin('MoriAC Auto AA v' .. (core.VERSION or '') .. '###triuneAutoAA', ctrl.show_auto_aa, core.windowFlags and core.windowFlags('auto_aa', 0) or 0)
     if not open then
         ctrl.show_auto_aa = false
         if core.preEndWindow then core.preEndWindow('auto_aa', false) end
@@ -2932,7 +2932,7 @@ function AA.onCommand(cmd, args)
     if cmd == 'aawin' or cmd == 'aaui' or cmd == 'autoaawin' then
         ctrl.show_auto_aa = not ctrl.show_auto_aa
         core.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Auto AA window %s.', ctrl.show_auto_aa and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Auto AA window %s.', ctrl.show_auto_aa and 'OPENED' or 'CLOSED'))
         return true
     elseif cmd == 'autoaa' or cmd == 'autospendaa' or cmd == 'autospend' or cmd == 'fireworks' then
         local sub = args[2] and string.lower(args[2]) or ''
@@ -2944,7 +2944,7 @@ function AA.onCommand(cmd, args)
             ctrl.auto_spend_aa = not ctrl.auto_spend_aa
         end
         core.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Auto-Spend AA Points %s (Threshold: %d AA, Cost: %d AA, ID: %d).',
+        print(string.format('\ag[MoriAC]\ax Auto-Spend AA Points %s (Threshold: %d AA, Cost: %d AA, ID: %d).',
             ctrl.auto_spend_aa and '\agENABLED\ax' or '\arDISABLED\ax',
             AA.threshold(), ctrl.auto_spend_aa_cost or 25, ctrl.auto_spend_aa_id or 17788))
     elseif cmd == 'autofw' or cmd == 'summonfw' or cmd == 'auto_summon_fireworks' or cmd == 'autofireworks' then
@@ -2957,7 +2957,7 @@ function AA.onCommand(cmd, args)
             ctrl.auto_summon_fireworks = not ctrl.auto_summon_fireworks
         end
         core.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Auto-Summon Fireworks %s (/alt act %d / Summon Firework).',
+        print(string.format('\ag[MoriAC]\ax Auto-Summon Fireworks %s (/alt act %d / Summon Firework).',
             ctrl.auto_summon_fireworks and '\agENABLED\ax' or '\arDISABLED\ax', ctrl.auto_spend_aa_id or 17788))
     elseif cmd == 'aatrain' or cmd == 'trainwindow' or cmd == 'trainaa' or cmd == 'spendnow' or cmd == 'spendaa' or cmd == 'spendpoints' then
         if AA.manualSpendAA then AA.manualSpendAA() end
@@ -2968,36 +2968,36 @@ function AA.onCommand(cmd, args)
         if val then
             ctrl.auto_spend_aa_threshold = math.max(1, math.min(500, math.floor(val)))
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Auto-Spend AA Trigger Threshold set to %d AA.', ctrl.auto_spend_aa_threshold))
+            print(string.format('\ag[MoriAC]\ax Auto-Spend AA Trigger Threshold set to %d AA.', ctrl.auto_spend_aa_threshold))
         else
-            print(string.format('\ag[Triune]\ax Current Auto-Spend AA Threshold: %d AA. (usage: /ac aathreshold [25-100])', AA.threshold()))
+            print(string.format('\ag[MoriAC]\ax Current Auto-Spend AA Threshold: %d AA. (usage: /ac aathreshold [25-100])', AA.threshold()))
         end
     elseif cmd == 'aacost' or cmd == 'spendcost' then
         local val = tonumber(args[2])
         if val then
             ctrl.auto_spend_aa_cost = math.max(1, math.min(500, math.floor(val)))
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Auto-Spend AA Cost Per Rank set to %d AA.', ctrl.auto_spend_aa_cost))
+            print(string.format('\ag[MoriAC]\ax Auto-Spend AA Cost Per Rank set to %d AA.', ctrl.auto_spend_aa_cost))
         else
-            print(string.format('\ag[Triune]\ax Current Auto-Spend AA Cost: %d AA. (usage: /ac aacost [1-50])', ctrl.auto_spend_aa_cost or 25))
+            print(string.format('\ag[MoriAC]\ax Current Auto-Spend AA Cost: %d AA. (usage: /ac aacost [1-50])', ctrl.auto_spend_aa_cost or 25))
         end
     elseif cmd == 'aaid' or cmd == 'spendaaid' then
         local val = tonumber(args[2])
         if val and val > 0 then
             ctrl.auto_spend_aa_id = math.floor(val)
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Auto-Spend Activation Spell ID set to %d.', ctrl.auto_spend_aa_id))
+            print(string.format('\ag[MoriAC]\ax Auto-Spend Activation Spell ID set to %d.', ctrl.auto_spend_aa_id))
         else
-            print(string.format('\ag[Triune]\ax Current Auto-Spend Activation ID: %d. (usage: /ac aaid [id])', ctrl.auto_spend_aa_id or 17788))
+            print(string.format('\ag[MoriAC]\ax Current Auto-Spend Activation ID: %d. (usage: /ac aaid [id])', ctrl.auto_spend_aa_id or 17788))
         end
     elseif cmd == 'aaname' or cmd == 'setaaname' then
         local newName = table.concat(args, ' ', 2)
         if newName and newName ~= '' then
             ctrl.auto_spend_aa_name = newName
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Auto-Spend AA Ability Name set to "%s".', ctrl.auto_spend_aa_name))
+            print(string.format('\ag[MoriAC]\ax Auto-Spend AA Ability Name set to "%s".', ctrl.auto_spend_aa_name))
         else
-            print(string.format('\ag[Triune]\ax Current Auto-Spend AA Ability Name: "%s". (usage: /ac aaname [name])', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
+            print(string.format('\ag[MoriAC]\ax Current Auto-Spend AA Ability Name: "%s". (usage: /ac aaname [name])', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
         end
     elseif cmd == 'aascan' or cmd == 'scanaa' or cmd == 'aarefresh' then
         AA.specialTabReadDone = false
@@ -3008,9 +3008,9 @@ function AA.onCommand(cmd, args)
             AA.scanCtx = nil
             if ok then
                 local count = AA.scannedAAs and #AA.scannedAAs or 0
-                print(string.format('\ag[Triune]\ax Scanned character Alternate Advancements: %d abilities found.', count))
+                print(string.format('\ag[MoriAC]\ax Scanned character Alternate Advancements: %d abilities found.', count))
             else
-                print(string.format('\ar[Triune]\ax AA scan failed: %s', tostring(err)))
+                print(string.format('\ar[MoriAC]\ax AA scan failed: %s', tostring(err)))
             end
         end
     elseif cmd == 'aastatus' or cmd == 'aawhy' then
@@ -3022,10 +3022,10 @@ function AA.onCommand(cmd, args)
             ctrl.auto_aa_priorities[aaName] = not ctrl.auto_aa_priorities[aaName]
             AA.aaFilterDirty = true
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax AA priority for "%s" set to %s.',
+            print(string.format('\ag[MoriAC]\ax AA priority for "%s" set to %s.',
                 aaName, ctrl.auto_aa_priorities[aaName] and '\agENABLED\ax' or '\arDISABLED\ax'))
         else
-            print('\ag[Triune]\ax usage: /ac aaprio <Ability Name>')
+            print('\ag[MoriAC]\ax usage: /ac aaprio <Ability Name>')
         end
     else
         return false

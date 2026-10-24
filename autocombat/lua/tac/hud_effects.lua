@@ -14,7 +14,7 @@ local plugin = {
     id                 = 'hud_effects',
     name               = 'Effects & Songs HUD',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Popout buffs, songs & disciplines window with spell icons, time-left bars, sorting, and right-click actions.',
     defaultEnabled     = true,
     tickInterval       = 0.25,
@@ -547,7 +547,7 @@ function plugin.onDrawUI()
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(3), core.px(2))
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
     local show
-    ctrl.show_effects_window, show = ImGui.Begin('Triune Effects & Songs v' .. (core.VERSION or '') .. '###triuneEffectsWindow', ctrl.show_effects_window, core.windowFlags and core.windowFlags('effects', winFlags) or winFlags)
+    ctrl.show_effects_window, show = ImGui.Begin('MoriAC Effects & Songs v' .. (core.VERSION or '') .. '###triuneEffectsWindow', ctrl.show_effects_window, core.windowFlags and core.windowFlags('effects', winFlags) or winFlags)
     if not ctrl.show_effects_window then
         if core.preEndWindow then core.preEndWindow('effects', true) end
         ImGui.End()
@@ -638,7 +638,7 @@ function plugin.onDrawUI()
                     if eff.spellId and eff.spellId > 0 then
                         if ImGui.MenuItem('Add to Block Buff List##blk_' .. rowKey) then
                             mq.cmdf('/blockspell add me %d', eff.spellId)
-                            print(string.format('\ag[Triune]\ax Added %s (ID %d) to blocked buffs.', eff.name, eff.spellId))
+                            print(string.format('\ag[MoriAC]\ax Added %s (ID %d) to blocked buffs.', eff.name, eff.spellId))
                         end
                         if ImGui.MenuItem('Display Spell Info##insp_' .. rowKey) then
                             core.inspectSpell(eff.spellId)

@@ -19,7 +19,7 @@ local plugin = {
     id                 = 'hud_unitframes',
     name               = 'Unit Frames HUD',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Popout HUD for Player, Target, and Pet vitals with responsive bars, ToT aggro tracking, and buff timers.',
     defaultEnabled     = true,
     tickInterval       = 0.05,       -- Fiber updates cached vitals every 50ms
@@ -805,7 +805,7 @@ local function drawUnitFramesWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
 
     local show
-    local winTitle = 'Triune Target & Player v' .. (core.VERSION or '3.2') .. '###triuneUnitFrames'
+    local winTitle = 'MoriAC Target & Player v' .. (core.VERSION or '') .. '###triuneUnitFrames'
     ctrl.show_unit_frames, show = ImGui.Begin(winTitle, ctrl.show_unit_frames, core.windowFlags and core.windowFlags('unit_frames', winFlags) or winFlags)
 
     if not ctrl.show_unit_frames then
@@ -989,7 +989,7 @@ local function drawTargetWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
 
     local show
-    local winTitle = 'Triune Target v' .. (core.VERSION or '3.2') .. '###triuneTargetWindow'
+    local winTitle = 'MoriAC Target v' .. (core.VERSION or '') .. '###triuneTargetWindow'
     ctrl.show_target_window, show = ImGui.Begin(winTitle, ctrl.show_target_window, core.windowFlags and core.windowFlags('target_window', winFlags) or winFlags)
 
     if not ctrl.show_target_window then

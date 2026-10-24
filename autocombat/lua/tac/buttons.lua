@@ -28,7 +28,7 @@ local plugin = {
     id                 = 'buttons',
     name               = 'Hot Buttons',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     uses               = { boxnet = 'hotbar library sync across boxes (Sync Boxes option)' },
     description        = 'Button Master-style hot button bars: shared button library, tabbed sets, multiple hotbars, cooldown overlays, cursor capture, drag-and-drop, share strings, and Button Master import.',
     defaultEnabled     = true,
@@ -45,7 +45,7 @@ local ctrl, ImGui, mq = nil, nil, nil  ---@type table, table, table
 -- ----------------------------------------------------------------------------
 -- Constants
 -- ----------------------------------------------------------------------------
-local CONFIG_NAME     = 'triune_buttons.lua'
+local CONFIG_NAME     = 'moriac_buttons.lua' -- triune_buttons.lua before the rename (migrated)
 local BM_CONFIG_NAME  = 'ButtonMaster.lua'
 local DB_VERSION      = 1
 local MAX_SLOTS       = 100      -- slots per set (matches Button Master)
@@ -221,7 +221,7 @@ local CORE_COMMANDS = {
     -- Control
     { group = 'Control', name = 'Run',                cmd = '/ac run',              desc = 'Start / unpause auto-combat' },
     { group = 'Control', name = 'Pause',              cmd = '/ac pause',            desc = 'Pause auto-combat, halt movement, disengage pet' },
-    { group = 'Control', name = 'Run / Pause',        cmd = '/triunerun',           desc = 'Toggle run / pause' },
+    { group = 'Control', name = 'Run / Pause',        cmd = '/moriacrun',           desc = 'Toggle run / pause' },
     { group = 'Control', name = 'Burn On',            cmd = '/ac burn on',          desc = 'Enable burn mode (Burn Only spells, AAs, discs)' },
     { group = 'Control', name = 'Burn Off',           cmd = '/ac burn off',         desc = 'Disable burn mode' },
     { group = 'Control', name = 'Burn Toggle',        cmd = '/ac burn',             desc = 'Toggle burn mode' },
@@ -231,7 +231,7 @@ local CORE_COMMANDS = {
     { group = 'Control', name = 'Clear Lockouts',     cmd = '/ac clear lockouts',   desc = 'Clear spell lockouts, buff backoffs, and mob immunities' },
     { group = 'Control', name = 'Clear Cursor',       cmd = '/ac clearcursor',      desc = 'Clear the item on the cursor per the cursor rules' },
     -- Modes
-    { group = 'Mode', name = 'Manual',                cmd = '/ac manual',           desc = 'Manual mode: you drive, Triune fights' },
+    { group = 'Mode', name = 'Manual',                cmd = '/ac manual',           desc = 'Manual mode: you drive, MoriAC fights' },
     { group = 'Mode', name = 'Puller (Hunt)',         cmd = '/ac puller hunt',      desc = 'Puller mode, roam and hunt' },
     { group = 'Mode', name = 'Puller (Camp)',         cmd = '/ac puller camp',      desc = 'Puller mode, pull back to camp' },
     { group = 'Mode', name = 'Assist (Chase)',        cmd = '/ac assist chase',     desc = 'Assist mode, follow the Main Assist' },
@@ -283,7 +283,7 @@ local CORE_COMMANDS = {
     { group = 'Setting', name = 'Pull Min HP',        cmd = '/ac pullhp <0-95>',        desc = 'Minimum HP % before pulling pauses to rest' },
     { group = 'Setting', name = 'Hunter Z Plane',     cmd = '/ac zplane <5-100>',       desc = 'Same-floor height threshold' },
     { group = 'Setting', name = 'Hunter Max Z',       cmd = '/ac huntz <10-300>',       desc = 'Max vertical height difference' },
-    { group = 'Setting', name = 'UI Scale',           cmd = '/ac scale <0.75-2.0>',     desc = 'UI scale for every Triune window' },
+    { group = 'Setting', name = 'UI Scale',           cmd = '/ac scale <0.75-2.0>',     desc = 'UI scale for every MoriAC window' },
     { group = 'Setting', name = 'Pull Con Preset',    cmd = '/ac pullcon preset <all|hostile|indifferent|none>', desc = 'Puller faction filter preset' },
     { group = 'Setting', name = 'Load Preset',        cmd = '/ac preset load <name>',   desc = 'Load a saved spell-set preset' },
     { group = 'Setting', name = 'Save Preset',        cmd = '/ac preset save <name>',   desc = 'Save the current spell set as a preset' },
@@ -340,7 +340,7 @@ end
 
 local function log(fmt, ...)
     local msg = select('#', ...) > 0 and string.format(fmt, ...) or tostring(fmt)
-    print('\ag[Triune Buttons]\ax ' .. msg)
+    print('\ag[MoriAC Buttons]\ax ' .. msg)
 end
 
 local function setStatus(fmt, ...)
@@ -536,7 +536,9 @@ end
 
 function plugin.configPath()
     if plugin.configPathOverride then return plugin.configPathOverride end
-    return configDir() .. '/' .. CONFIG_NAME
+    local p = configDir() .. '/' .. CONFIG_NAME
+    if core and core.migrateConfigFile then core.migrateConfigFile(p) end
+    return p
 end
 
 function plugin.bmConfigPath()
@@ -872,7 +874,7 @@ local function saveDb(opts)
         log('\arCould not write %s: %s', tmp, tostring(err))
         return false
     end
-    local okW, werr = f:write('-- Triune Hot Buttons library (buttons plugin). Shared by every character.\n'
+    local okW, werr = f:write('-- MoriAC Hot Buttons library (buttons plugin). Shared by every character.\n'
         .. 'return ' .. serialize(db) .. '\n')
     f:close()
     if not okW then
@@ -3485,7 +3487,7 @@ local function drawImport()
     end
     if show and core.applyWindowScale then core.applyWindowScale(nil) end
     if show then
-        ImGui.TextDisabled('Paste a Triune / Button Master share string:')
+        ImGui.TextDisabled('Paste a MoriAC / Button Master share string:')
         if ImGui.Button('Paste From Clipboard##impPaste') then
             local ok, txt = pcall(ImGui.GetClipboardText)
             if ok and type(txt) == 'string' then
@@ -3633,7 +3635,7 @@ local function drawBrowser()
                         if type(ct) == 'string' then browser.boxCmd = ct end
                         ImGui.SameLine()
                         ImGui.SetNextItemWidth(core.px(140))
-                        if ImGui.BeginCombo('##boxCmdPick', 'Triune commands...') then
+                        if ImGui.BeginCombo('##boxCmdPick', 'MoriAC commands...') then
                             local cmdList = browser.listCached('Cmd')
                             if not cmdList then
                                 ImGui.TextDisabled('Scanning...')
@@ -3673,7 +3675,7 @@ local function drawBrowser()
                         end
                         ImGui.Separator()
                     elseif tab.id == 'Cmd' then
-                        ImGui.TextDisabled('Triune slash commands. Entries with an <argument> open the editor to fill it in.')
+                        ImGui.TextDisabled('MoriAC slash commands. Entries with an <argument> open the editor to fill it in.')
                     end
                     local list = browser.listCached(tab.id)
                     local needle = trim(browser.search):lower()
@@ -4011,7 +4013,7 @@ function plugin.onDrawSettings()
         tableSize(db and db.buttons), tableSize(db and db.sets), #hotbars()))
     ImGui.TextDisabled('Library file: ' .. plugin.configPath())
 
-    local sync = ImGui.Checkbox('Sync with other boxes (reload when another Triune box saves; needs Box Network)##btnSync', prefs.syncBoxes)
+    local sync = ImGui.Checkbox('Sync with other boxes (reload when another MoriAC box saves; needs Box Network)##btnSync', prefs.syncBoxes)
     if sync ~= prefs.syncBoxes then
         prefs.syncBoxes = sync
         core.saveLoadout(true)

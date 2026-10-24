@@ -57,7 +57,7 @@ local plugin = {
     id                 = 'gamedb',
     name               = 'Game Database',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Offline item, NPC and spell database: stats, tiers, drops, quests, recipes, spawns, loot and spell effects.',
     defaultEnabled     = true,
     tickInterval       = 0.02,
@@ -79,7 +79,7 @@ local function refresh()
 end
 
 local function echo(msg)
-    print('\ag[Triune DB]\ax ' .. tostring(msg))
+    print('\ag[MoriAC DB]\ax ' .. tostring(msg))
 end
 
 -- ----------------------------------------------------------------------------
@@ -2337,7 +2337,7 @@ local function drawLinkButton(kind, id, uid)
         if core.setTooltip then
             core.setTooltip(kind == 'items'
                 and 'Puts a clickable link in the chat input line, like dragging an item onto the game\'s input.\nRight-click: send it to a channel now.'
-                or ('Puts [' .. (kind == 'spells' and 'Spell Name' or 'NPC Name (Zone)') .. '] in the chat input line: plain text for everyone, a clickable card for Triune users.\nRight-click: send it to a channel now.'))
+                or ('Puts [' .. (kind == 'spells' and 'Spell Name' or 'NPC Name (Zone)') .. '] in the chat input line: plain text for everyone, a clickable card for MoriAC users.\nRight-click: send it to a channel now.'))
         end
         if ImGui.IsMouseClicked(1) then ImGui.OpenPopup('##menu_' .. tag) end
     end
@@ -3942,7 +3942,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('gamedb')
-    local open, draw = ImGui.Begin('Triune Database###TriuneGameDB', ctrl.show_gamedb, core.windowFlags and core.windowFlags('gamedb', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC Database###TriuneGameDB', ctrl.show_gamedb, core.windowFlags and core.windowFlags('gamedb', windowFlags) or windowFlags)
     if not open then
         ctrl.show_gamedb = false
         if core.preEndWindow then core.preEndWindow('gamedb', false) end
@@ -4116,7 +4116,7 @@ function plugin.onDrawSettings()
         S.spellWindow = sw
         core.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then core.setTooltip('Right-clicking a spell gem, a buff or a spellbook page normally opens EverQuest\'s Spell Display window.\nWith this on, that window is closed as it opens and a Triune spell card (effects, costs, scroll sources, who casts it) takes its place.\nSpells the database does not know keep the game window. Also /ac spellwindow.') end
+    if ImGui.IsItemHovered() then core.setTooltip('Right-clicking a spell gem, a buff or a spellbook page normally opens EverQuest\'s Spell Display window.\nWith this on, that window is closed as it opens and a MoriAC spell card (effects, costs, scroll sources, who casts it) takes its place.\nSpells the database does not know keep the game window. Also /ac spellwindow.') end
     local m = DB.readManifest()
     if m.present then
         ImGui.TextDisabled(string.format('Data built %s: %s items, %s NPCs, %s spells (%s)', m.built or '?', m.item_index or '?', m.npcs or '?', m.spells or '?', m.source or ''))
@@ -4147,7 +4147,7 @@ function plugin.onCommand(cmd, args)
         else
             ctrl.show_gamedb = not ctrl.show_gamedb
             core.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Database %s.', ctrl.show_gamedb and 'OPENED' or 'CLOSED'))
+            print(string.format('\ag[MoriAC]\ax Database %s.', ctrl.show_gamedb and 'OPENED' or 'CLOSED'))
         end
         return true
     end
@@ -4215,7 +4215,7 @@ function plugin.onCommand(cmd, args)
     if cmd == 'lootadvisor' then
         S.lootAdvisor = not S.lootAdvisor
         core.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Loot Advisor %s.', S.lootAdvisor and 'ON' or 'OFF'))
+        print(string.format('\ag[MoriAC]\ax Loot Advisor %s.', S.lootAdvisor and 'ON' or 'OFF'))
         return true
     end
     if cmd == 'spellwindow' or cmd == 'spellinfo' then
@@ -4229,7 +4229,7 @@ function plugin.onCommand(cmd, args)
         end
         S.spellWindow = not S.spellWindow
         core.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Spell Info replacement %s.', S.spellWindow and 'ON (database cards replace the game\'s Spell Display window)' or 'OFF (game window)'))
+        print(string.format('\ag[MoriAC]\ax Spell Info replacement %s.', S.spellWindow and 'ON (database cards replace the game\'s Spell Display window)' or 'OFF (game window)'))
         return true
     end
     return false

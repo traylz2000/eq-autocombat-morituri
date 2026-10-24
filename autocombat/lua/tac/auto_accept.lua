@@ -20,7 +20,7 @@ local plugin = {
     id                 = 'auto_accept',
     name               = 'Auto-Accept Invites',
     version            = '1.1.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Automatically accepts group, trade, and expedition/DZ invites from whitelisted, group, or guild players.',
     defaultEnabled     = true,
     tickInterval       = 0.3,
@@ -155,7 +155,7 @@ local function addName(nameOrId, optionalId)
     -- to the PC's name while that PC is in zone).
     name = cleanName(name)
     if not name then
-        print(string.format('\ar[Triune Auto-Accept]\ax Could not add \ay%s\ax: enter a character name (letters only), or an ID of a player currently in zone.', s))
+        print(string.format('\ar[MoriAC Auto-Accept]\ax Could not add \ay%s\ax: enter a character name (letters only), or an ID of a player currently in zone.', s))
         return
     end
 
@@ -180,9 +180,9 @@ local function addName(nameOrId, optionalId)
 
     saveLoadout()
     if id > 0 then
-        print(string.format('\ag[Triune Auto-Accept]\ax Added to auto-accept list: \ay%s\ax (ID: \at%d\ax)', name, id))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Added to auto-accept list: \ay%s\ax (ID: \at%d\ax)', name, id))
     else
-        print(string.format('\ag[Triune Auto-Accept]\ax Added to auto-accept list: \ay%s\ax', name))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Added to auto-accept list: \ay%s\ax', name))
     end
 end
 
@@ -205,9 +205,9 @@ local function removeName(nameOrIdOrEntry)
             table.remove(list, i)
             saveLoadout()
             if eId > 0 then
-                print(string.format('\ag[Triune Auto-Accept]\ax Removed from auto-accept list: \ay%s\ax (ID: \at%d\ax)', eName, eId))
+                print(string.format('\ag[MoriAC Auto-Accept]\ax Removed from auto-accept list: \ay%s\ax (ID: \at%d\ax)', eName, eId))
             else
-                print(string.format('\ag[Triune Auto-Accept]\ax Removed from auto-accept list: \ay%s\ax', eName))
+                print(string.format('\ag[MoriAC Auto-Accept]\ax Removed from auto-accept list: \ay%s\ax', eName))
             end
             return true
         end
@@ -220,7 +220,7 @@ local function clearNames()
     if not c then return end
     c.auto_accept_names = {}
     saveLoadout()
-    print('\ag[Triune Auto-Accept]\ax Cleared all names from auto-accept list.')
+    print('\ag[MoriAC Auto-Accept]\ax Cleared all names from auto-accept list.')
 end
 
 -- ----------------------------------------------------------------------------
@@ -295,9 +295,9 @@ local function acceptGroupInvite(inviter, inviterId)
     if not mq then return end
     mq.cmd('/timed 5 /invite')
     if inviterId and inviterId > 0 then
-        print(string.format('\ag[Triune Auto-Accept]\ax Accepted group invite from \ay%s\ax (ID: \at%d\ax).', inviter, inviterId))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Accepted group invite from \ay%s\ax (ID: \at%d\ax).', inviter, inviterId))
     else
-        print(string.format('\ag[Triune Auto-Accept]\ax Accepted group invite from \ay%s\ax.', inviter))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Accepted group invite from \ay%s\ax.', inviter))
     end
 end
 
@@ -357,7 +357,7 @@ local function acceptDzDialog(label)
     lastDzAcceptAt = now
     mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup')
     mq.cmd('/dzaccept')
-    print(string.format('\ag[Triune Auto-Accept]\ax Accepted %s invite from \ay%s\ax.', label or 'expedition / dynamic zone', sender or 'sender'))
+    print(string.format('\ag[MoriAC Auto-Accept]\ax Accepted %s invite from \ay%s\ax.', label or 'expedition / dynamic zone', sender or 'sender'))
     return true
 end
 
@@ -410,9 +410,9 @@ local function pollTrade(c, mq, now)
     lastTradeAcceptAt = now
     mq.cmd('/notify TradeWnd TRDW_Trade_Button leftmouseup')
     if traderId > 0 then
-        print(string.format('\ag[Triune Auto-Accept]\ax Accepted trade from \ay%s\ax (ID: \at%d\ax).', traderName, traderId))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Accepted trade from \ay%s\ax (ID: \at%d\ax).', traderName, traderId))
     else
-        print(string.format('\ag[Triune Auto-Accept]\ax Accepted trade from \ay%s\ax.', traderName))
+        print(string.format('\ag[MoriAC Auto-Accept]\ax Accepted trade from \ay%s\ax.', traderName))
     end
 end
 
@@ -588,7 +588,7 @@ local function drawPanel()
         if tName and tName ~= '' then
             addName(tName, tId)
         else
-            print('\ar[Triune Auto-Accept]\ax Target is not a player character.')
+            print('\ar[MoriAC Auto-Accept]\ax Target is not a player character.')
         end
     end
     if ImGui.IsItemHovered() then
@@ -702,7 +702,7 @@ function plugin.onDrawUI()
     core.pushTheme()
     ImGui.SetNextWindowSize(core.px(620), core.px(520), ImGuiCond.FirstUseEver)
     core.preBeginWindow('auto_accept')
-    local open, show = ImGui.Begin('Triune Auto-Accept v' .. (core.VERSION or '') .. '###triuneAutoAccept', c.show_auto_accept, core.windowFlags and core.windowFlags('auto_accept', 0) or 0)
+    local open, show = ImGui.Begin('MoriAC Auto-Accept v' .. (core.VERSION or '') .. '###triuneAutoAccept', c.show_auto_accept, core.windowFlags and core.windowFlags('auto_accept', 0) or 0)
     if not open then
         c.show_auto_accept = false
         if core.preEndWindow then core.preEndWindow('auto_accept', false) end
@@ -746,7 +746,7 @@ function plugin.onCommand(cmd)
     if not c then return true end
     c.show_auto_accept = not c.show_auto_accept
     saveLoadout()
-    print(string.format('\ag[Triune]\ax Auto-Accept window %s.', c.show_auto_accept and 'OPENED' or 'CLOSED'))
+    print(string.format('\ag[MoriAC]\ax Auto-Accept window %s.', c.show_auto_accept and 'OPENED' or 'CLOSED'))
     return true
 end
 

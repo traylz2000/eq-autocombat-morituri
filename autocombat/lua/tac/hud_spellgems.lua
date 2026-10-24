@@ -15,7 +15,7 @@ local plugin = {
     id                 = 'hud_spellgems',
     name               = 'Spell Gem Bar HUD',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     uses               = { spellbook = 'Open Spellbook from the gem bar', gamedb = 'Inspect Spell Info opens a database card' },
     description        = 'Popout spell gem bar with recast timers, casting overlays, spell-set presets, and right-click actions.',
     defaultEnabled     = true,
@@ -326,7 +326,7 @@ function M.drawSpellGemBarWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(2), core.px(2))
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(1), core.px(1))
     local show
-    ctrl.show_spell_gems, show = ImGui.Begin('Triune Spell Gems v' .. (core.VERSION or '') .. '###triuneSpellGemsWindow', ctrl.show_spell_gems, core.windowFlags and core.windowFlags('spell_gems', winFlags) or winFlags)
+    ctrl.show_spell_gems, show = ImGui.Begin('MoriAC Spell Gems v' .. (core.VERSION or '') .. '###triuneSpellGemsWindow', ctrl.show_spell_gems, core.windowFlags and core.windowFlags('spell_gems', winFlags) or winFlags)
     if not ctrl.show_spell_gems then
         if core.preEndWindow then core.preEndWindow('spell_gems', true) end
         ImGui.End()

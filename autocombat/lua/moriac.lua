@@ -1,11 +1,14 @@
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
--- Triune AutoCombat -- core engine (loadout, combat, movement, plugin host)
+-- Morituri Auto Combat (MoriAC) -- core engine (loadout, combat, movement,
+-- plugin host). A fork of Triune AutoCombat for Project Morituri's 4-class
+-- characters, with a rebuilt main window.
 -- ----------------------------------------------------------------------------
--- Standalone MacroQuest ImGui script. Run with:  /lua run triune
--- Loads triune_data.lua (produced by extract_spells.py) from your MQ config dir
--- for the real, era-correct spell + activated-AA lists, and persists each
--- character's loadout and settings to triune_loadout.lua next to it.
+-- Standalone MacroQuest ImGui script. Run with:  /lua run moriac
+-- Loads moriac_data.lua from your MQ config dir for the era-correct spell +
+-- activated-AA lists, and persists each character's loadout and settings to
+-- moriac_loadout_<server>_<char>.lua next to it (triune_* files from before
+-- the rename are migrated on first start).
 --
 -- This file owns the loadout builder UI, the combat engine (gem / AA / disc /
 -- action firing by target + condition + %), movement and navigation, and the
@@ -19,7 +22,7 @@
 -- ============================================================================
 
 --[[
-Triune Lua navigation guide
+MoriAC Lua navigation guide
 1. Core setup and constants
 2. Data loading
 3. State and runtime storage
@@ -35,7 +38,7 @@ local mq                = require('mq')
 local ImGui             = require('ImGui')
 local scriptDir         = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "./"
 package.path            = scriptDir .. "?.lua;" .. package.path
-local VERSION           = '3.2'
+local VERSION           = '0.9'
 local open              = true
 -- File-backed diagnostic logger. Hooked into print() right away so every
 -- chat line from here on (core and plugins) is captured in its ring buffer;
@@ -101,11 +104,14 @@ local ERR               = { 0.95, 0.35, 0.35, 1 }
 local DATA              = { era_expansion = 8, spells = {}, discs = {}, aas = {} }
 local DATA_OK           = false
 do
-    local paths = { mq.configDir .. '/triune_data.lua' }
+    -- moriac_data.lua (this fork); triune_data.lua is still read from an
+    -- install that predates the Morituri Auto Combat rename.
+    local paths = { mq.configDir .. '/moriac_data.lua' }
     pcall(function()
-        if scriptDir then table.insert(paths, scriptDir .. 'triune_data.lua') end
-        if scriptDir then table.insert(paths, scriptDir .. '../config/triune_data.lua') end
-        if mq.luaDir then table.insert(paths, mq.luaDir .. '/triune_data.lua') end
+        if scriptDir then table.insert(paths, scriptDir .. 'moriac_data.lua') end
+        if scriptDir then table.insert(paths, scriptDir .. '../config/moriac_data.lua') end
+        if mq.luaDir then table.insert(paths, mq.luaDir .. '/moriac_data.lua') end
+        table.insert(paths, mq.configDir .. '/triune_data.lua')
     end)
     for _, p in ipairs(paths) do
         local f = loadfile(p)
@@ -1288,14 +1294,14 @@ do
 
         if #found > 0 then
             if loud then
-                print(string.format('\ay[Triune]\ax Detected %d class(es) from InventoryWindow: %s', #found,
+                print(string.format('\ay[MoriAC]\ax Detected %d class(es) from InventoryWindow: %s', #found,
                     table.concat(found, ', ')))
             end
             return found
         end
 
         if loud then
-            print('\ar[Triune]\ax InventoryWindow returned no classes.')
+            print('\ar[MoriAC]\ax InventoryWindow returned no classes.')
         end
         return nil
     end
@@ -1310,7 +1316,7 @@ local function detectClasses(loud)
         local norm = toCanonicalClassAbbr(mainClass)
         if norm then
             if loud then
-                print(string.format('\ay[Triune]\ax Single-class character fallback (%s).', norm))
+                print(string.format('\ay[MoriAC]\ax Single-class character fallback (%s).', norm))
             end
             return { norm }
         end
@@ -1585,7 +1591,7 @@ local function sendPetCmd(verb, scope)
     mq.cmdf('/say %s', fullCmd)
     petState.lastPetCmdSent = fullCmd
     petState.lastPetCmdTime = os.clock()
-    print(string.format('\ag[Triune Pet]\ax Issued: \at%s\ax', fullCmd))
+    print(string.format('\ag[MoriAC Pet]\ax Issued: \at%s\ax', fullCmd))
 end
 
 -- Best guess at which quartet class a pet spawn belongs to: a name one of our
@@ -1687,7 +1693,7 @@ local function reconcilePets(quiet)
     end
 
     if assigned > 0 and not quiet then
-        print('\ag[Triune]\ax found ' .. assigned .. ' existing pet(s) -- tracking ' .. assigned .. ' pet(s).')
+        print('\ag[MoriAC]\ax found ' .. assigned .. ' existing pet(s) -- tracking ' .. assigned .. ' pet(s).')
     end
 end
 
@@ -1885,12 +1891,12 @@ local function onPetSummonRefused()
             local nm = spawnCleanName(pid)
             if not names[c] or string.lower(names[c]) ~= string.lower(nm) then
                 trackPet(sp.cls, pid, true)
-                print(string.format('\ay[Triune]\ax server says %s already has a pet -- now tracking "%s" as the %s pet.', sp.cls, nm, sp.cls))
+                print(string.format('\ay[MoriAC]\ax server says %s already has a pet -- now tracking "%s" as the %s pet.', sp.cls, nm, sp.cls))
                 return
             end
         end
     end
-    print(string.format('\ay[Triune]\ax server says %s already has a pet but none was detected -- pausing %s pet summons for 60s.', sp.cls, sp.cls))
+    print(string.format('\ay[MoriAC]\ax server says %s already has a pet but none was detected -- pausing %s pet summons for 60s.', sp.cls, sp.cls))
 end
 
 -- 'missing pet' gem condition: does this gem's class need to summon?
@@ -2501,7 +2507,7 @@ function runtime.markUnreachable(id)
     if runtime.noteUnreachableBurst then runtime.noteUnreachableBurst(id) end
     if runtime.xtForceId == id then
         runtime.xtForceId = 0
-        print(string.format('\ay[Triune]\ax Force target #%d released -- no path to it.', id))
+        print(string.format('\ay[MoriAC]\ax Force target #%d released -- no path to it.', id))
     end
     if runtime.clearDetour then runtime.clearDetour() end
 end
@@ -2959,7 +2965,7 @@ function runtime.forcedTargetId()
         return id
     end
     runtime.xtForceId = 0
-    print(string.format('\ay[Triune]\ax Force target #%d released -- dead, gone or unreachable. Resuming normal targeting.', id))
+    print(string.format('\ay[MoriAC]\ax Force target #%d released -- dead, gone or unreachable. Resuming normal targeting.', id))
     return nil
 end
 
@@ -3264,7 +3270,7 @@ local function createCastTracker()
                         local sp = mq.TLO.Spawn(tid)
                         if sp and sp() then tName = sp.CleanName() or sp.Name() or 'Target' end
                     end)
-                    print(string.format('\ay[Triune]\ax %s is %s (Game Database) -- skipping "%s" on it.', tName, tostring(why), spellName))
+                    print(string.format('\ay[MoriAC]\ax %s is %s (Game Database) -- skipping "%s" on it.', tName, tostring(why), spellName))
                 end
             end
             if checked[spellName] then return true, 'Immune', 9999 end
@@ -3343,11 +3349,11 @@ local function createCastTracker()
                     local s = mq.TLO.Spawn(tid)
                     if s and s() then tName = s.CleanName() or s.Name() or 'Target' end
                 end)
-                print(string.format('\ar[Triune]\ax Immunity registered for "%s" on %s (ID %d) -- skipping further casts on this mob.', spellName, tName, tid))
+                print(string.format('\ar[MoriAC]\ax Immunity registered for "%s" on %s (ID %d) -- skipping further casts on this mob.', spellName, tName, tid))
             else
                 lockouts[spellName] = os.clock() + lSec
                 resetFailCount(spellName)
-                print(string.format('\ar[Triune]\ax Global lockout applied for "%s" (%ds) due to immunity.', spellName, lSec))
+                print(string.format('\ar[MoriAC]\ax Global lockout applied for "%s" (%ds) due to immunity.', spellName, lSec))
             end
 
         elseif rLow == 'did not take hold' then
@@ -3360,7 +3366,7 @@ local function createCastTracker()
                 if runtime and runtime.npcSpellApplied and runtime.npcSpellApplied[tid] then
                     runtime.npcSpellApplied[tid][spellName] = nil
                 end
-                print(string.format('\ay[Triune]\ax Detrimental spell "%s" did not take hold on target #%d -- backing off on this target (%ds).', spellName, tid, backoff))
+                print(string.format('\ay[MoriAC]\ax Detrimental spell "%s" did not take hold on target #%d -- backing off on this target (%ds).', spellName, tid, backoff))
             else
                 lockouts[spellName] = os.clock() + lSec
                 resetFailCount(spellName)
@@ -3385,11 +3391,11 @@ local function createCastTracker()
                     targetLockouts[tid] = targetLockouts[tid] or {}
                     targetLockouts[tid][spellName] = os.clock() + lSec
                     resetFailCount(spellName)
-                    print(string.format('\ar[Triune]\ax Debuff "%s" resisted %d times by target #%d -- backing off on this target (%ds).', spellName, fails, tid, lSec))
+                    print(string.format('\ar[MoriAC]\ax Debuff "%s" resisted %d times by target #%d -- backing off on this target (%ds).', spellName, fails, tid, lSec))
                 else
                     lockouts[spellName] = os.clock() + lSec
                     resetFailCount(spellName)
-                    print(string.format('\ar[Triune]\ax Lockout applied for "%s" (%ds) after %d resists.', spellName, lSec, fails))
+                    print(string.format('\ar[MoriAC]\ax Lockout applied for "%s" (%ds) after %d resists.', spellName, lSec, fails))
                 end
             end
 
@@ -3412,7 +3418,7 @@ local function createCastTracker()
                 local shortLock = math.min(lSec, 8)
                 lockouts[spellName] = os.clock() + shortLock
                 resetFailCount(spellName)
-                print(string.format('\ay[Triune]\ax Detrimental spell "%s" %s %d times consecutively -- brief pause applied (%ds).', spellName, rLow, fails, shortLock))
+                print(string.format('\ay[MoriAC]\ax Detrimental spell "%s" %s %d times consecutively -- brief pause applied (%ds).', spellName, rLow, fails, shortLock))
             end
 
         elseif rLow == 'cannot see target' or rLow == 'out of range' or rLow == 'dead target'
@@ -3426,7 +3432,7 @@ local function createCastTracker()
             if fails >= mRetries then
                 lockouts[spellName] = os.clock() + lSec
                 resetFailCount(spellName)
-                print(string.format('\ar[Triune]\ax Lockout applied for "%s" (%ds) [%s].', spellName, lSec, rLow))
+                print(string.format('\ar[MoriAC]\ax Lockout applied for "%s" (%ds) [%s].', spellName, lSec, rLow))
             end
         end
     end
@@ -3767,7 +3773,7 @@ function runtime.tryMem(slot, spellName, bypassCheck)
     clearCursor()
 
     if mq.TLO.Me.Combat() or (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat()) then
-        print(string.format('\ay[Triune]\ax Cannot memorize in combat: %s', cleanName))
+        print(string.format('\ay[MoriAC]\ax Cannot memorize in combat: %s', cleanName))
         return false
     end
 
@@ -3782,9 +3788,9 @@ function runtime.tryMem(slot, spellName, bypassCheck)
     local bookSlot = runtime.getSpellBookSlot(spellName)
     if not bookSlot then
         if bypassCheck then
-            print(string.format('\ay[Triune]\ax Could not find "%s" in your spellbook -- nothing memorized.', cleanName))
+            print(string.format('\ay[MoriAC]\ax Could not find "%s" in your spellbook -- nothing memorized.', cleanName))
         else
-            print(string.format('\ay[Triune]\ax "%s" is not scribed in your spellbook -- scribe it first.', cleanName))
+            print(string.format('\ay[MoriAC]\ax "%s" is not scribed in your spellbook -- scribe it first.', cleanName))
         end
         return false
     end
@@ -3815,7 +3821,7 @@ function runtime.tryMem(slot, spellName, bypassCheck)
     end
 
     if mq.TLO.Me.Moving() then
-        print(string.format('\ay[Triune]\ax Stand still to memorize %s.', cleanName))
+        print(string.format('\ay[MoriAC]\ax Stand still to memorize %s.', cleanName))
         return false
     end
 
@@ -3833,7 +3839,7 @@ function runtime.tryMem(slot, spellName, bypassCheck)
         end
     end
     if not SBW().Open() then
-        print('\ar[Triune]\ax Could not open the spellbook.')
+        print('\ar[MoriAC]\ax Could not open the spellbook.')
         return false
     end
 
@@ -3924,13 +3930,13 @@ function runtime.tryMem(slot, spellName, bypassCheck)
 
     -- 12. Verification
     if isGemMatching(slot, cleanName) or isGemMatching(slot, spellName) then
-        print(string.format('\ag[Triune]\ax Memorized "%s" -> gem %d', cleanName, slot))
+        print(string.format('\ag[MoriAC]\ax Memorized "%s" -> gem %d', cleanName, slot))
         return true
     elseif (mq.TLO.Me.Gem(cleanName)() or 0) > 0 or (mq.TLO.Me.Gem(spellName)() or 0) > 0 then
-        print(string.format('\ag[Triune]\ax "%s" is on the bar.', cleanName))
+        print(string.format('\ag[MoriAC]\ax "%s" is on the bar.', cleanName))
         return true
     else
-        print(string.format('\ar[Triune]\ax Mem may have failed for "%s" (gem %d).', cleanName, slot))
+        print(string.format('\ar[MoriAC]\ax Mem may have failed for "%s" (gem %d).', cleanName, slot))
         return false
     end
 end
@@ -5124,9 +5130,9 @@ function runtime.queueMemAll()
         end
     end
     if queued > 0 then
-        print(string.format('\ag[Triune]\ax Queued %d missing/mismatched priority spell(s) to memorization bar.', queued))
+        print(string.format('\ag[MoriAC]\ax Queued %d missing/mismatched priority spell(s) to memorization bar.', queued))
     else
-        print('\ag[Triune]\ax All priority spells are already memorized on your gem bar.')
+        print('\ag[MoriAC]\ax All priority spells are already memorized on your gem bar.')
     end
     return queued
 end
@@ -5178,9 +5184,9 @@ function runtime.importCurrentGems(targetGemsTable)
     for idx, v in ipairs(newGems) do targetGemsTable[idx] = v end
     runtime.saveLoadout(true)
     if #newGems > 0 then
-        print(string.format('\ag[Triune]\ax Auto-populated %d spell(s) from current gem bar.', #newGems))
+        print(string.format('\ag[MoriAC]\ax Auto-populated %d spell(s) from current gem bar.', #newGems))
     else
-        print('\ay[Triune]\ax No memorized spells found on current spell gem bar.')
+        print('\ay[MoriAC]\ax No memorized spells found on current spell gem bar.')
     end
     return #newGems
 end
@@ -5216,7 +5222,7 @@ function runtime.checkGemMemSync()
                         if not runtime.gemSyncWarned[i] then
                             runtime.gemSyncWarned[i] = true
                             print(string.format(
-                                '\ay[Triune]\ax gem %d mismatch -- configured for "%s" but the bar actually has "%s" memmed there. '
+                                '\ay[MoriAC]\ax gem %d mismatch -- configured for "%s" but the bar actually has "%s" memmed there. '
                                 .. 'Use Mem All to Bar, or re-pick the spell for this gem.',
                                 i, pSpell, memmed))
                         end
@@ -5441,20 +5447,20 @@ function runtime.savePreset(name)
         savedAt = os.date('%Y-%m-%d %H:%M:%S')
     }
     runtime.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Saved Spell Gems preset "\ay%s\ax".', name))
+    print(string.format('\ag[MoriAC]\ax Saved Spell Gems preset "\ay%s\ax".', name))
 end
 
 function runtime.loadPreset(name, autoMem)
     if not name or name == '' then return false end
     if not loadout.presets or not loadout.presets[name] then
-        print(string.format('\ar[Triune]\ax Preset "\ay%s\ax" not found.', name))
+        print(string.format('\ar[MoriAC]\ax Preset "\ay%s\ax" not found.', name))
         return false
     end
     local p = loadout.presets[name]
     if p.gems then
         loadout.gems = runtime.deepCopyTable(p.gems)
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Loaded Spell Gems preset "\ay%s\ax".', name))
+        print(string.format('\ag[MoriAC]\ax Loaded Spell Gems preset "\ay%s\ax".', name))
         if autoMem or ctrl.automem then
             for slot = 1, getNumGems() do
                 local pSpell = runtime.getPrimarySpellForGem(slot)
@@ -5462,7 +5468,7 @@ function runtime.loadPreset(name, autoMem)
                     runtime.pendingMem[slot] = pSpell
                 end
             end
-            print('\ag[Triune]\ax Queued primary spells to memorization bar.')
+            print('\ag[MoriAC]\ax Queued primary spells to memorization bar.')
         end
         return true
     end
@@ -5474,14 +5480,14 @@ function runtime.deletePreset(name)
     if loadout.presets[name] then
         loadout.presets[name] = nil
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Deleted Spell Gems preset "\ay%s\ax".', name))
+        print(string.format('\ag[MoriAC]\ax Deleted Spell Gems preset "\ay%s\ax".', name))
     else
-        print(string.format('\ar[Triune]\ax Preset "\ay%s\ax" does not exist.', name))
+        print(string.format('\ar[MoriAC]\ax Preset "\ay%s\ax" does not exist.', name))
     end
 end
 
 function runtime.listPresets()
-    print('\ag[Triune]\ax --- Saved Spell Gem Presets ---')
+    print('\ag[MoriAC]\ax --- Saved Spell Gem Presets ---')
     local count = 0
     if loadout.presets then
         for k, v in pairs(loadout.presets) do
@@ -5612,8 +5618,30 @@ local function splitByChar(s, sep)
     return out
 end
 
+-- Files were named triune_* before the Morituri Auto Combat rename. The
+-- first time a moriac_* file is asked for and only the triune_* one exists,
+-- the old file is copied (never moved, so an older build still finds its
+-- own). Returns newPath either way. Plugins reach it as core.migrateConfigFile.
+function runtime.migrateConfigFile(newPath)
+    if type(newPath) ~= 'string' then return newPath end
+    local f = io.open(newPath, 'rb')
+    if f then f:close(); return newPath end
+    local oldPath = (newPath:gsub('moriac_([^/\\]*)$', 'triune_%1'))
+    if oldPath == newPath then return newPath end
+    local src = io.open(oldPath, 'rb')
+    if not src then return newPath end
+    local data = src:read('*a')
+    src:close()
+    local dst = io.open(newPath, 'wb')
+    if dst then
+        dst:write(data or '')
+        dst:close()
+    end
+    return newPath
+end
+
 -- Per-character loadout file path (multibox-safe). Each client writes ONLY its
--- own triune_loadout_<server>_<char>.lua, so different characters never share
+-- own moriac_loadout_<server>_<char>.lua, so different characters never share
 -- (and never overwrite each other's) settings, ignore/pull lists, or zone data.
 function runtime.loadoutFilePath()
     local serverName = ''
@@ -5622,7 +5650,7 @@ function runtime.loadoutFilePath()
         pcall(function() serverName = mq.TLO.Zone.Server() or '' end)
     end
     local tag = (tostring(serverName or '') .. '_' .. tostring(myName or 'unknown')):gsub('[^%w%_-]', '_')
-    return mq.configDir .. '/triune_loadout_' .. tag .. '.lua'
+    return mq.configDir .. '/moriac_loadout_' .. tag .. '.lua'
 end
 
 function runtime.loadAll()
@@ -5633,7 +5661,7 @@ function runtime.loadAll()
     runtime.pullList = {}
     local t = nil
     if myName then
-        local path = runtime.loadoutFilePath()
+        local path = runtime.migrateConfigFile(runtime.loadoutFilePath())
         -- A save whose final rename failed leaves the only good copy in .tmp.
         for _, p in ipairs({ path, path .. '.tmp' }) do
             local fn = loadfile(p)
@@ -5718,7 +5746,7 @@ runtime.saveLoadout = function(silent, force)
     local tmpPath = path .. '.tmp'
     local f, oerr = io.open(tmpPath, 'w')
     if not f then
-        print('\ar[Triune]\ax failed to save loadout (cannot open ' .. tostring(tmpPath) .. '): ' .. tostring(oerr))
+        print('\ar[MoriAC]\ax failed to save loadout (cannot open ' .. tostring(tmpPath) .. '): ' .. tostring(oerr))
         return
     end
     local okWrite, werr = pcall(function()
@@ -5727,7 +5755,7 @@ runtime.saveLoadout = function(silent, force)
     f:close()
     if not okWrite then
         os.remove(tmpPath)
-        print('\ar[Triune]\ax failed to save loadout: ' .. tostring(werr))
+        print('\ar[MoriAC]\ax failed to save loadout: ' .. tostring(werr))
         return
     end
     -- os.rename won't overwrite on Windows, so drop the old file first; if that
@@ -5735,13 +5763,13 @@ runtime.saveLoadout = function(silent, force)
     os.remove(path)
     local okMove, merr = os.rename(tmpPath, path)
     if not okMove then
-        print('\ar[Triune]\ax failed to replace loadout file: ' .. tostring(merr))
+        print('\ar[MoriAC]\ax failed to replace loadout file: ' .. tostring(merr))
         return
     end
     if runtime.pluginManager and runtime.pluginManager.onLoadoutSaved then
         runtime.pluginManager.onLoadoutSaved()
     end
-    if not silent then print('\ag[Triune]\ax saved loadout for ' .. tostring(myName or '?') .. '.') end
+    if not silent then print('\ag[MoriAC]\ax saved loadout for ' .. tostring(myName or '?') .. '.') end
 end
 
 local function listHas(list, name)
@@ -5767,13 +5795,13 @@ function runtime.addIgnore(name, zone)
     table.insert(list, name)
     table.sort(list)
     runtime.saveLoadout(true)
-    print('\ag[Triune]\ax added to ' .. label .. ': ' .. name)
+    print('\ag[MoriAC]\ax added to ' .. label .. ': ' .. name)
 end
 function runtime.addZoneIgnore(name) runtime.addIgnore(name, true) end
 function runtime.removeIgnore(name, zone)
     listRemove(zone and runtime.zoneListFor(runtime.zoneIgnore) or runtime.ignoreList, name)
     runtime.saveLoadout(true)
-    print('\ag[Triune]\ax removed from ' .. (zone and 'zone ' or '') .. 'ignore list: ' .. name)
+    print('\ag[MoriAC]\ax removed from ' .. (zone and 'zone ' or '') .. 'ignore list: ' .. name)
 end
 
 -- pull-list (include-list) helpers for Puller mode:
@@ -5793,12 +5821,12 @@ function runtime.addPull(name, zone)
     table.insert(list, name)
     table.sort(list)
     runtime.saveLoadout(true)
-    print('\ag[Triune]\ax added to ' .. label .. ': ' .. name)
+    print('\ag[MoriAC]\ax added to ' .. label .. ': ' .. name)
 end
 function runtime.removePull(name, zone)
     listRemove(zone and runtime.zoneListFor(runtime.zonePull) or runtime.pullList, name)
     runtime.saveLoadout(true)
-    print('\ag[Triune]\ax removed from ' .. (zone and 'zone ' or '') .. 'pull list: ' .. name)
+    print('\ag[MoriAC]\ax removed from ' .. (zone and 'zone ' or '') .. 'pull list: ' .. name)
 end
 
 -- Auto-Accept (group / trade / dzadd) lives in the auto_accept plugin (lua/tac/auto_accept.lua).
@@ -5821,7 +5849,7 @@ function runtime.getMapsDirectory()
         candidates[#candidates + 1] = mq.luaDir .. '/../../maps'
     end
     for _, dir in ipairs(candidates) do
-        local testFile = dir .. '/triune_map_test.tmp'
+        local testFile = dir .. '/moriac_map_test.tmp'
         local f = io.open(testFile, 'w')
         if f then
             f:close()
@@ -5906,7 +5934,7 @@ function runtime.syncWaypointMapLines(zoneShort, forceSync)
     end
 
     -- Temp file + rename so a failed write never truncates the zone map.
-    local tmpPath = mapFilePath .. '.triune_tmp'
+    local tmpPath = mapFilePath .. '.moriac_tmp'
     local fWrite = io.open(tmpPath, 'w')
     if fWrite then
         local okWrite = pcall(function()
@@ -5959,7 +5987,7 @@ function runtime.setNearestWaypoint()
 
     local targetWp = wps[bestIdx]
     if targetWp then
-        print(string.format('\ag[Triune]\ax Nearest waypoint acquired: %s (#%d, dist: %.0f) [%s]',
+        print(string.format('\ag[MoriAC]\ax Nearest waypoint acquired: %s (#%d, dist: %.0f) [%s]',
             targetWp.name or ('WP ' .. bestIdx), bestIdx, bestDist,
             (ctrl.waypoint_direction or 1) == 1 and 'Forward' or 'Reverse'))
     end
@@ -6225,11 +6253,11 @@ function runtime.wpPresetParseImport(str)
     if str == '' then return nil, 'Paste an exported waypoint string first.' end
 
     local versionStr, body = str:match('^TACWP(%d+):(.+)$')
-    if not versionStr then return nil, 'Not a recognized Triune waypoint string.' end
+    if not versionStr then return nil, 'Not a recognized MoriAC waypoint string.' end
     local version = tonumber(versionStr)
     if version ~= 1 and version ~= WP.VERSION then
         return nil, string.format(
-            'This string uses waypoint format v%s, but this version of Triune only supports v%d. Update Triune and try again.',
+            'This string uses waypoint format v%s, but this version of MoriAC only supports v%d. Update MoriAC and try again.',
             versionStr, WP.VERSION)
     end
 
@@ -6370,7 +6398,7 @@ function runtime.recordTargetCon(tier, line, name)
     if not tgtName or tgtName == '' or not tier then return end
     runtime.conCache[tgtName] = tier
     if ctrl and ctrl.debug_mode then
-        print(string.format('\ag[Triune]\ax Captured faction consideration for "%s": %s', tgtName, tier))
+        print(string.format('\ag[MoriAC]\ax Captured faction consideration for "%s": %s', tgtName, tier))
     end
 end
 
@@ -6569,15 +6597,15 @@ local function loadoutSig()
     return table.concat(p, '|')
 end
 
--- Restart the whole script: the same as /lua stop triune followed by
--- /lua run triune. A script cannot /lua run itself while it is still
+-- Restart the whole script: the same as /lua stop moriac followed by
+-- /lua run moriac. A script cannot /lua run itself while it is still
 -- running, so the run is handed to MQ's /timed (tenths of a second) and fires
 -- after this script has exited; the stop goes last so the loadout is saved
 -- through the normal shutdown path.
-runtime.SCRIPT_NAME = 'triune'
+runtime.SCRIPT_NAME = 'moriac'
 function runtime.restartScript()
     runtime.saveLoadout(true, true)
-    print('\ag[Triune]\ax restarting (/lua stop ' .. runtime.SCRIPT_NAME .. ' -> /lua run ' .. runtime.SCRIPT_NAME .. ')...')
+    print('\ag[MoriAC]\ax restarting (/lua stop ' .. runtime.SCRIPT_NAME .. ' -> /lua run ' .. runtime.SCRIPT_NAME .. ')...')
     mq.cmd('/timed 15 /lua run ' .. runtime.SCRIPT_NAME)
     mq.cmd('/lua stop ' .. runtime.SCRIPT_NAME)
 end
@@ -7143,6 +7171,7 @@ function runtime.initPluginManager()
             getDiscCooldownAndDuration = getDiscCooldownAndDuration,
             getNumGems            = getNumGems,
             classColor            = classColor,
+            migrateConfigFile     = runtime.migrateConfigFile,
             CLASS_SLOTS           = CLASS_SLOTS,
             cleanSpellName        = cleanSpellName,
             normalizeSpellName    = normalizeSpellName,
@@ -7227,7 +7256,7 @@ function runtime.initPluginManager()
         local first = full:match('^([^\n]*)') or full
         p.status = 'Error'
         p.errorMsg = phase .. ': ' .. first
-        print(string.format('\ar[Triune Plugin Error]\ax %s %s failed: %s', p.name, phase, first))
+        print(string.format('\ar[MoriAC Plugin Error]\ax %s %s failed: %s', p.name, phase, first))
         if full ~= first then tlog.error('plugin', '%s %s traceback:\n%s', p.name, phase, full) end
     end
 
@@ -7275,7 +7304,7 @@ function runtime.initPluginManager()
             { tbl = mq, key = 'doevents', why = 'mq.doevents (the core pumps events)' },
             { tbl = mq, key = 'bind',     why = 'mq.bind at load (register binds in onInit, release them in onDestroy)' },
             { tbl = mq, key = 'event',    why = 'mq.event at load (register events in onInit, release them in onDestroy)' },
-            { tbl = mq, key = 'exit',     why = 'mq.exit (a plugin runs inside Triune and cannot exit the script)' },
+            { tbl = mq, key = 'exit',     why = 'mq.exit (a plugin runs inside MoriAC and cannot exit the script)' },
             { tbl = mq and mq.imgui, key = 'init', why = 'mq.imgui.init (draw from onDrawUI instead)' },
         }
         local saved = {}
@@ -7283,7 +7312,7 @@ function runtime.initPluginManager()
             if type(g.tbl) == 'table' then
                 saved[i] = g.tbl[g.key]
                 g.tbl[g.key] = function()
-                    error(string.format('%s is a standalone script, not a Triune plugin: it called %s while loading', filename, g.why), 2)
+                    error(string.format('%s is a standalone script, not a MoriAC plugin: it called %s while loading', filename, g.why), 2)
                 end
             end
         end
@@ -7304,7 +7333,7 @@ function runtime.initPluginManager()
     end
 
     local function loadFailed(filename, fullPath, msg)
-        print(string.format('\ar[Triune Plugin Error]\ax %s: %s', filename, tostring(msg)))
+        print(string.format('\ar[MoriAC Plugin Error]\ax %s: %s', filename, tostring(msg)))
         pm.loadErrors[filename] = { msg = tostring(msg), fullPath = fullPath, at = os.clock() }
         pm.scripts[filename] = nil
         return false, tostring(msg)
@@ -7341,7 +7370,7 @@ function runtime.initPluginManager()
             at = os.clock(),
         }
         pm.loadErrors[filename] = nil
-        print(string.format('\ay[Triune]\ax %s is not a Triune plugin (%s). Listed under Settings -> Plugins -> Standalone Scripts; run it with /lua run %s.',
+        print(string.format('\ay[MoriAC]\ax %s is not a MoriAC plugin (%s). Listed under Settings -> Plugins -> Standalone Scripts; run it with /lua run %s.',
             filename, tostring(reason), runName))
         return false, tostring(reason)
     end
@@ -7504,7 +7533,7 @@ function runtime.initPluginManager()
         local ok, inst = runPluginChunk(fn, filename)
         if not ok then
             local msg = tostring(inst)
-            if msg:find('standalone script, not a Triune plugin', 1, true) then
+            if msg:find('standalone script, not a MoriAC plugin', 1, true) then
                 return registerScript(filename, fullPath, 'standalone script: ' .. (msg:match('it called (.-) while loading') or 'uses MQ script entry points at load'))
             end
             return loadFailed(filename, fullPath, 'Execution error: ' .. msg)
@@ -7598,7 +7627,7 @@ function runtime.initPluginManager()
         if p.instance.onLoadSettings and ctrl.plugins[id].settings then
             local okLoad, loadErr = pcall(p.instance.onLoadSettings, ctrl.plugins[id].settings)
             if not okLoad then
-                print(string.format('\ay[Triune Plugin]\ax %s onLoadSettings failed (using defaults): %s', p.name, tostring(loadErr)))
+                print(string.format('\ay[MoriAC Plugin]\ax %s onLoadSettings failed (using defaults): %s', p.name, tostring(loadErr)))
             end
         end
 
@@ -7834,7 +7863,7 @@ function runtime.initPluginManager()
             if not ok then
                 local full = tostring(err)
                 local first = full:match('^([^\n]*)') or full
-                print(string.format('\ar[Triune Plugin Error]\ax %s failed: %s', op.label, first))
+                print(string.format('\ar[MoriAC Plugin Error]\ax %s failed: %s', op.label, first))
                 if full ~= first then tlog.error('plugin', '%s traceback:\n%s', op.label, full) end
             end
         end
@@ -8369,7 +8398,7 @@ function UI.drawPluginsTab()
     if #scriptFiles > 0 then
         local openScripts = ImGui.CollapsingHeader(string.format('Standalone Scripts (%d)##plgScriptsHdr', #scriptFiles), ImGuiTreeNodeFlags.DefaultOpen)
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('%s', 'Runnable .lua files in the plugin folder that do not follow the plugin contract. Triune does not load them; Run / Stop launches each as its own /lua script.\nHdr puts a Run / Stop button for the script on the main window header, named by Button Name (blank = file name).')
+            ImGui.SetTooltip('%s', 'Runnable .lua files in the plugin folder that do not follow the plugin contract. MoriAC does not load them; Run / Stop launches each as its own /lua script.\nHdr puts a Run / Stop button for the script on the main window header, named by Button Name (blank = file name).')
         end
         if openScripts and ImGui.BeginTable('TriuneScriptsTable', 5, tblFlags) then
             ImGui.TableSetupColumn('Script', ImGuiTableColumnFlags.WidthFixed, UI.px(150))
@@ -8429,7 +8458,7 @@ function UI.drawPluginsTab()
                 end
                 if ImGui.IsItemHovered() then
                     ImGui.SetTooltip('%s', running and ('Executes /lua stop ' .. tostring(entry.runName))
-                        or ('Executes /lua run ' .. tostring(entry.runName) .. '\nThe script runs as its own MQ Lua process, independent of Triune.'))
+                        or ('Executes /lua run ' .. tostring(entry.runName) .. '\nThe script runs as its own MQ Lua process, independent of MoriAC.'))
                 end
                 ImGui.SameLine()
                 if ImGui.SmallButton(string.format('Re-check##scrchk_%d', i)) then
@@ -8861,7 +8890,7 @@ function UI.drawClassPicker()
         end
         if ImGui.Button('Re-detect') then reDetectRequested = true end
         if ImGui.Button('Save Loadout', UI.px(140), UI.px(24)) then runtime.saveLoadout() end
-        ImGui.SameLine(); ImGui.TextDisabled('-> triune_loadout.lua (auto-saves on changes)')
+        ImGui.SameLine(); ImGui.TextDisabled('-> moriac_loadout_<server>_<char>.lua (auto-saves on changes)')
         accent(MUTED, 'Detected from your in-game Inventory Window.')
     end
 end
@@ -8874,13 +8903,13 @@ end
 UI.HELP_COMMANDS = (function() return {
         { cmd = '/ac run / /ac start',                desc = 'Start / unpause auto-combat execution' },
         { cmd = '/ac pause / /ac stop',               desc = 'Pause auto-combat execution, halt movement & disengage pet' },
-        { cmd = '/ac restart',                        desc = 'Stop and re-run the whole script (same as /lua stop triune, /lua run triune)' },
+        { cmd = '/ac restart',                        desc = 'Stop and re-run the whole script (same as /lua stop moriac, /lua run moriac)' },
         { cmd = '/ac burn [on|off]',                  desc = 'Toggle burn mode (enables "Burn Only" spells, AAs, discs)' },
         { cmd = '/ac memall',                         desc = 'Queue all missing or mismatched priority spells to memorization bar' },
         { cmd = '/ac importbar / /ac import',         desc = 'Auto-populate spell lines from currently memorized spell gems' },
         { cmd = '/ac status',                         desc = 'Print current running state and combat mode to chat' },
         { cmd = '/ac compact / /ac mini',             desc = 'Toggle auto-resizing Compact Mini-Window mode' },
-        { cmd = '/ac scale [0.75-2.0|reset]',         desc = 'UI scale for every Triune window (per-window overrides on Settings -> Window Layout)' },
+        { cmd = '/ac scale [0.75-2.0|reset]',         desc = 'UI scale for every MoriAC window (per-window overrides on Settings -> Window Layout)' },
         { cmd = '/ac hud / /ac uf',                   desc = 'Toggle popout Target & Player HUD unit frames window' },
         { cmd = '/ac target / /ac tw',                desc = 'Toggle the popout Target-only window (a big target frame)' },
         { cmd = '/ac cd / /ac cooldowns',             desc = 'Toggle popout Cooldown & Ability Monitor window' },
@@ -8917,7 +8946,7 @@ UI.HELP_COMMANDS = (function() return {
         { cmd = '/ac pullcon [tier] [on|off]',        desc = 'Configure Puller faction consideration filter (Scowling, Indifferent, etc.) or preset' },
         { cmd = '/ac wp [add|clear|del|on|off|list]', desc = 'Configure & toggle Puller Waypoint Patrol loop' },
         { cmd = '/ac pullhp [0-95]',                  desc = 'Configure minimum HP percentage threshold before pausing pulling to rest (default 0 / disabled)' },
-        { cmd = '/triunerun',                         desc = 'Quick keybind command to toggle run / pause' },
+        { cmd = '/moriacrun',                         desc = 'Quick keybind command to toggle run / pause' },
 } end)()
 UI.HELP_TARGETS = {
         { opt = 'E: All Enemies',     color = ERR,  desc = 'Multi-Target mode: Evaluates ALL hostile enemies on your Extended Target (XTarget) window. For duration spells (DoTs, debuffs, snares, mes), sequentially casts on each enemy missing the effect and yields once all have it. For nukes/direct damage, round-robins casts evenly across all XTarget enemies. Honors per-mob max_casts and skips locked-out/immune mobs.' },
@@ -9523,7 +9552,7 @@ function UI.drawSpellTable(gems, h)
         ImGui.TableNextColumn()
         local nv = ImGui.Checkbox('##on', on)
         if ImGui.IsItemHovered() then
-            UI.setTooltip('%s', on and 'Auto-cast ON. Uncheck to stop Triune casting this spell; the line and its settings are kept.'
+            UI.setTooltip('%s', on and 'Auto-cast ON. Uncheck to stop MoriAC casting this spell; the line and its settings are kept.'
                 or 'Auto-cast OFF: never cast automatically. It stays memorized (unless another line uses the gem), so you can cast it yourself. Check to turn it back on.')
         end
         if nv ~= on then UI.setEntryOn(g, 'spell', nv); runtime.saveLoadout(true) end
@@ -10064,20 +10093,20 @@ end
 function UI.addClickieFromCursor()
     local it = mq.TLO.Cursor
     if not it or not it() or (it.ID() or 0) <= 0 then
-        print('\ar[Triune]\ax Cursor is empty -- pick up a clickable item first.')
+        print('\ar[MoriAC]\ax Cursor is empty -- pick up a clickable item first.')
         return false, 'Cursor is empty'
     end
 
     local itemName = tostring(it.Name() or '')
     if itemName == '' then
-        print('\ar[Triune]\ax Unable to read item on cursor.')
+        print('\ar[MoriAC]\ax Unable to read item on cursor.')
         return false, 'Invalid item'
     end
 
     loadout.clickies = loadout.clickies or {}
     for _, c in ipairs(loadout.clickies) do
         if c.name == itemName then
-            print('\ay[Triune]\ax Item "' .. itemName .. '" is already in your Clickies list.')
+            print('\ay[MoriAC]\ax Item "' .. itemName .. '" is already in your Clickies list.')
             return false, 'Already in list'
         end
     end
@@ -10109,7 +10138,7 @@ function UI.addClickieFromCursor()
     end
 
     if spellName == '' then
-        print('\ar[Triune]\ax Item [' .. itemName .. '] does not have an activatable click effect/spell.')
+        print('\ar[MoriAC]\ax Item [' .. itemName .. '] does not have an activatable click effect/spell.')
         return false, 'No click effect'
     end
 
@@ -10131,7 +10160,7 @@ function UI.addClickieFromCursor()
 
     table.insert(loadout.clickies, entry)
     runtime.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Added Clickie: [%s] (Spell: %s, Target: %s, Condition: %s)',
+    print(string.format('\ag[MoriAC]\ax Added Clickie: [%s] (Spell: %s, Target: %s, Condition: %s)',
         itemName, spellName, defTarget, defWhen))
     return true
 end
@@ -10478,16 +10507,16 @@ function UI.startEngine()
     ctrl.running = true
     runtime.wasRunning = true
     if not navLoaded() and ctrl.mode ~= 'Manual' then
-        mq.cmd('/popup [Triune] WARNING: MQ2Nav is NOT loaded!')
-        print('\ar[Triune WARNING]\ax MQ2Nav plugin is not loaded! Movement and navigation require MQ2Nav (/plugin mq2nav).')
+        mq.cmd('/popup [MoriAC] WARNING: MQ2Nav is NOT loaded!')
+        print('\ar[MoriAC WARNING]\ax MQ2Nav plugin is not loaded! Movement and navigation require MQ2Nav (/plugin mq2nav).')
     elseif not navMeshLoaded() and ctrl.mode ~= 'Manual' then
         local curZone = mq.TLO.Zone.ShortName() or 'current zone'
-        mq.cmdf('/popup [Triune] WARNING: No NavMesh for %s!', curZone)
-        print(string.format('\ar[Triune WARNING]\ax No NavMesh loaded for zone "%s"! Movement and pathing require a zone navmesh.', curZone))
+        mq.cmdf('/popup [MoriAC] WARNING: No NavMesh for %s!', curZone)
+        print(string.format('\ar[MoriAC WARNING]\ax No NavMesh loaded for zone "%s"! Movement and pathing require a zone navmesh.', curZone))
     end
     if not stickLoaded() and ctrl.mode ~= 'Manual' then
-        mq.cmd('/popup [Triune] WARNING: MQ2MoveUtils is NOT loaded!')
-        print('\ar[Triune WARNING]\ax MQ2MoveUtils plugin is not loaded! Target stick and melee positioning require MQ2MoveUtils (/plugin mq2moveutils).')
+        mq.cmd('/popup [MoriAC] WARNING: MQ2MoveUtils is NOT loaded!')
+        print('\ar[MoriAC WARNING]\ax MQ2MoveUtils plugin is not loaded! Target stick and melee positioning require MQ2MoveUtils (/plugin mq2moveutils).')
     end
 end
 
@@ -10549,13 +10578,13 @@ function UI.drawBurnButton(idSuffix, w, h, onLabel, offLabel)
         })
         if ImGui.Button((onLabel or 'BURN (ON)') .. idSuffix, w, h) then
             ctrl.burn = false
-            print('\ag[Triune]\ax Burn mode DISABLED.')
+            print('\ag[MoriAC]\ax Burn mode DISABLED.')
         end
         if pushed > 0 then pcall(ImGui.PopStyleColor, pushed) end
     else
         if ImGui.Button((offLabel or 'BURN (OFF)') .. idSuffix, w, h) then
             ctrl.burn = true
-            print('\ag[Triune]\ax Burn mode ENABLED!')
+            print('\ag[MoriAC]\ax Burn mode ENABLED!')
         end
     end
     if ImGui.IsItemHovered() then
@@ -11907,7 +11936,7 @@ function UI.drawControlTab()
         end
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip(
-                'Checked: Once a fight starts, Triune navigates to and sticks to the NPC being attacked.\nUnchecked: You drive. The character stays where you leave it and only attacks/casts when the NPC is in reach.')
+                'Checked: Once a fight starts, MoriAC navigates to and sticks to the NPC being attacked.\nUnchecked: You drive. The character stays where you leave it and only attacks/casts when the NPC is in reach.')
         end
 
         local manualNav, manualNavChanged = ImGui.Checkbox('Auto-Nav to Selected Target##manualAutoNav',
@@ -12049,7 +12078,7 @@ function UI.drawControlTab()
             ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Tier 1 vertical search threshold. Triune prioritizes NPCs on the same floor or Z plane\nwithin this height difference before searching other floors.')
+                    'Tier 1 vertical search threshold. MoriAC prioritizes NPCs on the same floor or Z plane\nwithin this height difference before searching other floors.')
             end
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_z = ImGui.SliderInt('Max Height Diff (Z)', ctrl.hunter_z or 75, 10, 300)
@@ -12355,10 +12384,10 @@ function UI.drawControlTab()
                     local str, err = runtime.wpPresetExport(runtime.wpSelectedPreset)
                     if str then
                         pcall(ImGui.SetClipboardText, str)
-                        print(string.format('\ag[Triune]\ax Copied waypoint preset "%s" to clipboard:', runtime.wpSelectedPreset))
+                        print(string.format('\ag[MoriAC]\ax Copied waypoint preset "%s" to clipboard:', runtime.wpSelectedPreset))
                         print(str)
                     elseif err then
-                        print('\ay[Triune]\ax ' .. err)
+                        print('\ay[MoriAC]\ax ' .. err)
                     end
                 end
                 if ImGui.IsItemHovered() then
@@ -12372,7 +12401,7 @@ function UI.drawControlTab()
                 if ImGui.Button('Import##wpPresetImportBtn') then
                     local pending, err = runtime.wpPresetParseImport(runtime.wpImportInput)
                     if not pending then
-                        print('\ay[Triune]\ax ' .. err)
+                        print('\ay[MoriAC]\ax ' .. err)
                     elseif pending.collision then
                         runtime.wpImportPending = pending
                         runtime.wpPresetModalMode = 'importConfirm'
@@ -12381,10 +12410,10 @@ function UI.drawControlTab()
                         runtime.wpPresetCommitImport(pending)
                         runtime.wpSelectedPreset = pending.name
                         runtime.wpImportInput = ''
-                        print(string.format('\ag[Triune]\ax Imported waypoint preset "%s" for %s.',
+                        print(string.format('\ag[MoriAC]\ax Imported waypoint preset "%s" for %s.',
                             pending.name, pending.zoneDisplay))
                         if pending.zoneMismatch then
-                            print(string.format('\ay[Triune]\ax Note: this was exported from %s -- you are currently in %s.',
+                            print(string.format('\ay[MoriAC]\ax Note: this was exported from %s -- you are currently in %s.',
                                 pending.zoneDisplay, pending.currentZoneDisplay))
                         end
                     end
@@ -12451,7 +12480,7 @@ function UI.drawControlTab()
                             runtime.wpSelectedPreset = finalName
                             ImGui.CloseCurrentPopup()
                         elseif err then
-                            print('\ay[Triune]\ax ' .. err)
+                            print('\ay[MoriAC]\ax ' .. err)
                         end
                     end
                     ImGui.SameLine()
@@ -12666,7 +12695,7 @@ function UI.drawControlTab()
                     if o.stopAttack and mq.TLO.Me.Combat() then mq.cmd('/attack off') end
                     o.addFn(nm, zoneSel)
                 else
-                    print('\ay[Triune]\ax no target selected.')
+                    print('\ay[MoriAC]\ax no target selected.')
                 end
             end
             ImGui.SameLine()
@@ -13367,7 +13396,7 @@ runtime.CORE_WINDOWS = {
         key = 'main',
         name = 'Main AutoCombat Window',
         short = 'Main',
-        desc = 'Core Triune interface with tabs and controls',
+        desc = 'Core MoriAC interface with tabs and controls',
         canLock = false,
         getOpen = function() return open and not ctrl.compact end,
         setOpen = function(val)
@@ -13459,7 +13488,7 @@ function runtime.checkDisplaySizeChange()
             if (curW ~= runtime.lastDisplayWidth or curH ~= runtime.lastDisplayHeight) then
                 if ctrl.winpos_auto_restore_on_resize and ctrl.saved_window_positions and next(ctrl.saved_window_positions) then
                     runtime.triggerRestoreWindows()
-                    print(string.format('\ag[Triune]\ax Display resolution changed (%dx%d -> %dx%d). Auto-restored saved window positions.',
+                    print(string.format('\ag[MoriAC]\ax Display resolution changed (%dx%d -> %dx%d). Auto-restored saved window positions.',
                         runtime.lastDisplayWidth, runtime.lastDisplayHeight, curW, curH))
                 end
             end
@@ -13847,14 +13876,14 @@ function runtime.saveWindowPositions(silent)
     ctrl.saved_window_positions_at = os.time()
     runtime.saveLoadout(true)
     if not silent then
-        print(string.format('\ag[Triune]\ax Saved positions for \ay%d\ax window(s).', count))
+        print(string.format('\ag[MoriAC]\ax Saved positions for \ay%d\ax window(s).', count))
     end
     return count
 end
 
 function runtime.triggerRestoreWindows(includeVisibility)
     if not ctrl.saved_window_positions or not next(ctrl.saved_window_positions) then
-        print('\ay[Triune]\ax No saved window positions found. Click "Save Current Window Positions" first.')
+        print('\ay[MoriAC]\ax No saved window positions found. Click "Save Current Window Positions" first.')
         return 0
     end
     if not runtime.pendingWindowRestore then runtime.pendingWindowRestore = {} end
@@ -13914,7 +13943,7 @@ function runtime.resetWindowPositionsToDefault()
     for k, v in pairs(defaults) do
         runtime.pendingWindowRestore[k] = { x = v.x, y = v.y, w = v.w, h = v.h, frames = 3 }
     end
-    print('\ag[Triune]\ax Reset all window positions to desktop defaults.')
+    print('\ag[MoriAC]\ax Reset all window positions to desktop defaults.')
 end
 
 function runtime.centerWindow(winKey)
@@ -13942,13 +13971,13 @@ function runtime.centerWindow(winKey)
     }
     if not runtime.liveWindowPositions then runtime.liveWindowPositions = {} end
     runtime.liveWindowPositions[winKey] = { x = cx, y = cy, w = w, h = h, updated = os.clock() }
-    print(string.format('\ag[Triune]\ax Centered window "%s" to screen center (%d, %d).', winKey, cx, cy))
+    print(string.format('\ag[MoriAC]\ax Centered window "%s" to screen center (%d, %d).', winKey, cx, cy))
 end
 
 function runtime.restoreSingleWindow(winKey)
     local saved = ctrl.saved_window_positions and ctrl.saved_window_positions[winKey]
     if not saved or not saved.x or not saved.y then
-        print(string.format('\ay[Triune]\ax No saved position found for window "%s".', winKey))
+        print(string.format('\ay[MoriAC]\ax No saved position found for window "%s".', winKey))
         return false
     end
     if not runtime.pendingWindowRestore then runtime.pendingWindowRestore = {} end
@@ -13959,14 +13988,14 @@ function runtime.restoreSingleWindow(winKey)
         h = saved.h,
         frames = 3,
     }
-    print(string.format('\ag[Triune]\ax Restored window "%s" to saved position (%d, %d).', winKey, saved.x, saved.y))
+    print(string.format('\ag[MoriAC]\ax Restored window "%s" to saved position (%d, %d).', winKey, saved.x, saved.y))
     return true
 end
 
 function runtime.saveSingleWindow(winKey)
     local live = runtime.liveWindowPositions and runtime.liveWindowPositions[winKey]
     if not live or not live.x or not live.y then
-        print(string.format('\ay[Triune]\ax Window "%s" must be open to save its position.', winKey))
+        print(string.format('\ay[MoriAC]\ax Window "%s" must be open to save its position.', winKey))
         return false
     end
     if not ctrl.saved_window_positions then ctrl.saved_window_positions = {} end
@@ -13984,13 +14013,13 @@ function runtime.saveSingleWindow(winKey)
     }
     ctrl.saved_window_positions_at = os.time()
     runtime.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Saved position for window "%s" (%d, %d) [%dx%d].', winKey, live.x, live.y, live.w or 0, live.h or 0))
+    print(string.format('\ag[MoriAC]\ax Saved position for window "%s" (%d, %d) [%dx%d].', winKey, live.x, live.y, live.w or 0, live.h or 0))
     return true
 end
 
 function UI.drawWindowSettings()
     accent(GOLD, 'Window Layout & Position Persistence')
-    ImGui.TextDisabled('Save and restore exact screen coordinates and dimensions for all Triune popout windows.\nPrevents window scrambling caused by monitor power-off, display sleep, or resolution changes.')
+    ImGui.TextDisabled('Save and restore exact screen coordinates and dimensions for all MoriAC popout windows.\nPrevents window scrambling caused by monitor power-off, display sleep, or resolution changes.')
     ImGui.Separator()
 
     -- Primary Action Toolbar
@@ -14007,7 +14036,7 @@ function UI.drawWindowSettings()
         pushedColors = 0
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Snapshots the current screen coordinates (X, Y) and sizes (W, H)\nof all open Triune windows and saves them to your character loadout.')
+        ImGui.SetTooltip('%s', 'Snapshots the current screen coordinates (X, Y) and sizes (W, H)\nof all open MoriAC windows and saves them to your character loadout.')
     end
 
     ImGui.SameLine()
@@ -14016,7 +14045,7 @@ function UI.drawWindowSettings()
     })
     if ImGui.Button('Restore Saved Positions##winRestoreAll', UI.px(180), UI.px(26)) then
         local cnt = runtime.triggerRestoreWindows()
-        print(string.format('\ag[Triune]\ax Restored positions for \ay%d\ax window(s).', cnt))
+        print(string.format('\ag[MoriAC]\ax Restored positions for \ay%d\ax window(s).', cnt))
     end
     if pushedColors > 0 then
         pcall(ImGui.PopStyleColor, pushedColors)
@@ -14079,7 +14108,7 @@ function UI.drawWindowSettings()
     local curScale = UI.clampScale(ctrl.ui_scale) or 1.0
     local newScale = ImGui.SliderFloat('##uiScale', curScale, UI.SCALE_MIN, UI.SCALE_MAX, '%.2fx')
     if ImGui.IsItemHovered() then
-        UI.setTooltip('Size of every Triune window (text, buttons, bars) - for high-resolution or small screens.\nA window can override it in the Scale column below or in its right-click menu.\nFonts are stretched, not re-rendered; for crisp text at large sizes raise MQ\'s overlay font size too.\nAlso: /ac scale <0.75-2.0> | /ac scale reset')
+        UI.setTooltip('Size of every MoriAC window (text, buttons, bars) - for high-resolution or small screens.\nA window can override it in the Scale column below or in its right-click menu.\nFonts are stretched, not re-rendered; for crisp text at large sizes raise MQ\'s overlay font size too.\nAlso: /ac scale <0.75-2.0> | /ac scale reset')
     end
     if newScale ~= curScale then UI.setUiScale(newScale) end
     ImGui.SameLine()
@@ -14090,7 +14119,7 @@ function UI.drawWindowSettings()
     ImGui.NewLine()
     ImGui.Separator()
 
-    accent(GOLD, 'Triune Popout Windows:')
+    accent(GOLD, 'MoriAC Popout Windows:')
 
     -- Managed Windows Table. The columns are fixed-width and together are
     -- wider than the default main window; a table sized to the available
@@ -14208,8 +14237,8 @@ function UI.drawWindowSettings()
     -- not), so a new plugin shows up here without editing the core and a
     -- removed one disappears instead of leaving a dead button.
     ImGui.Spacing()
-    if ImGui.CollapsingHeader('External Triune Tools & Windows', ImGuiTreeNodeFlags.None) then
-        ImGui.TextDisabled('Toggle the Triune companion tool windows (plugins in lua/tac):')
+    if ImGui.CollapsingHeader('External MoriAC Tools & Windows', ImGuiTreeNodeFlags.None) then
+        ImGui.TextDisabled('Toggle the MoriAC companion tool windows (plugins in lua/tac):')
         ImGui.Spacing()
         local pm = runtime.pluginManager
         local entries = pm and pm.windowPlugins(false) or {}
@@ -14354,7 +14383,7 @@ function UI.drawSettingsTab()
         if ImGui.Button(clearLabel) then
             if castTracker and castTracker.clear then
                 castTracker.clear()
-                print('\ag[Triune]\ax Cleared all active spell lockouts, target backoffs, and mob immunities.')
+                print('\ag[MoriAC]\ax Cleared all active spell lockouts, target backoffs, and mob immunities.')
             end
         end
         if ImGui.IsItemHovered() then
@@ -14746,7 +14775,7 @@ function UI.drawSettingsTab()
             runtime.saveLoadout(true)
         end
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Switches the Triune AutoCombat interface into a small, sleek HUD overlay widget.')
+            ImGui.SetTooltip('Switches the Morituri Auto Combat interface into a small, sleek HUD overlay widget.')
         end
         ImGui.SameLine()
         local dbgVal = ImGui.Checkbox('Debug Diagnostic Logging', ctrl.debug_mode or false)
@@ -14767,7 +14796,7 @@ function UI.drawSettingsTab()
         end
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip(
-                'Writes every Triune chat line, plugin message and (with Debug\n'
+                'Writes every MoriAC chat line, plugin message and (with Debug\n'
                 .. 'Diagnostic Logging on) every debug line to a per-character\n'
                 .. 'log file in the MacroQuest Logs folder. Plugin errors are\n'
                 .. 'recorded with full tracebacks. Rotates at 8 MB.')
@@ -14829,11 +14858,11 @@ function UI.drawSettingsTab()
         end
 
         ImGui.Separator()
-        if ImGui.Button('Restart Triune##btnRestartScript', UI.px(140), UI.px(24)) then
+        if ImGui.Button('Restart MoriAC##btnRestartScript', UI.px(140), UI.px(24)) then
             runtime.restartScript()
         end
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('Stops and re-runs the whole script (/lua stop triune, /lua run triune):\n'
+            ImGui.SetTooltip('Stops and re-runs the whole script (/lua stop moriac, /lua run moriac):\n'
                 .. 'picks up edited files, reloads every plugin. Your loadout is saved first.')
         end
         ImGui.SameLine()
@@ -15022,7 +15051,7 @@ function UI.drawMiniHeader()
         ctrl.compact = false
         runtime.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then UI.setTooltip('Back to the full tabbed Triune AutoCombat window.') end
+    if ImGui.IsItemHovered() then UI.setTooltip('Back to the full tabbed Morituri Auto Combat window.') end
     ImGui.SameLine()
     if ImGui.Button('Menu##miniMenuBtn', UI.px(48), UI.px(22)) then
         ImGui.OpenPopup('##miniMenu')
@@ -15259,7 +15288,7 @@ function UI.drawMiniButtons()
     if not ok then
         if runtime.lastHeaderButtonErr ~= tostring(drawn) then
             runtime.lastHeaderButtonErr = tostring(drawn)
-            print('\ar[Triune]\ax header buttons failed: ' .. tostring(drawn))
+            print('\ar[MoriAC]\ax header buttons failed: ' .. tostring(drawn))
         end
         drawn = 0
     end
@@ -15374,7 +15403,7 @@ function UI.drawMiniGui()
     -- The X on the mini window returns to the full window; it used to write
     -- the script-level `open` flag and so terminated the whole script.
     local miniOpen
-    miniOpen, show = ImGui.Begin('Triune AutoCombat Mini v' .. VERSION .. '###triuneMini', true, flags)
+    miniOpen, show = ImGui.Begin('Morituri Auto Combat Mini v' .. VERSION .. '###triuneMini', true, flags)
     if not miniOpen then
         ctrl.compact = false
         UI.preEndWindow('mini', true)
@@ -15544,7 +15573,7 @@ function UI.drawCommandBar()
             local ok, err = pcall(pm.drawWindowsMenu)
             if not ok and runtime.lastWindowsMenuErr ~= tostring(err) then
                 runtime.lastWindowsMenuErr = tostring(err)
-                print('\ar[Triune]\ax Windows menu failed: ' .. tostring(err))
+                print('\ar[MoriAC]\ax Windows menu failed: ' .. tostring(err))
             end
         else
             ImGui.TextDisabled('Plugin manager not ready.')
@@ -15556,7 +15585,7 @@ function UI.drawCommandBar()
         ctrl.compact = true
         runtime.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then UI.setTooltip('Shrink Triune to the compact HUD (/ac compact).') end
+    if ImGui.IsItemHovered() then UI.setTooltip('Shrink MoriAC to the compact HUD (/ac compact).') end
 end
 
 -- RUNNING / PAUSED, then what the engine is doing (or, while paused, what
@@ -15595,8 +15624,8 @@ function UI.collectIssues()
     if c and (now - c.at) < 1.0 then return c.list end
     local list = {}
     if not DATA_OK then
-        list[#list + 1] = { text = 'triune_data.lua not found - spell, disc and AA lists are empty',
-            tip = 'Copy config/triune_data.lua from this release into your MacroQuest config folder, then /ac restart.' }
+        list[#list + 1] = { text = 'moriac_data.lua not found - spell, disc and AA lists are empty',
+            tip = 'Copy config/moriac_data.lua from this release into your MacroQuest config folder, then /ac restart.' }
     end
     if not navLoaded() then
         list[#list + 1] = { text = 'MQ2Nav is not loaded', btn = 'Load', cmd = '/plugin mq2nav',
@@ -15697,7 +15726,7 @@ function UI.drawFullGui()
     end
     local clsText = #clsList > 0 and table.concat(clsList, ' / ') or '?'
     local charName = myName or (mq.TLO.Me.CleanName and mq.TLO.Me.CleanName()) or '(no character)'
-    local winTitle = string.format('TAC v%s - %s (%s)###triune', VERSION, charName, clsText)
+    local winTitle = string.format('MoriAC v%s - %s (%s)###triune', VERSION, charName, clsText)
     UI.preBeginWindow('main')
     open, show = ImGui.Begin(winTitle, open, UI.windowFlags('main', 0))
     if not show then
@@ -16154,7 +16183,7 @@ local function hasNamedBuff(spawnObj, name, isMe, minSec)
             local b = spawnObj.Buff(i)
             if b() then activeNames[#activeNames + 1] = b.Name() or '?' end
         end
-        print('\ao[Triune debug]\ax looking for buff "' ..
+        print('\ao[MoriAC debug]\ax looking for buff "' ..
             tostring(name) .. '" -- ' .. (isMe and 'MyBuffCount' or 'BuffCount') .. '=' .. cnt
             ..
             ' active=[' ..
@@ -16998,7 +17027,7 @@ function runtime.boxnetYieldNow(id, peerName, label)
     runtime.boxYieldedIds[id] = os.clock()
     local nm = ''
     pcall(function() nm = tostring(mq.TLO.Target.CleanName() or '') end)
-    print(string.format('\ay[Triune]\ax %s: #%d (%s) is %s\'s pull -- picking a different mob.',
+    print(string.format('\ay[MoriAC]\ax %s: #%d (%s) is %s\'s pull -- picking a different mob.',
         label or 'Puller', id, nm, tostring(peerName)))
     stopMoving()
     clearTarget()
@@ -18161,9 +18190,9 @@ local function bardSongDropped(key, targetId, spellName)
     if (now - st.missingSince) < BARD_DROP_GRACE then return false end
     runtime.sungBuffs[key] = nil
     if st.other then
-        if ctrl.debug_mode then print(string.format('\ay[Triune]\ax %s dropped -- recasting it.', spellName)) end
+        if ctrl.debug_mode then print(string.format('\ay[MoriAC]\ax %s dropped -- recasting it.', spellName)) end
     else
-        print(string.format('\ay[Triune bard]\ax %s dropped -- singing it again.', spellName))
+        print(string.format('\ay[MoriAC bard]\ax %s dropped -- singing it again.', spellName))
     end
     return true
 end
@@ -18195,7 +18224,7 @@ function runtime.reconcileSungBuffs()
     end
     scanGemTable(loadout.gems)
     if found > 0 then
-        print('\ag[Triune]\ax found ' .. found .. ' bard buff(s) already active -- wont re-sing them.')
+        print('\ag[MoriAC]\ax found ' .. found .. ' bard buff(s) already active -- wont re-sing them.')
     end
 end
 
@@ -18381,7 +18410,7 @@ function runtime.castGem(i, g, id)
     if not hasSpellReagents(g.spell) then
         if ctrl.debug_mode and (os.clock() - (runtime.lastReagentDiagAt or 0)) > 10.0 then
             runtime.lastReagentDiagAt = os.clock()
-            print(string.format('\ar[Triune]\ax Cannot cast Gem %d "%s" -- missing required reagent components!', i, g.spell))
+            print(string.format('\ar[MoriAC]\ax Cannot cast Gem %d "%s" -- missing required reagent components!', i, g.spell))
         end
         return false
     end
@@ -18619,7 +18648,7 @@ function runtime.fireAA(name, a, id)
     runtime.lastCast[key] = now + aaReuse
     runtime.noteAAEffectStarted(name, now)
 
-    print('\ag[Triune]\ax AA fired: ' .. name)
+    print('\ag[MoriAC]\ax AA fired: ' .. name)
     if orig ~= id and not keepHostile then
         if castMs > 0 then
             runtime.restoreTargetId = orig
@@ -18948,7 +18977,7 @@ runtime.fireDisc = function(name, a, id)
         runtime.timerGroupCooldown[timerGroupId] = now + lockSec
     end
 
-    print('\ag[Triune]\ax discipline fired: ' .. name)
+    print('\ag[MoriAC]\ax discipline fired: ' .. name)
     if not selfCast and orig ~= id then
         mq.delay(60)
         if orig > 0 and mq.TLO.Target.ID() ~= orig then
@@ -19019,7 +19048,7 @@ runtime.fireSkill = function(name, a, id)
     if not runtime.lastSkillFiredAt then runtime.lastSkillFiredAt = {} end
     runtime.lastSkillFiredAt[name] = now
 
-    print('\ag[Triune]\ax skill fired: ' .. name)
+    print('\ag[MoriAC]\ax skill fired: ' .. name)
     if not selfCast and orig ~= id then
         mq.delay(60)
         if orig > 0 and mq.TLO.Target.ID() ~= orig then
@@ -19114,7 +19143,7 @@ runtime.useClickie = function(c, id)
     end
     mq.cmdf('/useitem "%s"', c.name)
     runtime.lastCast[key] = os.clock()
-    print('\ag[Triune]\ax Clickie used: ' .. c.name .. (c.spell and (' (' .. c.spell .. ')') or ''))
+    print('\ag[MoriAC]\ax Clickie used: ' .. c.name .. (c.spell and (' (' .. c.spell .. ')') or ''))
 
     if id and id > 0 then
         local effSpell = (c.spell and c.spell ~= '' and c.spell) or effName
@@ -19630,7 +19659,7 @@ function runtime.recordStuckHazard(x, y, z, zs)
         found.z = ((found.z * (newHits - 1)) + z) / newHits
         found.hits = newHits
         found.lastHitAt = os.time()
-        print(string.format('\ay[Triune]\ax Updated navigation hazard hotspot in %s at (Y:%.1f, X:%.1f, Z:%.1f) [Hits: %d]',
+        print(string.format('\ay[MoriAC]\ax Updated navigation hazard hotspot in %s at (Y:%.1f, X:%.1f, Z:%.1f) [Hits: %d]',
             zs, found.y, found.x, found.z, found.hits))
     else
         table.insert(hazards, {
@@ -19642,7 +19671,7 @@ function runtime.recordStuckHazard(x, y, z, zs)
             addedAt = os.time(),
             lastHitAt = os.time()
         })
-        print(string.format('\ay[Triune]\ax Logged new navigation hazard hotspot in %s at (Y:%.1f, X:%.1f, Z:%.1f)',
+        print(string.format('\ay[MoriAC]\ax Logged new navigation hazard hotspot in %s at (Y:%.1f, X:%.1f, Z:%.1f)',
             zs, y, x, z))
     end
     -- debounced: the main loop's autosave writes it ~1.5s later (a stuck
@@ -19658,7 +19687,7 @@ function runtime.clearZoneHazards(zs)
     if ctrl.zone_hazards then
         ctrl.zone_hazards[zs] = {}
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Cleared all navigation hazard hotspots for zone: %s', zs))
+        print(string.format('\ag[MoriAC]\ax Cleared all navigation hazard hotspots for zone: %s', zs))
     end
 end
 
@@ -19681,12 +19710,12 @@ function runtime.decayZoneHazards(zs)
                 h.hits = newHits
                 h.lastHitAt = now
                 if newHits < minHits then
-                    print(string.format('\ay[Triune]\ax Navigation hazard hotspot in %s dampened below active threshold (Y:%.1f, X:%.1f).',
+                    print(string.format('\ay[MoriAC]\ax Navigation hazard hotspot in %s dampened below active threshold (Y:%.1f, X:%.1f).',
                         zs, h.y, h.x))
                 end
             else
                 table.insert(removeList, i)
-                print(string.format('\ay[Triune]\ax Navigation hazard hotspot in %s forgotten (Y:%.1f, X:%.1f).',
+                print(string.format('\ay[MoriAC]\ax Navigation hazard hotspot in %s forgotten (Y:%.1f, X:%.1f).',
                     zs, h.y, h.x))
             end
             changed = changed + 1
@@ -20061,7 +20090,7 @@ function runtime.tryOffMeshRecovery(id, targetDist)
         pursuit.meshRecoverId = id
         pursuit.meshRecoverAt = os.clock()
         print(string.format(
-            '\ay[Triune]\ax No navigation path to target #%d -- sticking toward it to leave the mesh hole, then remapping.',
+            '\ay[MoriAC]\ax No navigation path to target #%d -- sticking toward it to leave the mesh hole, then remapping.',
             id))
         if navLoaded() then
             local navActive = false
@@ -20238,7 +20267,7 @@ function runtime.moveToward(id, dist, followOnly)
         end
         if not followOnly then
             print(string.format(
-                '\ay[Triune]\ax giving up on target %d -- %s (likely elevated/blocked despite a ground path existing).',
+                '\ay[MoriAC]\ax giving up on target %d -- %s (likely elevated/blocked despite a ground path existing).',
                 id,
                 pursuit.navStalls >= 3 and 'nav keeps completing without ever reaching range' or
                 ('no progress for ' .. NAV_CONST.PURSUIT_STALL_TIMEOUT .. 's')))
@@ -20262,7 +20291,7 @@ function runtime.moveToward(id, dist, followOnly)
         if ok then
             if pursuit.meshRecoverId == id then
                 print(string.format(
-                    '\ag[Triune]\ax Remapped nav path to #%d after off-mesh stick recovery.', id))
+                    '\ag[MoriAC]\ax Remapped nav path to #%d after off-mesh stick recovery.', id))
                 if stickLoaded() then
                     local stickActive = false
                     pcall(function() stickActive = (mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON') or false end)
@@ -20344,7 +20373,7 @@ local function repositionCloser()
     end
 
     print(string.format(
-        '\ay[Triune]\ax Target too far away (dist %.1f) -- repositioning closer (%d units) on target #%d.', currentDist,
+        '\ay[MoriAC]\ax Target too far away (dist %.1f) -- repositioning closer (%d units) on target #%d.', currentDist,
         targetDist, tid))
 
     -- Reset navigation target cache so moveToward/reposition issues a fresh movement command
@@ -20393,7 +20422,7 @@ local function handleCantHitFromHere()
 
     if pursuit.cantHitCount >= 4 then
         print(string.format(
-            '\ay[Triune]\ax Target #%d (%s) obstructed after 4 "cannot hit" attempts -- marking unreachable & picking new target.',
+            '\ay[MoriAC]\ax Target #%d (%s) obstructed after 4 "cannot hit" attempts -- marking unreachable & picking new target.',
             tid, tostring(tgt.CleanName())))
         runtime.markUnreachable(tid)
         stopMoving()
@@ -20408,12 +20437,12 @@ local function handleCantHitFromHere()
 
     local curDist = distToId(tid)
     print(string.format(
-        '\ay[Triune]\ax "Cannot hit from here" (dist %.1f) on #%d (%s) -- opening doors and repositioning.',
+        '\ay[MoriAC]\ax "Cannot hit from here" (dist %.1f) on #%d (%s) -- opening doors and repositioning.',
         curDist, tid, tostring(tgt.CleanName())))
 
     -- Try opening any nearby door or switch first
     if runtime.tryOpenNearbyDoor(true) then
-        print('\ay[Triune]\ax Clicked nearby door/switch to clear line of sight.')
+        print('\ay[MoriAC]\ax Clicked nearby door/switch to clear line of sight.')
     end
 
     -- Reset navigation target cache so reposition issues a fresh movement command
@@ -20517,7 +20546,7 @@ function runtime.engageRangedAttack(tid)
             -- explicit "ranged" set is harmless if it did) and carry on with
             -- /attack on -- far better than never attacking at all.
             print(string.format(
-                '\ay[Triune]\ax No "Attack mode changed" confirmation after %d tries -- assuming Ranged attack mode. '
+                '\ay[MoriAC]\ax No "Attack mode changed" confirmation after %d tries -- assuming Ranged attack mode. '
                 .. 'If you keep swinging a melee weapon, this server may not support #attackmode.',
                 runtime.ATTACKMODE_MAX_ATTEMPTS))
             runtime.serverAttackMode = 'Ranged'
@@ -20528,7 +20557,7 @@ function runtime.engageRangedAttack(tid)
             runtime.attackModeAttempts = (runtime.attackModeAttempts or 0) + 1
             runtime.attackModeRangedUsed = true
             if runtime.attackModeAttempts == 1 then
-                print(string.format('\ag[Triune]\ax Switching server attack mode -> Ranged -> %s (#%d)',
+                print(string.format('\ag[MoriAC]\ax Switching server attack mode -> Ranged -> %s (#%d)',
                     tostring(mq.TLO.Spawn(tid).CleanName()), tid))
             end
             mq.cmd('/say #attackmode ranged')
@@ -21076,7 +21105,7 @@ function runtime.wpTick()
 
         local nextWp = wps[ctrl.current_waypoint_idx]
         if nextWp then
-            print(string.format('\ay[Triune]\ax Reached %s (#%d) -- patrolling to %s (#%d) [%s]',
+            print(string.format('\ay[MoriAC]\ax Reached %s (#%d) -- patrolling to %s (#%d) [%s]',
                 wp.name or ('WP ' .. prevIdx), prevIdx, nextWp.name or ('WP ' .. ctrl.current_waypoint_idx),
                 ctrl.current_waypoint_idx, (ctrl.waypoint_direction or 1) == 1 and 'Forward' or 'Reverse'))
             runtime.moveTowardLoc(nextWp.x, nextWp.y, nextWp.z, radius)
@@ -21115,7 +21144,7 @@ function runtime.performUnstuck()
     -- doing so kept clicking the (already open) door forever and the backing
     -- up / strafe / mark-unreachable steps below were never reached.
     if stuckState.attempts == 1 and runtime.tryOpenNearbyDoor(true) then
-        print('\ay[Triune]\ax stuck -- tried opening a nearby door.')
+        print('\ay[MoriAC]\ax stuck -- tried opening a nearby door.')
         mq.delay(600)
         stuckState.counter = 0
         pursuit.id = 0; pursuit.lastNavTargetId = 0; pursuit.lastNavLoc = nil
@@ -21162,14 +21191,14 @@ function runtime.performUnstuck()
     -- maneuver on top while the keys are still held.
     if stuckState.attempts == 1 then
         -- Step 1: back up and jump
-        print('\ay[Triune]\ax stuck (Attempt 1) -- backing up.' .. tgtNote)
+        print('\ay[MoriAC]\ax stuck (Attempt 1) -- backing up.' .. tgtNote)
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 12 /keypress back')
         mq.cmd('/timed 12 /keypress jump')
         stuckState.maneuverUntil = now + 1.4
     elseif stuckState.attempts == 2 then
         -- Step 2: back up briefly then step left
-        print('\ay[Triune]\ax stuck (Attempt 2) -- stepping left.' .. tgtNote)
+        print('\ay[MoriAC]\ax stuck (Attempt 2) -- stepping left.' .. tgtNote)
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 4 /keypress back')
         mq.cmd('/timed 4 /keypress strafe_left hold')
@@ -21178,7 +21207,7 @@ function runtime.performUnstuck()
         stuckState.maneuverUntil = now + 1.6
     elseif stuckState.attempts == 3 then
         -- Step 3: back up briefly then step right past initial position
-        print('\ay[Triune]\ax stuck (Attempt 3) -- stepping right past initial position.' .. tgtNote)
+        print('\ay[MoriAC]\ax stuck (Attempt 3) -- stepping right past initial position.' .. tgtNote)
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 4 /keypress back')
         mq.cmd('/timed 4 /keypress strafe_right hold')
@@ -21202,13 +21231,13 @@ function runtime.performUnstuck()
 
         if currentTgtId and currentTgtId > 0 then
             print(string.format(
-                '\ay[Triune]\ax stuck (Attempt 4) -- all directional maneuvers failed. Abandoning target #%d and searching for a new target.',
+                '\ay[MoriAC]\ax stuck (Attempt 4) -- all directional maneuvers failed. Abandoning target #%d and searching for a new target.',
                 currentTgtId))
             runtime.markUnreachable(currentTgtId)
             clearTarget()
         else
             print(
-                '\ay[Triune]\ax stuck (Attempt 4) -- all directional maneuvers failed. Clearing pursuit to find a new target/path.')
+                '\ay[MoriAC]\ax stuck (Attempt 4) -- all directional maneuvers failed. Clearing pursuit to find a new target/path.')
         end
 
         pursuit.id = 0
@@ -21599,12 +21628,12 @@ function isoH.finish(iso, success, now, why)
         table.insert(iso.trail, 1, { x = x, y = y, z = z, at = now })
         while #iso.trail > pursuit.MESH_ISO.TRAIL_MAX do table.remove(iso.trail) end
         print(string.format(
-            '\ag[Triune]\ax Mesh isolation recovered -- path to %s found again after %.0fs (stage %d). Unreachable list cleared.',
+            '\ag[MoriAC]\ax Mesh isolation recovered -- path to %s found again after %.0fs (stage %d). Unreachable list cleared.',
             why or 'known ground', took, iso.stage))
     elseif why == 'combat' then
         iso.cooldownUntil = now + 5
         iso.lastResult = 'interrupted by combat'
-        print('\ay[Triune]\ax Mesh isolation recovery interrupted -- something aggroed us; fighting.')
+        print('\ay[MoriAC]\ax Mesh isolation recovery interrupted -- something aggroed us; fighting.')
     elseif why == 'off' then
         iso.cooldownUntil = now + 5
         iso.lastResult = 'stopped'
@@ -21617,7 +21646,7 @@ function isoH.finish(iso, success, now, why)
             if isoH.dist2D(x, y, iso.startX, iso.startY) > 14 then runtime.recordMeshHoleHazard(x, y, z) end
         end
         print(string.format(
-            '\ar[Triune]\ax Mesh isolation recovery FAILED at (Y:%.1f, X:%.1f, Z:%.1f) -- no path back to known-good ground after %.0fs. '
+            '\ar[MoriAC]\ax Mesh isolation recovery FAILED at (Y:%.1f, X:%.1f, Z:%.1f) -- no path back to known-good ground after %.0fs. '
             .. 'The navmesh has a hole or an unlinked island here; move the character by hand or regenerate the mesh. Retrying in %ds.',
             y, x, z, took, pursuit.MESH_ISO.FAIL_COOLDOWN))
     end
@@ -21636,7 +21665,7 @@ function isoH.advance(iso, now)
             local r = iso.refs[iso.refIdx]
             if r then
                 isoH.legStart(iso, now)
-                print(string.format('\ay[Triune]\ax Mesh isolation: walking straight back to last good ground (%s, %.0f units).',
+                print(string.format('\ay[MoriAC]\ax Mesh isolation: walking straight back to last good ground (%s, %.0f units).',
                     r.kind, distToLoc(r.x, r.y, r.z)))
                 isoH.driveToLoc(r)
                 return
@@ -21647,7 +21676,7 @@ function isoH.advance(iso, now)
     if iso.stage == 2 then
         if iso.noPathId > 0 and isSpawnAlive(iso.noPathId) and distToId(iso.noPathId) <= C.NPC_MAX_DIST then
             isoH.legStart(iso, now)
-            print(string.format('\ay[Triune]\ax Mesh isolation: walking straight at NPC #%d (%.0f units) to find meshed ground.',
+            print(string.format('\ay[MoriAC]\ax Mesh isolation: walking straight at NPC #%d (%.0f units) to find meshed ground.',
                 iso.noPathId, distToId(iso.noPathId)))
             isoH.driveToId(iso.noPathId)
             return
@@ -21663,7 +21692,7 @@ function isoH.advance(iso, now)
             local face = iso.refs[1]
             if face then mq.cmdf('/face fast loc %.2f,%.2f', face.y, face.x)
             elseif iso.noPathId > 0 then mq.cmdf('/face fast id %d', iso.noPathId) end
-            print(string.format('\ay[Triune]\ax Mesh isolation: %s (maneuver %d/%d).', m.name, iso.maneuverIdx, #isoH.MANEUVERS))
+            print(string.format('\ay[MoriAC]\ax Mesh isolation: %s (maneuver %d/%d).', m.name, iso.maneuverIdx, #isoH.MANEUVERS))
             m.run()
             iso.maneuverUntil = now + m.secs
             return
@@ -21758,7 +21787,7 @@ function runtime.checkMeshIsolation()
     iso.stage = 0; iso.refIdx = 0; iso.maneuverIdx = 0; iso.maneuverUntil = 0
     iso.startX, iso.startY, iso.startZ = me.X() or 0, me.Y() or 0, me.Z() or 0
     print(string.format(
-        '\ay[Triune]\ax Mesh isolation detected (%s): %d NPC(s) nearby, none pathable%s. Leaving the mesh to recover.',
+        '\ay[MoriAC]\ax Mesh isolation detected (%s): %d NPC(s) nearby, none pathable%s. Leaving the mesh to recover.',
         kind == 'island' and 'no path to known-good ground' or 'mobs on unmeshed ground',
         iso.noPathCount or 0,
         #refs > 0 and string.format(', %d reference point(s)', #refs) or ', no reference points'))
@@ -21885,19 +21914,19 @@ runtime.handleCannotSeeTarget = function()
     -- Key releases are scheduled with /timed (tenths of a second) rather
     -- than slept in the tick.
     if stuckState.cannotSeeAttempts == 1 then
-        print(string.format('\ay[Triune]\ax "Cannot see target" in melee (Attempt 1) -- stepping back (dist=%.1f).', d))
+        print(string.format('\ay[MoriAC]\ax "Cannot see target" in melee (Attempt 1) -- stepping back (dist=%.1f).', d))
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 3 /keypress back')
         mq.cmd('/timed 3 /face fast')
     elseif stuckState.cannotSeeAttempts == 2 then
-        print(string.format('\ay[Triune]\ax "Cannot see target" in melee (Attempt 2) -- backing up & strafing left (dist=%.1f).', d))
+        print(string.format('\ay[MoriAC]\ax "Cannot see target" in melee (Attempt 2) -- backing up & strafing left (dist=%.1f).', d))
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 3 /keypress back')
         mq.cmd('/timed 3 /keypress strafe_left hold')
         mq.cmd('/timed 5 /keypress strafe_left')
         mq.cmd('/timed 5 /face fast')
     elseif stuckState.cannotSeeAttempts == 3 then
-        print(string.format('\ay[Triune]\ax "Cannot see target" in melee (Attempt 3) -- backing up & strafing right (dist=%.1f).', d))
+        print(string.format('\ay[MoriAC]\ax "Cannot see target" in melee (Attempt 3) -- backing up & strafing right (dist=%.1f).', d))
         mq.cmd('/keypress back hold')
         mq.cmd('/timed 3 /keypress back')
         mq.cmd('/timed 3 /keypress strafe_right hold')
@@ -21906,10 +21935,10 @@ runtime.handleCannotSeeTarget = function()
     else
         -- Attempt 4+: Obstacle or wall blocking sight line
         if runtime.tryOpenNearbyDoor(true) then
-            print('\ay[Triune]\ax "Cannot see target" -- attempted to open nearby door.')
+            print('\ay[MoriAC]\ax "Cannot see target" -- attempted to open nearby door.')
             mq.delay(400)
         elseif ctrl and ctrl.mode == 'Puller' then
-            print(string.format('\ay[Triune]\ax Target #%d obstructed after 4 reposition attempts -- marking unreachable.', tid))
+            print(string.format('\ay[MoriAC]\ax Target #%d obstructed after 4 reposition attempts -- marking unreachable.', tid))
             runtime.markUnreachable(tid)
             stopMoving()
             clearTarget()
@@ -21922,7 +21951,7 @@ runtime.handleCannotSeeTarget = function()
                 runtime.clearBreadcrumbs()
             end
         else
-            print(string.format('\ay[Triune]\ax Target #%d still cannot be seen (dist=%.1f) -- performing unstuck recovery.', tid, d))
+            print(string.format('\ay[MoriAC]\ax Target #%d still cannot be seen (dist=%.1f) -- performing unstuck recovery.', tid, d))
             runtime.performUnstuck()
         end
         stuckState.cannotSeeAttempts = 0
@@ -22044,7 +22073,7 @@ function runtime.anchorReturnTick()
         if md <= r then return false end
         runtime.anchorReturning = true
         print(string.format(
-            '\ay[Triune]\ax Puller (Hunt): %.0f units outside the combat anchor radius (%d) -- returning to the anchor.',
+            '\ay[MoriAC]\ax Puller (Hunt): %.0f units outside the combat anchor radius (%d) -- returning to the anchor.',
             md - r, r))
     end
     local tolerance = st and (r * 0.5) or math.max(10, r * 0.5)
@@ -22286,7 +22315,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
             if runtime.lastDirectApproachId ~= noPath.id then
                 runtime.lastDirectApproachId = noPath.id
                 print(string.format(
-                    '\ay[Triune]\ax No navmesh path to #%d but it is %.0f units away in plain sight -- approaching directly.',
+                    '\ay[MoriAC]\ax No navmesh path to #%d but it is %.0f units away in plain sight -- approaching directly.',
                     noPath.id, noPath.dist))
             end
             return noPath.id
@@ -22395,7 +22424,7 @@ function runtime.checkPullHpRest()
             if t() and not isXTargetId(t.ID()) then
                 clearTarget()
             end
-            print(string.format('\ay[Triune]\ax Puller: HP below %d%% (%d%%) -- resting out of combat until 100%% HP.', minHp, myHp))
+            print(string.format('\ay[MoriAC]\ax Puller: HP below %d%% (%d%%) -- resting out of combat until 100%% HP.', minHp, myHp))
             if not isSitting() and not isDucking() and not isCasting() and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not isMoveActive() then
                 mq.cmd('/sit')
             end
@@ -22410,7 +22439,7 @@ function runtime.checkPullHpRest()
             if myHp >= 100 then
                 runtime.pullHpRest = false
                 if isSitting() or isDucking() then mq.cmd('/stand') end
-                print('\ag[Triune]\ax Puller: HP fully recovered (100%) -- resuming pulling.')
+                print('\ag[MoriAC]\ax Puller: HP fully recovered (100%) -- resuming pulling.')
                 return false
             else
                 -- Still resting
@@ -22448,12 +22477,12 @@ function runtime.pullerTick()
             local wp1 = ctrl.waypoints[1]
             ctrl.camp_loc = { x = wp1.x or myX or 0, y = wp1.y or myY or 0, z = wp1.z or myZ or 0 }
             print(string.format(
-                '\ag[Triune]\ax Puller (Camp): Initialized camp location to Waypoint 1 (Y:%.1f, X:%.1f, Z:%.1f)',
+                '\ag[MoriAC]\ax Puller (Camp): Initialized camp location to Waypoint 1 (Y:%.1f, X:%.1f, Z:%.1f)',
                 ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z))
         elseif myX and myY and myZ then
             ctrl.camp_loc = { x = myX, y = myY, z = myZ }
             print(string.format(
-                '\ag[Triune]\ax Puller (Camp): Initialized camp location to current position (Y:%.1f, X:%.1f, Z:%.1f)',
+                '\ag[MoriAC]\ax Puller (Camp): Initialized camp location to current position (Y:%.1f, X:%.1f, Z:%.1f)',
                 myY, myX, myZ))
         else
             return
@@ -22501,7 +22530,7 @@ function runtime.pullerTick()
         if id and runtime.setTarget(id) then
             if not runtime.verifyTargetCon(id, true) then
                 print(string.format(
-                    '\ay[Triune]\ax Puller: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
+                    '\ay[MoriAC]\ax Puller: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
                     id, tostring(mq.TLO.Target.CleanName())))
                 clearTarget()
                 runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
@@ -22532,7 +22561,7 @@ function runtime.pullerTick()
             stopMoving()
             if runtime.setTarget(aggroId) then
                 print(string.format(
-                    '\ay[Triune]\ax Puller aggro on path to mob -- switching to XTarget #%d (%s) and pulling back',
+                    '\ay[MoriAC]\ax Puller aggro on path to mob -- switching to XTarget #%d (%s) and pulling back',
                     aggroId, tostring(mq.TLO.Target.CleanName())))
                 runtime.pullTargetId = aggroId
                 runtime.pullState = 'TO_CAMP'
@@ -22551,7 +22580,7 @@ function runtime.pullerTick()
                 if prevId > 0 then pursuit.cycleTargetIds[prevId] = true end
                 pursuit.cycleTargetIds[closerId] = true
                 print(string.format(
-                    '\ay[Triune]\ax Puller: Found closer NPC while traveling -- retargeting #%d (%s) [dist %.1f vs %.1f, switch %d/%d]',
+                    '\ay[MoriAC]\ax Puller: Found closer NPC while traveling -- retargeting #%d (%s) [dist %.1f vs %.1f, switch %d/%d]',
                     closerId, tostring(mq.TLO.Target.CleanName()), candDist, curDist,
                     pursuit.retargetCount, ctrl.max_closer_retargets or 1))
                 runtime.pullTargetId = closerId
@@ -22576,12 +22605,12 @@ function runtime.pullerTick()
     if runtime.pullState == 'TO_MOB' then
         if not isXTargetId(runtime.pullTargetId) and not runtime.verifyTargetCon(runtime.pullTargetId) then
             print(string.format(
-                '\ay[Triune]\ax Puller: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
+                '\ay[MoriAC]\ax Puller: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
                 runtime.pullTargetId, tostring(mq.TLO.Target.CleanName())))
             clearTarget()
             runtime.pullState = 'IDLE'; runtime.pullTargetId = 0; stopMoving()
         elseif isUnreachable(runtime.pullTargetId) then
-            print('\ay[Triune]\ax pull target unreachable -- picking a different mob.')
+            print('\ay[MoriAC]\ax pull target unreachable -- picking a different mob.')
             runtime.pullState = 'IDLE'; runtime.pullTargetId = 0; stopMoving()
             clearTarget()
         else
@@ -22820,7 +22849,7 @@ function runtime.checkAggroSwitch()
             pursuit.id = 0
             pursuit.lastNavTargetId = 0
             mq.cmd('/face fast')
-            print('\ay[Triune]\ax aggro switch -> ' .. tostring(mq.TLO.Target.CleanName()))
+            print('\ay[MoriAC]\ax aggro switch -> ' .. tostring(mq.TLO.Target.CleanName()))
             return true
         end
     end
@@ -22885,10 +22914,10 @@ runtime.onZoned = function()
     if ctrl.pause_on_zone ~= false and ctrl.running then
         ctrl.running = false
         if runtime.fullStop then runtime.fullStop() end
-        print('\ay[Triune]\ax zoned -- pausing autocombat.')
+        print('\ay[MoriAC]\ax zoned -- pausing autocombat.')
     elseif ctrl.running then
         if runtime.fullStop then runtime.fullStop() end
-        print('\ag[Triune]\ax zoned -- continuing autocombat (pause on zone disabled).')
+        print('\ag[MoriAC]\ax zoned -- continuing autocombat (pause on zone disabled).')
     end
     if castTracker and castTracker.clear then
         castTracker.clear()
@@ -22928,21 +22957,21 @@ runtime.onZoned = function()
     runtime.xtForceId = 0
     runtime.xtIgnoreIds = {}
     if ctrl.camp_loc then
-        print('\ay[Triune]\ax zoned -- clearing camp (it was set in the previous zone). Set a new one if needed.')
+        print('\ay[MoriAC]\ax zoned -- clearing camp (it was set in the previous zone). Set a new one if needed.')
         ctrl.camp_loc = nil
     end
     local hadAnchor = ctrl.hunter_combat_loc ~= nil
     ctrl.hunter_combat_loc = nil -- the previous zone's; this zone's saved one replaces it
     runtime.anchorReturning = false
     if runtime.loadZoneAnchor() then
-        print(string.format('\ag[Triune]\ax Loaded saved combat anchor for %s (%.0f, %.0f, %.0f; radius %d).',
+        print(string.format('\ag[MoriAC]\ax Loaded saved combat anchor for %s (%.0f, %.0f, %.0f; radius %d).',
             runtime.getZoneDisplayName(runtime.getCurrentZoneShortName()),
             ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y, ctrl.hunter_combat_loc.z, ctrl.hunter_combat_radius or 250))
     elseif hadAnchor then
-        print('\ay[Triune]\ax zoned -- clearing Hunter combat anchor (it was set in the previous zone).')
+        print('\ay[MoriAC]\ax zoned -- clearing Hunter combat anchor (it was set in the previous zone).')
     end
     if runtime.loadZoneWaypoints() then
-        print(string.format('\ag[Triune]\ax Loaded saved waypoint route for %s (%d waypoint(s)).',
+        print(string.format('\ag[MoriAC]\ax Loaded saved waypoint route for %s (%d waypoint(s)).',
             runtime.getZoneDisplayName(runtime.getCurrentZoneShortName()), #(ctrl.waypoints or {})))
     end
     if ctrl.fov_enabled and runtime.applyFov then
@@ -23030,7 +23059,7 @@ function runtime.tickPendingBardSong()
         if up then runtime.sungBuffs[key].seen = true end
         if not pend.keep then
             print(string.format(
-                '\ay[Triune bard]\ax %s  up=%s  (marked sung -- resings once it is seen to drop)', pend.spell, tostring(up)))
+                '\ay[MoriAC bard]\ax %s  up=%s  (marked sung -- resings once it is seen to drop)', pend.spell, tostring(up)))
         end
     end
 end
@@ -23050,7 +23079,7 @@ function runtime.tickPendingDowntimeReady()
         if mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking() then mq.cmd('/stand') end
         if pend.castAfter then
             runtime.interruptedSwap = { slot = pend.slot, spell = pend.spell, targetId = pend.targetId, entry = pend.entry }
-            print(string.format('\ar[Triune]\ax Aggro threat detected while waiting for "%s" to ready! Aborting to engage combat.', pend.spell))
+            print(string.format('\ar[MoriAC]\ax Aggro threat detected while waiting for "%s" to ready! Aborting to engage combat.', pend.spell))
         end
         return true
     end
@@ -23066,7 +23095,7 @@ function runtime.tickPendingDowntimeReady()
         if rdy then
             runtime.castGem(pend.slot, pend.entry, pend.targetId)
         else
-            print(string.format('\ay[Triune]\ax "%s" did not become ready within 6 s after memorizing; will retry on a later pass.', pend.spell))
+            print(string.format('\ay[MoriAC]\ax "%s" did not become ready within 6 s after memorizing; will retry on a later pass.', pend.spell))
         end
     end
     return true
@@ -23177,15 +23206,15 @@ function runtime.processDowntimeBuffing()
             runtime.switchingSpellName = candidate.spell
             runtime.interruptedSwap = nil
 
-            print(string.format('\ay[Triune]\ax Downtime swap: memorizing "%s" into Gem %d for missing buff...', candidate.spell, targetGem))
+            print(string.format('\ay[MoriAC]\ax Downtime swap: memorizing "%s" into Gem %d for missing buff...', candidate.spell, targetGem))
             local memSuccess = runtime.tryMem(targetGem, candidate.spell)
 
             if not memSuccess then
                 if runtime.hasDowntimeAggroThreat() then
                     runtime.interruptedSwap = { slot = targetGem, spell = candidate.spell, targetId = candidateTargetId, entry = candidate }
-                    print(string.format('\ar[Triune]\ax Aggro threat detected while swapping to "%s"! Aborting swap to engage combat.', candidate.spell))
+                    print(string.format('\ar[MoriAC]\ax Aggro threat detected while swapping to "%s"! Aborting swap to engage combat.', candidate.spell))
                 else
-                    print(string.format('\ar[Triune]\ax Failed to memorize "%s" into Gem %d during downtime swap.', candidate.spell, targetGem))
+                    print(string.format('\ar[MoriAC]\ax Failed to memorize "%s" into Gem %d during downtime swap.', candidate.spell, targetGem))
                 end
                 runtime.isSwitchingSpells = false
                 runtime.switchingSlot = 0
@@ -23239,14 +23268,14 @@ function runtime.processDowntimeBuffing()
                 runtime.switchingSlot = slot
                 runtime.switchingSpellName = primarySpell
 
-                print(string.format('\ag[Triune]\ax Restoring priority spell "%s" into Gem %d (not in combat)...', primarySpell, slot))
+                print(string.format('\ag[MoriAC]\ax Restoring priority spell "%s" into Gem %d (not in combat)...', primarySpell, slot))
                 local memSuccess = runtime.tryMem(slot, primarySpell)
 
                 if not memSuccess then
                     if runtime.hasDowntimeAggroThreat() then
-                        print(string.format('\ar[Triune]\ax Aggro threat detected while restoring priority spell "%s"! Aborting to engage combat.', primarySpell))
+                        print(string.format('\ar[MoriAC]\ax Aggro threat detected while restoring priority spell "%s"! Aborting to engage combat.', primarySpell))
                     else
-                        print(string.format('\ar[Triune]\ax Failed to restore priority spell "%s" into Gem %d during downtime swap.', primarySpell, slot))
+                        print(string.format('\ar[MoriAC]\ax Failed to restore priority spell "%s" into Gem %d during downtime swap.', primarySpell, slot))
                     end
                     runtime.isSwitchingSpells = false
                     runtime.switchingSlot = 0
@@ -23331,7 +23360,7 @@ local function combatTick()
             runtime.discCooldown = {}
             runtime.aaEffectUntil = {}
             petState.myPets = {}; petState.lastObservedId = 0; petState.summonPending = nil; petState.petsCache = nil
-            print('\ar[Triune]\ax character is dead -- paused. Will resume automatically once alive again.')
+            print('\ar[MoriAC]\ax character is dead -- paused. Will resume automatically once alive again.')
         end
         return
     end
@@ -23339,7 +23368,7 @@ local function combatTick()
     -- (it was previously set once and never cleared).
     if runtime.deathGuardFired then
         runtime.deathGuardFired = false
-        print('\ag[Triune]\ax character is alive again -- resuming.')
+        print('\ag[MoriAC]\ax character is alive again -- resuming.')
     end
     local isFeigning = false
     pcall(function() isFeigning = mq.TLO.Me.Feigning() or false end)
@@ -23386,9 +23415,9 @@ local function combatTick()
                     fullStop()
                     runtime.medBreakActive = true
                     if ctrl.medbreak_ignore_group_combat then
-                        print('\ay[Triune]\ax Med Break -- resting to recover (ignoring group-only combat).')
+                        print('\ay[MoriAC]\ax Med Break -- resting to recover (ignoring group-only combat).')
                     else
-                        print('\ay[Triune]\ax Med Break -- resting to recover.')
+                        print('\ay[MoriAC]\ax Med Break -- resting to recover.')
                     end
                     if not mq.TLO.Me.Sitting() and not mq.TLO.Me.Ducking() and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not isMoveActive() then
                         mq.cmd('/sit')
@@ -23399,7 +23428,7 @@ local function combatTick()
             if inCombatOrXtar then
                 runtime.medBreakActive = false
                 if mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking() then mq.cmd('/stand') end
-                print(string.format('\ay[Triune]\ax Med Break cancelled -- %s!', tostring(medThreatReason or 'combat / hostile on XTarget')))
+                print(string.format('\ay[MoriAC]\ax Med Break cancelled -- %s!', tostring(medThreatReason or 'combat / hostile on XTarget')))
             else
                 local hpOk   = not ctrl.medbreak_hp_on or myHp >= (ctrl.medbreak_hp_stop or 90)
                 local manaOk = not ctrl.medbreak_mana_on or maxMana == 0 or myMana >= (ctrl.medbreak_mana_stop or 90)
@@ -23408,7 +23437,7 @@ local function combatTick()
                 if hpOk and manaOk and endOk then
                     runtime.medBreakActive = false
                     if mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking() then mq.cmd('/stand') end
-                    print('\ag[Triune]\ax Med Break over -- resuming.')
+                    print('\ag[MoriAC]\ax Med Break over -- resuming.')
                 end
             end
         end
@@ -23535,7 +23564,7 @@ local function combatTick()
             runtime.pullTargetId = forceId
             runtime.pullState = 'FIGHTING'
         end
-        print(string.format('\ay[Triune]\ax Force target: switching to #%d (%s).',
+        print(string.format('\ay[MoriAC]\ax Force target: switching to #%d (%s).',
             forceId, tostring(mq.TLO.Target.CleanName())))
     end
 
@@ -23606,7 +23635,7 @@ local function combatTick()
                 stopMoving()
                 pursuit.id = 0
                 pursuit.lastNavTargetId = 0
-                print(string.format('\ay[Triune]\ax Manual target acquired: #%d (%s)',
+                print(string.format('\ay[MoriAC]\ax Manual target acquired: #%d (%s)',
                     xtarId, tostring(mq.TLO.Target.CleanName())))
             end
         end
@@ -23746,7 +23775,7 @@ local function combatTick()
                             or tooFarAnchor and 'outside the combat anchor radius'
                             or 'stationary+out-of-range'
                         print(string.format(
-                            '\ay[Triune]\ax Hunt: dropping #%d (%s) -- %s. Blacklisting for 60s.',
+                            '\ay[MoriAC]\ax Hunt: dropping #%d (%s) -- %s. Blacklisting for 60s.',
                             tid, tostring(tspawn.CleanName()), reason))
                         markUnreachable(tid)
                         haveNPC = false
@@ -23764,7 +23793,7 @@ local function combatTick()
                     pursuit.id = 0
                     pursuit.lastNavTargetId = 0
                     if setTarget(xtarId) then
-                        print(string.format('\ay[Triune]\ax Puller (Hunt) XTarget detected -- engaging #%d (%s) [dist %.1f, max chase %d]',
+                        print(string.format('\ay[MoriAC]\ax Puller (Hunt) XTarget detected -- engaging #%d (%s) [dist %.1f, max chase %d]',
                             xtarId, tostring(mq.TLO.Target.CleanName()), distToId(xtarId), maxHuntXtarDist))
                     end
                     haveNPC = true
@@ -23792,7 +23821,7 @@ local function combatTick()
                         if prevId > 0 then pursuit.cycleTargetIds[prevId] = true end
                         pursuit.cycleTargetIds[closerId] = true
                         print(string.format(
-                            '\ay[Triune]\ax Puller (Hunt): Found closer NPC while traveling -- retargeting #%d (%s) [dist %.1f vs %.1f, switch %d/%d]',
+                            '\ay[MoriAC]\ax Puller (Hunt): Found closer NPC while traveling -- retargeting #%d (%s) [dist %.1f vs %.1f, switch %d/%d]',
                             closerId, tostring(mq.TLO.Target.CleanName()), candDist, curDist,
                             pursuit.retargetCount, ctrl.max_closer_retargets or 1))
                     end
@@ -23826,7 +23855,7 @@ local function combatTick()
                 if id and setTarget(id) then
                     if not runtime.verifyTargetCon(id, true) then
                         print(string.format(
-                            '\ay[Triune]\ax Puller (Hunt): target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
+                            '\ay[MoriAC]\ax Puller (Hunt): target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
                             id, tostring(mq.TLO.Target.CleanName())))
                         clearTarget()
                         pursuit.id = 0
@@ -23839,7 +23868,7 @@ local function combatTick()
                     pursuit.retargetCount = 0
                     pursuit.cycleTargetIds = { [id] = true }
                     runtime.lastHunterMsgKey = nil
-                    print(string.format('\ay[Triune]\ax Puller (Hunt) target acquired: #%d (%s) dist %.1f',
+                    print(string.format('\ay[MoriAC]\ax Puller (Hunt) target acquired: #%d (%s) dist %.1f',
                         id, tostring(mq.TLO.Target.CleanName()), distToId(id)))
                 elseif not anyXtarAlive() or runtime.wpAnchorActive() then
                     if runtime.wpAnchorActive() then
@@ -23869,7 +23898,7 @@ local function combatTick()
                         if runtime.lastHunterMsgKey ~= currentKey then
                             runtime.lastHunterMsgKey = currentKey
                             print(string.format(
-                                '\ay[Triune]\ax Puller (Hunt): No NPCs found (Lvl %d-%d, Radius %d, Max Z %d, Floor Z %d%s). Waiting...',
+                                '\ay[MoriAC]\ax Puller (Hunt): No NPCs found (Lvl %d-%d, Radius %d, Max Z %d, Floor Z %d%s). Waiting...',
                                 minLv, maxLv, radius, zDiff, zPlane, anchorKey))
                         end
                     end
@@ -23882,7 +23911,7 @@ local function combatTick()
                 local id = mq.TLO.Target.ID()
                 if id and id > 0 and not isXTargetId(id) and not runtime.verifyTargetCon(id) then
                     print(string.format(
-                        '\ay[Triune]\ax Hunter: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
+                        '\ay[MoriAC]\ax Hunter: target #%d (%s) blocked by Faction Consideration filter -- clearing target.',
                         id, tostring(mq.TLO.Target.CleanName())))
                     clearTarget()
                     pursuit.id = 0
@@ -24098,7 +24127,7 @@ local function combatTick()
                 pursuit.approachStartedAt = os.clock()
             elseif (os.clock() - (pursuit.approachStartedAt or os.clock())) > 15.0 then
                 print(string.format(
-                    '\ay[Triune]\ax Target #%d (%s) unreachable after 15s -- marking unreachable & moving to next NPC.',
+                    '\ay[MoriAC]\ax Target #%d (%s) unreachable after 15s -- marking unreachable & moving to next NPC.',
                     tid, tostring(mq.TLO.Target.CleanName())))
                 markUnreachable(tid)
                 stopMoving()
@@ -24191,19 +24220,19 @@ local function combatTick()
             end
             if curDist <= maxReach then
                 if style ~= 'Spell' and (mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking()) then
-                    print('\ag[Triune]\ax Standing up to attack.')
+                    print('\ag[MoriAC]\ax Standing up to attack.')
                     mq.cmd('/stand')
                 end
                 if style == 'Melee' then
                     if not mq.TLO.Me.Combat() and runtime.serverAttackMode ~= 'Ranged' then
-                        print(string.format('\ag[Triune]\ax Engaging /attack on -> %s (#%d) [dist=%.1f <= reach=%.1f, engage=%s]',
+                        print(string.format('\ag[MoriAC]\ax Engaging /attack on -> %s (#%d) [dist=%.1f <= reach=%.1f, engage=%s]',
                             tostring(mq.TLO.Target.CleanName()), tid, curDist, maxReach, tostring(engage)))
                     end
                     runtime.meleeAttackOn()
                 elseif style == 'Ranged' then
                     if not isCasting() then
                         if runtime.serverAttackMode == 'Ranged' and (tid ~= runtime.lastRangedAttackTargetId or not mq.TLO.Me.Combat()) then
-                            print(string.format('\ag[Triune]\ax Engaging /attack on (ranged) -> %s (#%d) [dist=%.1f <= reach=%.1f, engage=%s]',
+                            print(string.format('\ag[MoriAC]\ax Engaging /attack on (ranged) -> %s (#%d) [dist=%.1f <= reach=%.1f, engage=%s]',
                                 tostring(mq.TLO.Target.CleanName()), tid, curDist, maxReach, tostring(engage)))
                         end
                         runtime.engageRangedAttack(tid)
@@ -24375,7 +24404,7 @@ local function combatTick()
     -- Auto-turn off Burn Mode when extended target list becomes clear
     if ctrl.burn and not xtarActive then
         ctrl.burn = false
-        print('\ag[Triune]\ax Burn mode auto-disabled (XTarget clear).')
+        print('\ag[MoriAC]\ax Burn mode auto-disabled (XTarget clear).')
     end
 
 
@@ -24675,7 +24704,7 @@ local function combatTick()
                                 local ttype = (ts() and ts.Type()) or 'nil'
                                 local thp = (ts() and ts.PctHPs()) or -1
                                 print(string.format(
-                                    '\ao[Triune debug]\ax gem %d "%s" skipped -- tgtTok="%s"(base="%s") id=%s (rawTgt=%d type=%s hp=%d) condOk=%s xtOk=%s(%d>=%d)',
+                                    '\ao[MoriAC debug]\ax gem %d "%s" skipped -- tgtTok="%s"(base="%s") id=%s (rawTgt=%d type=%s hp=%d) condOk=%s xtOk=%s(%d>=%d)',
                                     actualGem, g.spell, tostring(g.target), tostring(baseTok(g.target)), tostring(id), tid, ttype, thp,
                                     tostring(condOk), tostring(xtOk), numXtar, minXt))
                             end
@@ -24683,7 +24712,7 @@ local function combatTick()
                             runtime.lastGemDiagAt = os.clock()
                             local gLocked = castTracker and castTracker.isLockedOut(g.spell, nil, g.kind)
                             print(string.format(
-                                '\ao[Triune debug]\ax gem %d "%s" gate failed -- isEnabled=%s(%d%%) xtOk=%s(%d>=%d) burnOk=%s lockedOut=%s',
+                                '\ao[MoriAC debug]\ax gem %d "%s" gate failed -- isEnabled=%s(%d%%) xtOk=%s(%d>=%d) burnOk=%s lockedOut=%s',
                                 actualGem, g.spell, tostring(isEnabled), pctVal, tostring(xtOk), numXtar, minXt, tostring(burnOk), tostring(gLocked)))
                         end
                     end
@@ -24694,7 +24723,7 @@ local function combatTick()
         runtime.lastGemDiagAt = os.clock()
         local stickOn = false
         pcall(function() stickOn = stickLoaded() and mq.TLO.Stick.Status() == 'ON' end)
-        print(string.format('\ao[Triune debug]\ax all gems blocked -- casting=%s navActive=%s stickOn=%s',
+        print(string.format('\ao[MoriAC debug]\ax all gems blocked -- casting=%s navActive=%s stickOn=%s',
             tostring(isCasting()), tostring(navLoaded() and mq.TLO.Navigation.Active()), tostring(stickOn)))
     end
 
@@ -24786,9 +24815,9 @@ local function setTriuneMode(arg1, arg2)
     end
 
     if MODES.SUBMODES[ctrl.mode] then
-        print(string.format('\ag[Triune]\ax mode set to %s (%s).', ctrl.mode, ctrl.submode))
+        print(string.format('\ag[MoriAC]\ax mode set to %s (%s).', ctrl.mode, ctrl.submode))
     else
-        print(string.format('\ag[Triune]\ax mode set to %s.', ctrl.mode))
+        print(string.format('\ag[MoriAC]\ax mode set to %s.', ctrl.mode))
     end
     runtime.saveLoadout(true)
     return true
@@ -24797,18 +24826,18 @@ end
 function runtime.setRunning(enable)
     if enable then
         if ctrl.running then
-            print('\ay[Triune]\ax already running.')
+            print('\ay[MoriAC]\ax already running.')
             return
         end
-        print('\ag[Triune]\ax running.')
+        print('\ag[MoriAC]\ax running.')
         UI.startEngine()
     else
         if not ctrl.running then
-            print('\ay[Triune]\ax already paused.')
+            print('\ay[MoriAC]\ax already paused.')
             return
         end
         UI.pauseEngine()
-        print('\ag[Triune]\ax paused.')
+        print('\ag[MoriAC]\ax paused.')
     end
 end
 
@@ -24840,23 +24869,23 @@ local function triuneCommand(...)
     elseif cmd == 'status' then
         local modeStr = ctrl.mode
         if MODES.SUBMODES[ctrl.mode] then modeStr = modeStr .. ' (' .. ctrl.submode .. ')' end
-        print(string.format('\ag[Triune]\ax status: %s, mode: %s, burn: %s', ctrl.running and 'running' or 'paused',
+        print(string.format('\ag[MoriAC]\ax status: %s, mode: %s, burn: %s', ctrl.running and 'running' or 'paused',
             modeStr, ctrl.burn and 'ON' or 'OFF'))
     elseif cmd == 'burn' or cmd == 'burnon' or cmd == 'burnoff' or cmd == 'burn1' or cmd == 'burn0' or cmd == 'burntoggle' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or cmd == 'burnon' or cmd == 'burn1' then
             ctrl.burn = true
-            print('\ag[Triune]\ax Burn mode ENABLED!')
+            print('\ag[MoriAC]\ax Burn mode ENABLED!')
         elseif sub == 'off' or sub == '0' or cmd == 'burnoff' or cmd == 'burn0' then
             ctrl.burn = false
-            print('\ag[Triune]\ax Burn mode DISABLED.')
+            print('\ag[MoriAC]\ax Burn mode DISABLED.')
         else
             ctrl.burn = not ctrl.burn
-            print(string.format('\ag[Triune]\ax Burn mode %s.', ctrl.burn and 'ENABLED!' or 'DISABLED.'))
+            print(string.format('\ag[MoriAC]\ax Burn mode %s.', ctrl.burn and 'ENABLED!' or 'DISABLED.'))
         end
     elseif cmd == 'debug' or cmd == 'debugmode' or cmd == 'diag' then
         ctrl.debug_mode = not ctrl.debug_mode
-        print(string.format('\ag[Triune]\ax Debug Mode: %s', ctrl.debug_mode and '\agENABLED (live combat telemetry)\ax' or '\arDISABLED\ax'))
+        print(string.format('\ag[MoriAC]\ax Debug Mode: %s', ctrl.debug_mode and '\agENABLED (live combat telemetry)\ax' or '\arDISABLED\ax'))
     elseif cmd == 'log' or cmd == 'logfile' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' then
@@ -24864,7 +24893,7 @@ local function triuneCommand(...)
         elseif sub == 'off' or sub == '0' then
             ctrl.log_to_file = false
         elseif sub == 'path' or sub == 'where' then
-            print('\ag[Triune]\ax Log file: \ay' .. (tlog.currentFilePath() or tlog.filePath()) .. '\ax'
+            print('\ag[MoriAC]\ax Log file: \ay' .. (tlog.currentFilePath() or tlog.filePath()) .. '\ax'
                 .. (tlog.isFileOpen() and '' or ' (not open)'))
             return
         else
@@ -24872,29 +24901,29 @@ local function triuneCommand(...)
         end
         tlog.tick()
         if ctrl.log_to_file then
-            print('\ag[Triune]\ax File logging \agENABLED\ax -> \ay' .. (tlog.currentFilePath() or tlog.filePath()) .. '\ax')
+            print('\ag[MoriAC]\ax File logging \agENABLED\ax -> \ay' .. (tlog.currentFilePath() or tlog.filePath()) .. '\ax')
             if not tlog.isFileOpen() then
-                print('\ar[Triune]\ax Could not open log file: ' .. tostring(tlog.lastOpenError()))
+                print('\ar[MoriAC]\ax Could not open log file: ' .. tostring(tlog.lastOpenError()))
             end
         else
-            print('\ag[Triune]\ax File logging \arDISABLED\ax')
+            print('\ag[MoriAC]\ax File logging \arDISABLED\ax')
         end
     elseif cmd == 'dump' or cmd == 'dumpstate' or cmd == 'snapshot' then
         runtime.dumpDiagnostics()
     elseif cmd == 'help' or cmd == 'h' or cmd == '?' then
-        print('\ag[Triune]\ax --- Slash Commands (/ac or /triune) ---')
+        print('\ag[MoriAC]\ax --- Slash Commands (/ac or /triune) ---')
         print('  \ag/ac run | start\ax - Start autocombat execution')
         print('  \ag/ac pause | stop\ax - Pause execution & disengage combat')
         print('  \ag/ac burn [on|off]\ax - Toggle burn mode')
         print('  \ag/ac memall | mem\ax - Memorize priority spells to gem bar')
         print('  \ag/ac importbar | import\ax - Auto-populate spell lines from current spell gems')
         print('  \ag/ac debug\ax - Toggle live combat debug telemetry in chat')
-        print('  \ag/ac log [on|off|path]\ax - Write all Triune chat + debug output to a log file')
+        print('  \ag/ac log [on|off|path]\ax - Write all MoriAC chat + debug output to a log file')
         print('  \ag/ac dump\ax - Write a one-shot diagnostic snapshot file (settings, state, recent log)')
         print('  \ag/ac status\ax - Print running state and mode')
         print('  \ag/ac compact | mini\ax - Toggle compact mini-window mode')
         print('  \ag/ac ghost [on|off]\ax - Ghost mode for the compact window: the frame fades when the mouse is away')
-        print('  \ag/ac scale [0.75-2.0|reset]\ax - Scale every Triune window (per-window overrides on Settings -> Window Layout)')
+        print('  \ag/ac scale [0.75-2.0|reset]\ax - Scale every MoriAC window (per-window overrides on Settings -> Window Layout)')
         print('  \ag/ac hud | uf | targetwin\ax - Toggle popout Target & Player HUD window')
         print('  \ag/ac target | tw | targetwindow\ax - Toggle the popout Target-only window')
         print('  \ag/ac help | h | ?\ax - Print slash command summary')
@@ -24929,13 +24958,13 @@ local function triuneCommand(...)
         print('  \ag/ac winpos [save|restore|reset]\ax - Save or restore window positions & layout')
         print(
             '  \ag/ac <mode> [submode]\ax - Switch combat mode (manual, puller [hunt|camp], assist [chase|camp|backline])')
-        print('  \ag/triunerun\ax - Quick keybind command to toggle run/pause')
+        print('  \ag/moriacrun\ax - Quick keybind command to toggle run/pause')
     elseif cmd == 'pet' or cmd == 'petcmd' then
         local verb = args[2] and string.lower(args[2]) or 'status'
         local scope = args[3] and string.lower(args[3]) or nil
         if verb == 'status' or verb == 'list' then
             local slots, extra = getMultiPetList()
-            print('\ag[Triune Pet Status]\ax:')
+            print('\ag[MoriAC Pet Status]\ax:')
             for _, s in ipairs(slots) do
                 if s.petId then
                     local pinfo = getPetSpawnInfo(s.petId)
@@ -24984,65 +25013,65 @@ local function triuneCommand(...)
         if sub == 'on' or sub == '1' then
             ctrl.pet_hold_enabled = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Auto Pet Hold: ENABLED.')
+            print('\ag[MoriAC]\ax Auto Pet Hold: ENABLED.')
         elseif sub == 'off' or sub == '0' then
             ctrl.pet_hold_enabled = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Auto Pet Hold: DISABLED.')
+            print('\ag[MoriAC]\ax Auto Pet Hold: DISABLED.')
         else
             ctrl.pet_hold_enabled = (ctrl.pet_hold_enabled == false)
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Auto Pet Hold: %s.', ctrl.pet_hold_enabled and 'ENABLED' or 'DISABLED'))
+            print(string.format('\ag[MoriAC]\ax Auto Pet Hold: %s.', ctrl.pet_hold_enabled and 'ENABLED' or 'DISABLED'))
         end
     elseif cmd == 'petassist' or cmd == 'petassistat' then
         local pct = tonumber(args[2])
         if pct and pct >= 1 and pct <= 100 then
             ctrl.pet_assist_at = pct
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Pet Assist threshold set to: \ag%d%%\ax.', pct))
+            print(string.format('\ag[MoriAC]\ax Pet Assist threshold set to: \ag%d%%\ax.', pct))
         else
-            print(string.format('\ay[Triune]\ax Current Pet Assist threshold: %d%% (Usage: /ac petassist [1-100])', ctrl.pet_assist_at or 100))
+            print(string.format('\ay[MoriAC]\ax Current Pet Assist threshold: %d%% (Usage: /ac petassist [1-100])', ctrl.pet_assist_at or 100))
         end
     elseif cmd == 'cd' or cmd == 'cds' or cmd == 'cooldown' or cmd == 'cooldowns' or cmd == 'cooldownui' or cmd == 'cooldownwin' then
         ctrl.show_cooldowns = not ctrl.show_cooldowns
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Cooldown Monitor window %s.', ctrl.show_cooldowns and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Cooldown Monitor window %s.', ctrl.show_cooldowns and 'OPENED' or 'CLOSED'))
     elseif cmd == 'hud' or cmd == 'uf' or cmd == 'unitframes' or cmd == 'targetwin' or cmd == 'playerwin' then
         ctrl.show_unit_frames = not ctrl.show_unit_frames
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Target & Player HUD window %s.', ctrl.show_unit_frames and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Target & Player HUD window %s.', ctrl.show_unit_frames and 'OPENED' or 'CLOSED'))
     elseif cmd == 'target' or cmd == 'tw' or cmd == 'targetwindow' or cmd == 'targetframe' then
         ctrl.show_target_window = not ctrl.show_target_window
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Target window %s.', ctrl.show_target_window and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Target window %s.', ctrl.show_target_window and 'OPENED' or 'CLOSED'))
     elseif cmd == 'group' or cmd == 'gw' or cmd == 'groupwin' or cmd == 'groupwindow' then
         ctrl.show_group_window = not ctrl.show_group_window
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Group Window %s.', ctrl.show_group_window and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Group Window %s.', ctrl.show_group_window and 'OPENED' or 'CLOSED'))
     elseif cmd == 'eff' or cmd == 'effects' or cmd == 'buffs' or cmd == 'buffwin' or cmd == 'songwin' or cmd == 'songs' then
         ctrl.show_effects_window = not ctrl.show_effects_window
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Effects & Songs Window %s.', ctrl.show_effects_window and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Effects & Songs Window %s.', ctrl.show_effects_window and 'OPENED' or 'CLOSED'))
     elseif (cmd == 'xtar' or cmd == 'xt' or cmd == 'xtarget' or cmd == 'xtargetwin' or cmd == 'xtwin') and not tonumber(args[2]) then
         -- '/ac xtar 200' falls through to the xtardist branch below
         ctrl.show_xtarget_window = not ctrl.show_xtarget_window
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Extended Target Window %s.', ctrl.show_xtarget_window and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Extended Target Window %s.', ctrl.show_xtarget_window and 'OPENED' or 'CLOSED'))
     elseif cmd == 'gems' or cmd == 'gembar' or cmd == 'spellbar' or cmd == 'castbar' or cmd == 'spellgems' then
         ctrl.show_spell_gems = not ctrl.show_spell_gems
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Popout Spell Gem Bar Window %s.', ctrl.show_spell_gems and 'OPENED' or 'CLOSED'))
+        print(string.format('\ag[MoriAC]\ax Popout Spell Gem Bar Window %s.', ctrl.show_spell_gems and 'OPENED' or 'CLOSED'))
     elseif cmd == 'winpos' or cmd == 'windows' or cmd == 'window' or cmd == 'savewindows' or cmd == 'restorewindows' then
         local sub = args[2] and string.lower(args[2]) or (cmd == 'savewindows' and 'save' or (cmd == 'restorewindows' and 'restore' or 'help'))
         if sub == 'save' then
             runtime.saveWindowPositions(false)
         elseif sub == 'restore' or sub == 'load' then
             local count = runtime.triggerRestoreWindows()
-            print(string.format('\ag[Triune]\ax Restored window positions (%d configured).', count))
+            print(string.format('\ag[MoriAC]\ax Restored window positions (%d configured).', count))
         elseif sub == 'reset' or sub == 'default' or sub == 'defaults' then
             runtime.resetWindowPositionsToDefault()
         else
-            print('\ag[Triune Window Positions]\ax:')
+            print('\ag[MoriAC Window Positions]\ax:')
             print('  \ag/ac winpos save\ax (or \ag/ac savewindows\ax) - Save current open window positions')
             print('  \ag/ac winpos restore\ax (or \ag/ac restorewindows\ax) - Restore saved window positions')
             print('  \ag/ac winpos reset\ax - Reset all window positions to desktop defaults')
@@ -25050,7 +25079,7 @@ local function triuneCommand(...)
     elseif cmd == 'clearlockouts' or cmd == 'unlock' or (cmd == 'clear' and (args[2] and (string.lower(args[2]) == 'lockouts' or string.lower(args[2]) == 'locks' or string.lower(args[2]) == 'all'))) then
         if castTracker and castTracker.clear then
             castTracker.clear()
-            print('\ag[Triune]\ax Cleared all active spell lockouts, target backoffs, and mob immunities.')
+            print('\ag[MoriAC]\ax Cleared all active spell lockouts, target backoffs, and mob immunities.')
         end
     elseif cmd == 'ma' or cmd == 'mainassist' then
         local sub = args[2] and string.lower(args[2]) or ''
@@ -25060,7 +25089,7 @@ local function triuneCommand(...)
             ctrl.ma_id = 0
             ctrl.ma_name = ''
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Main Assist cleared.')
+            print('\ag[MoriAC]\ax Main Assist cleared.')
         elseif sub == 'remove' or sub == 'delete' then
             local removeArg = args[3]
             runtime.removeCustomAssist(removeArg)
@@ -25079,34 +25108,34 @@ local function triuneCommand(...)
                 ctrl.ma_id = sId or 0
             end
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Main Assist set to "%s" (ID: %d).', ctrl.ma_name or '', ctrl.ma_id or 0))
+            print(string.format('\ag[MoriAC]\ax Main Assist set to "%s" (ID: %d).', ctrl.ma_name or '', ctrl.ma_id or 0))
         else
             local maDisp = (ctrl.ma_name and ctrl.ma_name ~= '') and ctrl.ma_name or '(None)'
-            print(string.format('\ag[Triune]\ax Current Main Assist: %s (ID: %d). Usage: /ac ma [target|clear|<name>|<id>]', maDisp, ctrl.ma_id or 0))
+            print(string.format('\ag[MoriAC]\ax Current Main Assist: %s (ID: %d). Usage: /ac ma [target|clear|<name>|<id>]', maDisp, ctrl.ma_id or 0))
         end
     elseif cmd == 'xtardist' or cmd == 'xtar' or cmd == 'xtarrange' then
         local val = tonumber(args[2])
         if val then
             ctrl.xtar_nav_dist = math.max(25, math.min(300, math.floor(val)))
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Max XTarget Chase Range set to %d units.', ctrl.xtar_nav_dist))
+            print(string.format('\ag[MoriAC]\ax Max XTarget Chase Range set to %d units.', ctrl.xtar_nav_dist))
         else
-            print(string.format('\ag[Triune]\ax Current Max XTarget Chase Range: %d units. (usage: /ac xtardist [25-300])', ctrl.xtar_nav_dist or 150))
+            print(string.format('\ag[MoriAC]\ax Current Max XTarget Chase Range: %d units. (usage: /ac xtardist [25-300])', ctrl.xtar_nav_dist or 150))
         end
     elseif cmd == 'selfdefense' or cmd == 'assistdefend' or cmd == 'defend' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or sub == 'true' then
             ctrl.assist_self_defense = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Assist Self-Defense When Attacked: \agENABLED\ax.')
+            print('\ag[MoriAC]\ax Assist Self-Defense When Attacked: \agENABLED\ax.')
         elseif sub == 'off' or sub == '0' or sub == 'false' then
             ctrl.assist_self_defense = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Assist Self-Defense When Attacked: \arDISABLED\ax.')
+            print('\ag[MoriAC]\ax Assist Self-Defense When Attacked: \arDISABLED\ax.')
         else
             ctrl.assist_self_defense = ctrl.assist_self_defense == false
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Assist Self-Defense When Attacked: %s.',
+            print(string.format('\ag[MoriAC]\ax Assist Self-Defense When Attacked: %s.',
                 ctrl.assist_self_defense and '\agENABLED\ax' or '\arDISABLED\ax'))
         end
     elseif cmd == 'manualstick' or cmd == 'stick' then
@@ -25120,7 +25149,7 @@ local function triuneCommand(...)
         end
         if not ctrl.manual_stick and runtime.stopMoving then runtime.stopMoving() end
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Manual Mode Stick to Target: %s.',
+        print(string.format('\ag[MoriAC]\ax Manual Mode Stick to Target: %s.',
             ctrl.manual_stick and '\agENABLED\ax' or '\arDISABLED\ax (you drive; attacks/casts only when the NPC is in reach)'))
     elseif cmd == 'manualnav' or cmd == 'autonav' then
         local sub = args[2] and string.lower(args[2]) or ''
@@ -25132,22 +25161,22 @@ local function triuneCommand(...)
             ctrl.manual_auto_nav = not ctrl.manual_auto_nav
         end
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Manual Mode Auto-Nav to Selected Target: %s.',
+        print(string.format('\ag[MoriAC]\ax Manual Mode Auto-Nav to Selected Target: %s.',
             ctrl.manual_auto_nav and '\agENABLED\ax' or '\arDISABLED\ax'))
     elseif cmd == 'assistbehind' or cmd == 'behind' or cmd == 'posbehind' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or sub == 'true' then
             ctrl.assist_behind = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Assist Mode Position Behind NPC: \agENABLED\ax.')
+            print('\ag[MoriAC]\ax Assist Mode Position Behind NPC: \agENABLED\ax.')
         elseif sub == 'off' or sub == '0' or sub == 'false' then
             ctrl.assist_behind = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Assist Mode Position Behind NPC: \arDISABLED\ax.')
+            print('\ag[MoriAC]\ax Assist Mode Position Behind NPC: \arDISABLED\ax.')
         else
             ctrl.assist_behind = ctrl.assist_behind == false
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Assist Mode Position Behind NPC: %s.',
+            print(string.format('\ag[MoriAC]\ax Assist Mode Position Behind NPC: %s.',
                 ctrl.assist_behind and '\agENABLED\ax' or '\arDISABLED\ax'))
         end
     elseif cmd == 'pausezone' or cmd == 'zonepause' or cmd == 'pauseonzone' then
@@ -25155,15 +25184,15 @@ local function triuneCommand(...)
         if sub == 'on' or sub == '1' or sub == 'true' then
             ctrl.pause_on_zone = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Pause On Zone: \agENABLED\ax (autocombat pauses when entering a new zone).')
+            print('\ag[MoriAC]\ax Pause On Zone: \agENABLED\ax (autocombat pauses when entering a new zone).')
         elseif sub == 'off' or sub == '0' or sub == 'false' then
             ctrl.pause_on_zone = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Pause On Zone: \arDISABLED\ax (autocombat continues across zones).')
+            print('\ag[MoriAC]\ax Pause On Zone: \arDISABLED\ax (autocombat continues across zones).')
         else
             ctrl.pause_on_zone = ctrl.pause_on_zone == false
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Pause On Zone: %s.',
+            print(string.format('\ag[MoriAC]\ax Pause On Zone: %s.',
                 ctrl.pause_on_zone and '\agENABLED\ax' or '\arDISABLED\ax'))
         end
     elseif cmd == 'fov' or cmd == 'setfov' or cmd == 'camfov' then
@@ -25176,18 +25205,18 @@ local function triuneCommand(...)
             ctrl.fov_enabled = true
             if runtime.applyFov then runtime.applyFov() end
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Field of View set to \ag%d\ax units (Maintain on Zone: ENABLED).', ctrl.fov))
+            print(string.format('\ag[MoriAC]\ax Field of View set to \ag%d\ax units (Maintain on Zone: ENABLED).', ctrl.fov))
         elseif sub == 'on' or sub == '1' or sub == 'enable' or sub == 'true' then
             ctrl.fov_enabled = true
             if runtime.applyFov then runtime.applyFov() end
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Maintain Field of View: \agENABLED\ax (%d units).', ctrl.fov or 100))
+            print(string.format('\ag[MoriAC]\ax Maintain Field of View: \agENABLED\ax (%d units).', ctrl.fov or 100))
         elseif sub == 'off' or sub == '0' or sub == 'disable' or sub == 'false' then
             ctrl.fov_enabled = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Maintain Field of View: \arDISABLED\ax.')
+            print('\ag[MoriAC]\ax Maintain Field of View: \arDISABLED\ax.')
         else
-            print(string.format('\ag[Triune]\ax Field of View: %d units (Maintain on Zone: %s). Usage: /ac fov [50-150|on|off]',
+            print(string.format('\ag[MoriAC]\ax Field of View: %d units (Maintain on Zone: %s). Usage: /ac fov [50-150|on|off]',
                 ctrl.fov or 100, ctrl.fov_enabled and '\agENABLED\ax' or '\arDISABLED\ax'))
         end
     elseif cmd == 'chasedist' or cmd == 'chaserange' or cmd == 'followdist'
@@ -25198,17 +25227,17 @@ local function triuneCommand(...)
         if val then
             ctrl.chase_dist = math.max(5, math.min(100, math.floor(val)))
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Chase Distance from Main Assist set to %d ft.', ctrl.chase_dist))
+            print(string.format('\ag[MoriAC]\ax Chase Distance from Main Assist set to %d ft.', ctrl.chase_dist))
         elseif arg2 == 'on' or arg2 == '1' or arg2 == 'true' then
             ctrl.chase = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Chase MA (Auto-Follow): \agENABLED\ax.')
+            print('\ag[MoriAC]\ax Chase MA (Auto-Follow): \agENABLED\ax.')
         elseif arg2 == 'off' or arg2 == '0' or arg2 == 'false' then
             ctrl.chase = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Chase MA (Auto-Follow): \arDISABLED\ax.')
+            print('\ag[MoriAC]\ax Chase MA (Auto-Follow): \arDISABLED\ax.')
         else
-            print(string.format('\ag[Triune]\ax Chase MA is %s (Chase Distance: %d ft). Usage: /ac chasedist [5-100] or /ac chase [on|off|<dist>]',
+            print(string.format('\ag[MoriAC]\ax Chase MA is %s (Chase Distance: %d ft). Usage: /ac chasedist [5-100] or /ac chase [on|off|<dist>]',
                 ctrl.chase and '\agENABLED\ax' or '\arDISABLED\ax', ctrl.chase_dist or 15))
         end
     elseif cmd == 'clearcursor' or cmd == 'autoinv' or cmd == 'cursor' then
@@ -25219,17 +25248,17 @@ local function triuneCommand(...)
             ctrl.window_scale = {}
             UI.setUiScale(1.0)
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax UI scale reset to 1.00x (per-window overrides cleared).')
+            print('\ag[MoriAC]\ax UI scale reset to 1.00x (per-window overrides cleared).')
         elseif tonumber(sub) then
             local v = UI.setUiScale(tonumber(sub))
-            print(string.format('\ag[Triune]\ax UI scale set to %.2fx.', v))
+            print(string.format('\ag[MoriAC]\ax UI scale set to %.2fx.', v))
         else
-            print(string.format('\ag[Triune]\ax UI scale is %.2fx. Usage: /ac scale <%.2f-%.2f> | /ac scale reset', UI.clampScale(ctrl.ui_scale) or 1.0, UI.SCALE_MIN, UI.SCALE_MAX))
+            print(string.format('\ag[MoriAC]\ax UI scale is %.2fx. Usage: /ac scale <%.2f-%.2f> | /ac scale reset', UI.clampScale(ctrl.ui_scale) or 1.0, UI.SCALE_MIN, UI.SCALE_MAX))
         end
     elseif cmd == 'compact' or cmd == 'mini' then
         ctrl.compact = not ctrl.compact
         runtime.saveLoadout(true)
-        print(string.format('\ag[Triune]\ax Compact Mini mode %s.', ctrl.compact and 'ENABLED' or 'DISABLED'))
+        print(string.format('\ag[MoriAC]\ax Compact Mini mode %s.', ctrl.compact and 'ENABLED' or 'DISABLED'))
     elseif cmd == 'ghost' or cmd == 'minighost' then
         local arg2 = args[2] and string.lower(args[2]) or ''
         local on
@@ -25237,7 +25266,7 @@ local function triuneCommand(...)
         elseif arg2 == 'off' or arg2 == '0' or arg2 == 'false' then on = false
         else on = ctrl.mini_ghost ~= true end
         UI.setMiniGhost(on)
-        print(string.format('\ag[Triune]\ax Compact window ghost mode %s%s.', on and 'ENABLED' or 'DISABLED',
+        print(string.format('\ag[MoriAC]\ax Compact window ghost mode %s%s.', on and 'ENABLED' or 'DISABLED',
             ctrl.compact and '' or ' (shows once the compact window is open: /ac compact)'))
     elseif cmd == 'pullcon' or cmd == 'con' or cmd == 'confilter' then
         ctrl.pull_con_filter = ctrl.pull_con_filter or {}
@@ -25248,20 +25277,20 @@ local function triuneCommand(...)
                 for _, c in ipairs(MODES.PULL_CON_LIST) do
                     ctrl.pull_con_filter[c] = (c == 'Scowling' or c == 'Threateningly' or c == 'Dubious' or c == 'Apprehensive')
                 end
-                print('\ag[Triune]\ax Puller Faction Con filter set to preset: Hostile Only')
+                print('\ag[MoriAC]\ax Puller Faction Con filter set to preset: Hostile Only')
             elseif arg3 == 'indifferent' then
                 for _, c in ipairs(MODES.PULL_CON_LIST) do
                     ctrl.pull_con_filter[c] = (c == 'Scowling' or c == 'Threateningly' or c == 'Dubious' or c == 'Apprehensive' or c == 'Indifferent')
                 end
-                print('\ag[Triune]\ax Puller Faction Con filter set to preset: Hostile + Indifferent')
+                print('\ag[MoriAC]\ax Puller Faction Con filter set to preset: Hostile + Indifferent')
             elseif arg3 == 'all' or arg3 == 'selectall' then
                 for _, c in ipairs(MODES.PULL_CON_LIST) do ctrl.pull_con_filter[c] = true end
-                print('\ag[Triune]\ax Puller Faction Con filter set to preset: Select All')
+                print('\ag[MoriAC]\ax Puller Faction Con filter set to preset: Select All')
             elseif arg3 == 'clear' or arg3 == 'none' then
                 for _, c in ipairs(MODES.PULL_CON_LIST) do ctrl.pull_con_filter[c] = false end
-                print('\ag[Triune]\ax Puller Faction Con filter set to preset: Clear All')
+                print('\ag[MoriAC]\ax Puller Faction Con filter set to preset: Clear All')
             else
-                print('\ay[Triune]\ax usage: /ac pullcon preset [all|hostile|indifferent|none]')
+                print('\ay[MoriAC]\ax usage: /ac pullcon preset [all|hostile|indifferent|none]')
             end
             runtime.saveLoadout(true)
         elseif arg2 ~= '' then
@@ -25276,18 +25305,18 @@ local function triuneCommand(...)
                 if arg3 == 'off' or arg3 == '0' or arg3 == 'false' then enable = false end
                 ctrl.pull_con_filter[targetCon] = enable
                 runtime.saveLoadout(true)
-                print(string.format('\ag[Triune]\ax Puller Faction Con "%s" set to %s.', targetCon,
+                print(string.format('\ag[MoriAC]\ax Puller Faction Con "%s" set to %s.', targetCon,
                     enable and 'ENABLED' or 'DISABLED'))
             else
-                print('\ay[Triune]\ax unknown consideration tier: ' .. tostring(args[2]))
+                print('\ay[MoriAC]\ax unknown consideration tier: ' .. tostring(args[2]))
             end
         else
-            print('\ag[Triune]\ax --- Puller Faction Considerations ---')
+            print('\ag[MoriAC]\ax --- Puller Faction Considerations ---')
             for _, c in ipairs(MODES.PULL_CON_LIST) do
                 print(string.format('  %s: %s', c, ctrl.pull_con_filter[c] and '\agENABLED\ax' or '\arDISABLED\ax'))
             end
             print(
-                '\ay[Triune]\ax usage: /ac pullcon [con_name] [on|off] OR /ac pullcon preset [all|hostile|indifferent|none]')
+                '\ay[MoriAC]\ax usage: /ac pullcon [con_name] [on|off] OR /ac pullcon preset [all|hostile|indifferent|none]')
         end
     elseif cmd == 'wp' or cmd == 'waypoint' or cmd == 'waypoints' then
         ctrl.waypoints = ctrl.waypoints or {}
@@ -25297,53 +25326,53 @@ local function triuneCommand(...)
             for i = 4, #args do wpName = wpName .. ' ' .. args[i] end
             local wpNum, name, x, y, z = runtime.wpAdd(wpName)
             if wpNum then
-                print(string.format('\ag[Triune]\ax Added Waypoint #%d "%s" @ loc (Y:%.1f, X:%.1f, Z:%.1f)', wpNum, name,
+                print(string.format('\ag[MoriAC]\ax Added Waypoint #%d "%s" @ loc (Y:%.1f, X:%.1f, Z:%.1f)', wpNum, name,
                     y, x, z))
             else
-                print('\ar[Triune]\ax Failed to add waypoint -- location unavailable.')
+                print('\ar[MoriAC]\ax Failed to add waypoint -- location unavailable.')
             end
         elseif sub == 'clear' or sub == 'reset' then
             runtime.wpClear()
-            print('\ag[Triune]\ax Cleared all waypoints.')
+            print('\ag[MoriAC]\ax Cleared all waypoints.')
         elseif sub == 'delete' or sub == 'del' or sub == 'remove' then
             local idx = tonumber(args[3])
             if idx and runtime.wpDelete(idx) then
-                print(string.format('\ag[Triune]\ax Deleted Waypoint #%d.', idx))
+                print(string.format('\ag[MoriAC]\ax Deleted Waypoint #%d.', idx))
             else
-                print('\ay[Triune]\ax usage: /ac wp delete [index]')
+                print('\ay[MoriAC]\ax usage: /ac wp delete [index]')
             end
         elseif sub == 'on' or sub == '1' or sub == 'enable' then
             ctrl.use_waypoints = true
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Waypoint Patrol ENABLED.')
+            print('\ag[MoriAC]\ax Waypoint Patrol ENABLED.')
         elseif sub == 'off' or sub == '0' or sub == 'disable' then
             ctrl.use_waypoints = false
             runtime.saveLoadout(true)
-            print('\ag[Triune]\ax Waypoint Patrol DISABLED.')
+            print('\ag[MoriAC]\ax Waypoint Patrol DISABLED.')
         elseif sub == 'toggle' then
             ctrl.use_waypoints = not ctrl.use_waypoints
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Waypoint Patrol %s.', ctrl.use_waypoints and 'ENABLED' or 'DISABLED'))
+            print(string.format('\ag[MoriAC]\ax Waypoint Patrol %s.', ctrl.use_waypoints and 'ENABLED' or 'DISABLED'))
         elseif sub == 'radius' or sub == 'arrival' then
             local r = tonumber(args[3])
             if r and r >= 5 and r <= 100 then
                 ctrl.waypoint_radius = r
                 runtime.saveLoadout(true)
-                print(string.format('\ag[Triune]\ax Waypoint Arrival Radius set to %d.', r))
+                print(string.format('\ag[MoriAC]\ax Waypoint Arrival Radius set to %d.', r))
             else
-                print('\ay[Triune]\ax usage: /ac wp radius [5-100]')
+                print('\ay[MoriAC]\ax usage: /ac wp radius [5-100]')
             end
         elseif sub == 'scan' or sub == 'scanradius' then
             local r = tonumber(args[3])
             if r and r >= 20 and r <= 500 then
                 ctrl.waypoint_scan_radius = r
                 runtime.saveLoadout(true)
-                print(string.format('\ag[Triune]\ax Waypoint NPC Scan Radius set to %d.', r))
+                print(string.format('\ag[MoriAC]\ax Waypoint NPC Scan Radius set to %d.', r))
             else
-                print('\ay[Triune]\ax usage: /ac wp scan [20-500]')
+                print('\ay[MoriAC]\ax usage: /ac wp scan [20-500]')
             end
         elseif sub == 'list' or sub == 'show' or sub == '' then
-            print('\ag[Triune]\ax --- Puller Waypoint Patrol Route ---')
+            print('\ag[MoriAC]\ax --- Puller Waypoint Patrol Route ---')
             print(string.format('  Patrol Status: %s | Active Target: #%d | Arrival Radius: %d | Scan Radius: %d',
                 ctrl.use_waypoints and '\agENABLED\ax' or '\arDISABLED\ax', ctrl.current_waypoint_idx or 1,
                 ctrl.waypoint_radius or 20, ctrl.waypoint_scan_radius or 100))
@@ -25359,25 +25388,25 @@ local function triuneCommand(...)
             end
         else
             print(
-            '\ay[Triune]\ax usage: /ac wp [add [name]|clear|delete [idx]|on|off|toggle|radius [5-100]|scan [20-500]|list]')
+            '\ay[MoriAC]\ax usage: /ac wp [add [name]|clear|delete [idx]|on|off|toggle|radius [5-100]|scan [20-500]|list]')
         end
     elseif cmd == 'style' or cmd == 'combatstyle' then
         local st = args[2] and string.lower(args[2]) or ''
         if st == 'melee' then
             runtime.setCombatStyle('Melee')
-            print('\ag[Triune]\ax Combat style set to: \agMelee\ax (range ' .. tostring(ctrl.melee_dist or 14) .. ')')
+            print('\ag[MoriAC]\ax Combat style set to: \agMelee\ax (range ' .. tostring(ctrl.melee_dist or 14) .. ')')
         elseif st == 'ranged' or st == 'bow' then
             runtime.setCombatStyle('Ranged')
-            print('\ag[Triune]\ax Combat style set to: \agRanged (bow)\ax (range ' .. tostring(ctrl.ranged_dist or 40) .. ')')
+            print('\ag[MoriAC]\ax Combat style set to: \agRanged (bow)\ax (range ' .. tostring(ctrl.ranged_dist or 40) .. ')')
         elseif st == 'spell' or st == 'cast' or st == 'caster' then
             runtime.setCombatStyle('Spell')
-            print('\ag[Triune]\ax Combat style set to: \agSpell\ax (range ' .. tostring(ctrl.ranged_dist or 40) .. ')')
+            print('\ag[MoriAC]\ax Combat style set to: \agSpell\ax (range ' .. tostring(ctrl.ranged_dist or 40) .. ')')
         elseif st == '' then
             local cur = ctrl.combat_style or 'Melee'
             local curRange = (cur == 'Melee') and (ctrl.melee_dist or 14) or (ctrl.ranged_dist or 40)
-            print(string.format('\ag[Triune]\ax Current combat style: \ag%s\ax (range %d). usage: /ac style [melee|ranged|spell]', cur, curRange))
+            print(string.format('\ag[MoriAC]\ax Current combat style: \ag%s\ax (range %d). usage: /ac style [melee|ranged|spell]', cur, curRange))
         else
-            print('\ay[Triune]\ax usage: /ac style [melee|ranged|spell]')
+            print('\ay[MoriAC]\ax usage: /ac style [melee|ranged|spell]')
         end
     elseif cmd == 'range' or cmd == 'meleerange' or cmd == 'rangeddist' or cmd == 'dist' then
         local val = tonumber(args[2])
@@ -25388,17 +25417,17 @@ local function triuneCommand(...)
             if wantMelee then
                 ctrl.melee_dist = math.max(5, math.min(50, math.floor(val)))
                 runtime.saveLoadout(true)
-                print(string.format('\ag[Triune]\ax Max Melee Distance set to %d units.', ctrl.melee_dist))
+                print(string.format('\ag[MoriAC]\ax Max Melee Distance set to %d units.', ctrl.melee_dist))
             else
                 ctrl.ranged_dist = math.max(5, math.min(200, math.floor(val)))
                 runtime.saveLoadout(true)
-                print(string.format('\ag[Triune]\ax Ranged/Spell Engagement Distance set to %d units.', ctrl.ranged_dist))
+                print(string.format('\ag[MoriAC]\ax Ranged/Spell Engagement Distance set to %d units.', ctrl.ranged_dist))
             end
         else
             if wantMelee then
-                print(string.format('\ag[Triune]\ax Current Max Melee Distance: %d units. (usage: /ac range [5-50])', ctrl.melee_dist or 14))
+                print(string.format('\ag[MoriAC]\ax Current Max Melee Distance: %d units. (usage: /ac range [5-50])', ctrl.melee_dist or 14))
             else
-                print(string.format('\ag[Triune]\ax Current Ranged/Spell Distance: %d units. (usage: /ac range [5-200])', ctrl.ranged_dist or 40))
+                print(string.format('\ag[MoriAC]\ax Current Ranged/Spell Distance: %d units. (usage: /ac range [5-200])', ctrl.ranged_dist or 40))
             end
         end
     elseif cmd == 'huntz' or cmd == 'z' then
@@ -25406,18 +25435,18 @@ local function triuneCommand(...)
         if val then
             ctrl.hunter_z = math.max(10, math.min(300, math.floor(val)))
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Hunter Max Height Diff (Z) set to %d units.', ctrl.hunter_z))
+            print(string.format('\ag[MoriAC]\ax Hunter Max Height Diff (Z) set to %d units.', ctrl.hunter_z))
         else
-            print(string.format('\ag[Triune]\ax Current Hunter Max Height Diff (Z): %d units. (usage: /ac huntz [10-300])', ctrl.hunter_z or 75))
+            print(string.format('\ag[MoriAC]\ax Current Hunter Max Height Diff (Z): %d units. (usage: /ac huntz [10-300])', ctrl.hunter_z or 75))
         end
     elseif cmd == 'zplane' or cmd == 'huntplane' or cmd == 'floorz' then
         local val = tonumber(args[2])
         if val then
             ctrl.hunter_z_plane = math.max(5, math.min(100, math.floor(val)))
             runtime.saveLoadout(true)
-            print(string.format('\ag[Triune]\ax Hunter Floor Height (Z Plane) set to %d units.', ctrl.hunter_z_plane))
+            print(string.format('\ag[MoriAC]\ax Hunter Floor Height (Z Plane) set to %d units.', ctrl.hunter_z_plane))
         else
-            print(string.format('\ag[Triune]\ax Current Hunter Floor Height (Z Plane): %d units. (usage: /ac zplane [5-100])', ctrl.hunter_z_plane or 15))
+            print(string.format('\ag[MoriAC]\ax Current Hunter Floor Height (Z Plane): %d units. (usage: /ac zplane [5-100])', ctrl.hunter_z_plane or 15))
         end
     elseif cmd == 'pullhp' or cmd == 'minhp' then
         local val = tonumber(args[2])
@@ -25425,12 +25454,12 @@ local function triuneCommand(...)
             ctrl.pull_min_hp_pct = math.max(0, math.min(95, math.floor(val)))
             runtime.saveLoadout(true)
             if ctrl.pull_min_hp_pct == 0 then
-                print('\ag[Triune]\ax Min Pull HP % disabled (0% -- pull at any HP).')
+                print('\ag[MoriAC]\ax Min Pull HP % disabled (0% -- pull at any HP).')
             else
-                print(string.format('\ag[Triune]\ax Min Pull HP threshold set to %d%% (pause pulling to rest until 100%%).', ctrl.pull_min_hp_pct))
+                print(string.format('\ag[MoriAC]\ax Min Pull HP threshold set to %d%% (pause pulling to rest until 100%%).', ctrl.pull_min_hp_pct))
             end
         else
-            print(string.format('\ag[Triune]\ax Current Min Pull HP threshold: %d%%. (usage: /ac pullhp [0-95])', ctrl.pull_min_hp_pct or 0))
+            print(string.format('\ag[MoriAC]\ax Current Min Pull HP threshold: %d%%. (usage: /ac pullhp [0-95])', ctrl.pull_min_hp_pct or 0))
         end
     elseif cmd == 'preset' or cmd == 'loadout' then
         local sub = args[2] and string.lower(args[2]) or ''
@@ -25444,7 +25473,7 @@ local function triuneCommand(...)
         elseif sub == 'list' or sub == '' then
             runtime.listPresets()
         else
-            print('\ay[Triune]\ax usage: /ac preset [save <name>|load <name>|delete <name>|list]')
+            print('\ay[MoriAC]\ax usage: /ac preset [save <name>|load <name>|delete <name>|list]')
         end
     elseif cmd == 'memall' or cmd == 'mem' or cmd == 'remem' then
         runtime.queueMemAll()
@@ -25456,13 +25485,16 @@ local function triuneCommand(...)
         return
     else
         print(
-            '\ay[Triune]\ax usage: /ac [run|pause|burn|memall|importbar|compact|ghost|scale|status|spellbook|cursorui|dps|map|inv|buffbot|net|btn|update|clearcursor|style|range|zplane|huntz|pullhp|preset|help|pullcon|wp|manual|puller [hunt|camp]|assist [chase|camp|backline]]')
+            '\ay[MoriAC]\ax usage: /ac [run|pause|burn|memall|importbar|compact|ghost|scale|status|spellbook|cursorui|dps|map|inv|buffbot|net|btn|update|clearcursor|style|range|zplane|huntz|pullhp|preset|help|pullcon|wp|manual|puller [hunt|camp]|assist [chase|camp|backline]]')
     end
 end
 
 mq.unbind('/triune')
 mq.bind('/triune', triuneCommand)
 
+mq.unbind('/moriacrun')
+mq.bind('/moriacrun', runtime.triuneToggle)
+-- Pre-rename name, kept so existing hot buttons and keybinds keep working.
 mq.unbind('/triunerun')
 mq.bind('/triunerun', runtime.triuneToggle)
 
@@ -25529,23 +25561,23 @@ end)
 runtime.initPluginManager()
 mq.imgui.init('TriunePluginsUI', UI.drawPlugins)
 mq.imgui.init('TriuneAutoCombat', UI.draw)
-print('\ag[Triune]\ax loaded v' ..
+print('\ag[MoriAC]\ax loaded v' ..
     VERSION ..
     '. Data: ' ..
-    (DATA_OK and 'triune_data.lua OK' or 'MISSING -- run extract_spells.py') ..
-    '. Use /ac run | /ac pause | /ac status | /ac spellbook | /ac <mode>. /lua stop triune to exit.')
+    (DATA_OK and 'moriac_data.lua OK' or 'MISSING -- copy config/moriac_data.lua') ..
+    '. Use /ac run | /ac pause | /ac status | /ac spellbook | /ac <mode>. /lua stop moriac to exit.')
 function runtime.checkStartupPluginStatus()
     if not navLoaded() then
-        mq.cmd('/popup [Triune] WARNING: MQ2Nav is NOT loaded! Load via /plugin mq2nav')
-        print('\ar[Triune WARNING]\ax MQ2Nav plugin is not loaded! Navigation, chase, and pathing require MQ2Nav. Load it using: \ay/plugin mq2nav\ax')
+        mq.cmd('/popup [MoriAC] WARNING: MQ2Nav is NOT loaded! Load via /plugin mq2nav')
+        print('\ar[MoriAC WARNING]\ax MQ2Nav plugin is not loaded! Navigation, chase, and pathing require MQ2Nav. Load it using: \ay/plugin mq2nav\ax')
     elseif not navMeshLoaded() then
         local curZone = mq.TLO.Zone.ShortName() or 'current zone'
-        mq.cmdf('/popup [Triune] WARNING: No NavMesh for %s!', curZone)
-        print(string.format('\ar[Triune WARNING]\ax No NavMesh loaded for zone %s! Pathing and navigation require a valid zone mesh.', curZone))
+        mq.cmdf('/popup [MoriAC] WARNING: No NavMesh for %s!', curZone)
+        print(string.format('\ar[MoriAC WARNING]\ax No NavMesh loaded for zone %s! Pathing and navigation require a valid zone mesh.', curZone))
     end
     if not stickLoaded() then
-        mq.cmd('/popup [Triune] WARNING: MQ2MoveUtils is NOT loaded! Load via /plugin mq2moveutils')
-        print('\ar[Triune WARNING]\ax MQ2MoveUtils plugin is not loaded! Combat positioning, melee stick, and unstuck require MQ2MoveUtils. Load it using: \ay/plugin mq2moveutils\ax')
+        mq.cmd('/popup [MoriAC] WARNING: MQ2MoveUtils is NOT loaded! Load via /plugin mq2moveutils')
+        print('\ar[MoriAC WARNING]\ax MQ2MoveUtils plugin is not loaded! Combat positioning, melee stick, and unstuck require MQ2MoveUtils. Load it using: \ay/plugin mq2moveutils\ax')
     end
 end
 runtime.checkStartupPluginStatus()
@@ -25646,9 +25678,9 @@ function runtime.dumpDiagnostics(quiet)
     end
     local path, err = tlog.dump(sections)
     if path then
-        if not quiet then print('\ag[Triune]\ax Diagnostics written to \ay' .. path .. '\ax') end
+        if not quiet then print('\ag[MoriAC]\ax Diagnostics written to \ay' .. path .. '\ax') end
     else
-        print('\ar[Triune]\ax Diagnostic dump failed: ' .. tostring(err))
+        print('\ar[MoriAC]\ax Diagnostic dump failed: ' .. tostring(err))
     end
     return path, err
 end
@@ -25676,10 +25708,10 @@ local function ensureLuaTurbo()
     mq.cmdf('/lua conf turboNum %d', LUA_TURBO_TARGET)
     local after = runtime.luaTurbo()
     if after and after >= LUA_TURBO_TARGET then
-        print(string.format('\ag[Triune]\ax MQ2Lua turbo raised from %d to %d instructions per frame (the default throttles every Lua script; saved in config/MQ2Lua.yaml). Run \ay/lua run triune\ax once if Triune still feels sluggish this session.', turbo, after))
+        print(string.format('\ag[MoriAC]\ax MQ2Lua turbo raised from %d to %d instructions per frame (the default throttles every Lua script; saved in config/MQ2Lua.yaml). Run \ay/lua run moriac\ax once if MoriAC still feels sluggish this session.', turbo, after))
         tlog.info('core', 'MQ2Lua turboNum raised %d -> %d', turbo, after)
     else
-        print(string.format('\ar[Triune WARNING]\ax MQ2Lua turbo is %d instructions per frame (default 500) and /lua conf turboNum %d did not take: every Lua loop and TLO read yields to the game constantly, which makes Triune sluggish. Set it by hand with \ay/lua conf turboNum %d\ax, then \ay/lua run triune\ax.', turbo, LUA_TURBO_TARGET, LUA_TURBO_TARGET))
+        print(string.format('\ar[MoriAC WARNING]\ax MQ2Lua turbo is %d instructions per frame (default 500) and /lua conf turboNum %d did not take: every Lua loop and TLO read yields to the game constantly, which makes MoriAC sluggish. Set it by hand with \ay/lua conf turboNum %d\ax, then \ay/lua run moriac\ax.', turbo, LUA_TURBO_TARGET, LUA_TURBO_TARGET))
         tlog.warn('core', 'MQ2Lua turboNum=%d and raising it to %d failed (reads %s afterwards)', turbo, LUA_TURBO_TARGET, tostring(after))
     end
 end
@@ -25695,7 +25727,7 @@ function runtime.loopStep(label, fn, ...)
         local nowE = os.clock()
         if (nowE - (runtime.loopStepErrAt[label] or -1000)) >= 5.0 then
             runtime.loopStepErrAt[label] = nowE
-            print('\ar[Triune error]\ax ' .. label .. ' failed: ' .. tostring(err))
+            print('\ar[MoriAC error]\ax ' .. label .. ' failed: ' .. tostring(err))
         end
         pcall(tlog.error, 'loop', '%s failed: %s', label, tostring(err))
     end
@@ -25763,8 +25795,8 @@ local function runMainLoop()
                 runtime.setNearestWaypoint()
             end
             if navLoaded() and not navMeshLoaded() then
-                mq.cmdf('/popup [Triune] WARNING: No NavMesh for %s!', curZone)
-                print(string.format('\ar[Triune WARNING]\ax No NavMesh loaded for zone "%s"! Pathing and navigation require a valid zone mesh.', curZone))
+                mq.cmdf('/popup [MoriAC] WARNING: No NavMesh for %s!', curZone)
+                print(string.format('\ar[MoriAC WARNING]\ax No NavMesh loaded for zone "%s"! Pathing and navigation require a valid zone mesh.', curZone))
             end
         end
         end)
@@ -25817,7 +25849,7 @@ local function runMainLoop()
             runtime.combatTickMs = ctMs
             runtime.combatTickAvgMs = runtime.combatTickAvgMs and (runtime.combatTickAvgMs * 0.9 + ctMs * 0.1) or ctMs
             if not ok and err then
-                print('\ar[Triune error]\ax combatTick failed: ' .. tostring(err))
+                print('\ar[MoriAC error]\ax combatTick failed: ' .. tostring(err))
             end
             if runtime.pluginManager and runtime.pluginManager.onCombatTick then
                 pcall(function()

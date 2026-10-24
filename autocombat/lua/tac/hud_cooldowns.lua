@@ -22,7 +22,7 @@ local plugin = {
     id                 = 'hud_cooldowns',
     name               = 'Cooldown Monitor',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Popout Cooldown & Ability Monitor window with live timers, filters, and click-to-fire.',
     defaultEnabled     = true,
     tickInterval       = 0.25,
@@ -892,7 +892,7 @@ local function deferUse(itm)
     if core.defer then
         core.defer('cooldown use ' .. tostring(itm.name), function() runUse(itm) end)
     else
-        print(string.format('\ar[Triune]\ax Cooldown Monitor: core.defer unavailable; cannot fire %s from the HUD.', tostring(itm.name)))
+        print(string.format('\ar[MoriAC]\ax Cooldown Monitor: core.defer unavailable; cannot fire %s from the HUD.', tostring(itm.name)))
     end
 end
 
@@ -1233,7 +1233,7 @@ function M.drawCooldownWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(4), core.px(3))
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(3), core.px(2))
     local show
-    ctrl.show_cooldowns, show = ImGui.Begin('Triune Cooldown Monitor v' .. (core.VERSION or '') .. '###triuneCooldowns', ctrl.show_cooldowns, core.windowFlags and core.windowFlags('cooldowns', winFlags) or winFlags)
+    ctrl.show_cooldowns, show = ImGui.Begin('MoriAC Cooldown Monitor v' .. (core.VERSION or '') .. '###triuneCooldowns', ctrl.show_cooldowns, core.windowFlags and core.windowFlags('cooldowns', winFlags) or winFlags)
     if not ctrl.show_cooldowns then
         if core.preEndWindow then core.preEndWindow('cooldowns', false) end
         ImGui.End()

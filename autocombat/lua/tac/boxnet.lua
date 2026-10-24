@@ -49,7 +49,7 @@ local plugin = {
     id                 = 'boxnet',
     name               = 'Box Network',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Actors-based communication between your boxed characters: peer roster with live vitals, remote /ac commands, Camp Here, and a message API for other plugins.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
@@ -960,7 +960,7 @@ local function probeHint()
         -- A client with no pipe connection just logs "Tried to send a message ... on a
         -- null connection" and never calls back, so this is the usual "launcher not
         -- attached" symptom; a handler that never runs looks the same.
-        return 'No reply from the launcher. Either this client is not attached to MacroQuest.exe (launcher window -> Actors panel should list this character) or the mailbox is a stale duplicate: run /lua run triune again (a fresh Lua state), then /ac net probe.'
+        return 'No reply from the launcher. Either this client is not attached to MacroQuest.exe (launcher window -> Actors panel should list this character) or the mailbox is a stale duplicate: run /lua run moriac again (a fresh Lua state), then /ac net probe.'
     end
     return nil
 end
@@ -1129,7 +1129,7 @@ local function processMessage(message)
         local key = lower(from)
         if not net.versionWarned[key] then
             net.versionWarned[key] = true
-            logEvent(string.format('%s speaks protocol v%s (we are v%d) - update Triune on both boxes', from, tostring(payload.v), PROTOCOL_VERSION), 'warn')
+            logEvent(string.format('%s speaks protocol v%s (we are v%d) - update MoriAC on both boxes', from, tostring(payload.v), PROTOCOL_VERSION), 'warn')
         end
         return
     end
@@ -1499,7 +1499,7 @@ local function drawStatusLine(GOOD, WARN, ERR, MUTED)
     if not warn and (net.lastSendStatus == -2 or net.lastSendStatus == -1) then
         warn = 'The MacroQuest launcher (MacroQuest.exe) does not appear to be running - it routes messages between boxes.'
     elseif not warn and n == 0 and pst == 'ok' and (nowSec() - (net.startedAt or 0)) > LAUNCHER_HINT_SEC then
-        warn = 'Launcher routing works but no other box has answered: make sure Triune (with this plugin) is running on them.'
+        warn = 'Launcher routing works but no other box has answered: make sure MoriAC (with this plugin) is running on them.'
     end
     if warn then ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], warn) end
 end
@@ -1533,7 +1533,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('boxnet')
-    local open, draw = ImGui.Begin('Triune Box Network###TriuneBoxNet', ctrl.show_boxnet, core.windowFlags and core.windowFlags('boxnet', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC Box Network###TriuneBoxNet', ctrl.show_boxnet, core.windowFlags and core.windowFlags('boxnet', windowFlags) or windowFlags)
     if not open then
         ctrl.show_boxnet = false
         if core.preEndWindow then core.preEndWindow('boxnet', false) end

@@ -17,7 +17,7 @@ local plugin = {
     id                 = 'cursor',
     name               = 'Cursor Item Manager',
     version            = '2.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Inspect, auto-inventory, or destroy the item on your cursor with a session history log.',
     defaultEnabled     = true,
     tickInterval       = 0.05,
@@ -126,7 +126,7 @@ local function stepClear()
     if not cursorItem() then
         state.clearing = nil
         if c.attempts > 0 then
-            print(string.format('\ay[Triune Cursor]\ax Cleared %d item(s) from cursor (first: [%s]).', c.attempts, c.name))
+            print(string.format('\ay[MoriAC Cursor]\ax Cleared %d item(s) from cursor (first: [%s]).', c.attempts, c.name))
             logSession(c.name, c.qty, c.action)
             if c.action == 'Auto Inventoried' then
                 state.statusMsg = string.format('Cleared [%s] to inventory.', c.name)
@@ -146,7 +146,7 @@ local function stepClear()
         local stuck = cursorItem()
         state.autoClearBlockedId = (stuck and stuck.ID()) or c.itemId
         state.autoClearRetryAt = os.clock() + AUTO_CLEAR_BACKOFF_SEC
-        print(string.format('\ay[Triune Cursor]\ax Could not inventory [%s] after %d attempts; auto-clear paused for %ds and not retried for this item.', c.name, c.attempts, AUTO_CLEAR_BACKOFF_SEC))
+        print(string.format('\ay[MoriAC Cursor]\ax Could not inventory [%s] after %d attempts; auto-clear paused for %ds and not retried for this item.', c.name, c.attempts, AUTO_CLEAR_BACKOFF_SEC))
         return true
     end
     c.attempts = c.attempts + 1
@@ -169,7 +169,7 @@ local function destroyCursor(expectedId, expectedName)
     end
     local itemName = tostring(item.Name() or 'Item')
     local qty = item.Stack() or 1
-    print(string.format('\ar[Triune Cursor]\ax Destroyed [%s] from cursor.', itemName))
+    print(string.format('\ar[MoriAC Cursor]\ax Destroyed [%s] from cursor.', itemName))
     mq.cmd('/destroy')
     state.statusMsg = string.format('Destroyed [%s].', itemName)
     logSession(itemName, qty, 'Destroyed')
@@ -235,7 +235,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('cursor')
-    local open, draw = ImGui.Begin('Triune Cursor Manager###TriuneCursorManager', ctrl.show_cursor, core.windowFlags and core.windowFlags('cursor', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC Cursor Manager###TriuneCursorManager', ctrl.show_cursor, core.windowFlags and core.windowFlags('cursor', windowFlags) or windowFlags)
     if not open then
         ctrl.show_cursor = false
         if core.preEndWindow then core.preEndWindow('cursor', false) end
@@ -448,7 +448,7 @@ function plugin.onCommand(cmd)
     refresh()
     ctrl.show_cursor = not ctrl.show_cursor
     core.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Cursor Manager %s.', ctrl.show_cursor and 'OPENED' or 'CLOSED'))
+    print(string.format('\ag[MoriAC]\ax Cursor Manager %s.', ctrl.show_cursor and 'OPENED' or 'CLOSED'))
     return true
 end
 

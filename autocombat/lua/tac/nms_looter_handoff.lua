@@ -11,7 +11,7 @@ local plugin = {
     id                 = 'nms_looter_handoff',
     name               = 'NMS Looter Handoff',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Hands the NMS active-looter slot to the highest-priority box in the zone or DZ.',
     defaultEnabled     = false,
     tickInterval       = 0.5,
@@ -520,7 +520,7 @@ local function tick()
     state.lastClaimAt = now
     requestStatus()
     state.lastAction = 'claim sent; refreshing NMS status'
-    print(string.format('\ag[Triune NMS Looter Handoff]\ax Claim sent in %s; refreshing NMS status.', zone))
+    print(string.format('\ag[MoriAC NMS Looter Handoff]\ax Claim sent in %s; refreshing NMS status.', zone))
 end
 
 function plugin.onInit(coreApi)
@@ -723,14 +723,14 @@ function plugin.onCommand(cmd, args)
     if cmd ~= 'nms_looter_handoff' and cmd ~= 'nmshandoff' and cmd ~= 'zoneclaim' then return false end
     local subcommand = lower(args and args[1])
     if subcommand == 'status' or subcommand == '' then
-        print(string.format('\\ag[Triune NMS Looter Handoff]\\ax Zone: %s | Scope: %s | Priority: %d | NMS owner: %s | %s',
+        print(string.format('\\ag[MoriAC NMS Looter Handoff]\\ax Zone: %s | Scope: %s | Priority: %d | NMS owner: %s | %s',
             state.zone ~= '' and state.zone or 'unknown',
             cfg.dzOnly and 'DZ only' or 'all zones',
             cfg.priority,
             state.owner ~= nil and (state.owner ~= '' and state.owner or 'nobody') or 'unknown',
             state.lastAction))
     else
-        print('\\ag[Triune NMS Looter Handoff]\\ax Use /ac nms_looter_handoff status. Configure scope and priority in the NMS Loot view.')
+        print('\\ag[MoriAC NMS Looter Handoff]\\ax Use /ac nms_looter_handoff status. Configure scope and priority in the NMS Loot view.')
     end
     return true
 end

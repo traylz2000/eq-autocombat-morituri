@@ -19,7 +19,7 @@ local plugin = {
     id                 = 'hud_group',
     name               = 'Group Window HUD',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     uses               = { boxnet = 'Box Network characters shown as group rows' },
     description        = 'Popout group window with vitals bars, role badges, member pets, invite/disband, and click-to-target.',
     defaultEnabled     = true,
@@ -109,18 +109,18 @@ local function comeTo(name)
     if not mq then return false end
     name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
     if name == '' then
-        print('\ay[Triune]\ax usage: /ac cometo <PlayerName> | stop')
+        print('\ay[MoriAC]\ax usage: /ac cometo <PlayerName> | stop')
         return true
     end
     if name:lower() == 'stop' then
         pcall(function() mq.cmd('/nav stop') end)
-        print('\ag[Triune]\ax Stopped navigating.')
+        print('\ag[MoriAC]\ax Stopped navigating.')
         return true
     end
     local navOk = false
     pcall(function() navOk = mq.TLO.Navigation and mq.TLO.Navigation.MeshLoaded() == true end)
     if not navOk then
-        print('\ar[Triune]\ax Cannot come to ' .. name .. ': MQ2Nav is not loaded or has no mesh for this zone.')
+        print('\ar[MoriAC]\ax Cannot come to ' .. name .. ': MQ2Nav is not loaded or has no mesh for this zone.')
         return true
     end
     local id, dist = 0, 0
@@ -132,11 +132,11 @@ local function comeTo(name)
         end
     end)
     if id <= 0 then
-        print('\ay[Triune]\ax Cannot come to ' .. name .. ': not in this zone.')
+        print('\ay[MoriAC]\ax Cannot come to ' .. name .. ': not in this zone.')
         return true
     end
     mq.cmdf('/nav id %d distance=10', id)
-    print(string.format('\ag[Triune]\ax Coming to %s (%.0fft).', name, dist))
+    print(string.format('\ag[MoriAC]\ax Coming to %s (%.0fft).', name, dist))
     return true
 end
 
@@ -519,7 +519,7 @@ function plugin.onDrawUI()
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, core.px(3), core.px(2))
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
     local show
-    ctrl.show_group_window, show = ImGui.Begin('Triune Group v' .. (core.VERSION or '') .. '###triuneGroupWindow', ctrl.show_group_window, core.windowFlags and core.windowFlags('group', winFlags) or winFlags)
+    ctrl.show_group_window, show = ImGui.Begin('MoriAC Group v' .. (core.VERSION or '') .. '###triuneGroupWindow', ctrl.show_group_window, core.windowFlags and core.windowFlags('group', winFlags) or winFlags)
     if not ctrl.show_group_window then
         if core.preEndWindow then core.preEndWindow('group', true) end
         ImGui.End()
@@ -751,7 +751,7 @@ function plugin.onDrawUI()
                         ImGui.SameLine()
                         if ImGui.SmallButton('Come##gwCome' .. idx) then
                             local okSend, why = sendComeToMe(mem.name)
-                            if not okSend then print('\ay[Triune]\ax Come request to ' .. tostring(mem.name) .. ' not sent: ' .. tostring(why)) end
+                            if not okSend then print('\ay[MoriAC]\ax Come request to ' .. tostring(mem.name) .. ' not sent: ' .. tostring(why)) end
                         end
                         if ImGui.IsItemHovered() then
                             core.setTooltip('%s', string.format('Tell %s to navigate to you\n(/ac net %s cometo %s)', mem.name, mem.name, snap.myName or 'me'))

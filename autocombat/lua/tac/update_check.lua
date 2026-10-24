@@ -33,15 +33,15 @@ local plugin = {
     id                 = 'update_check',
     name               = 'Update Checker',
     version            = '1.0.0',
-    author             = 'Triune',
-    description        = 'Checks GitHub for a newer Triune release (non-blocking, no external process) and notifies you in chat and with a popup.',
+    author             = 'MoriAC',
+    description        = 'Checks GitHub for a newer MoriAC release (non-blocking, no external process) and notifies you in chat and with a popup.',
     defaultEnabled     = true,
     tickInterval       = 0.25,
     runOutOfCombatOnly = false,
     hasThread          = false,
 }
 
-local REPO            = 'gennro/TriuneAutocombat'
+local REPO            = 'traylz2000/eq-autocombat-morituri'
 local API_URL         = 'https://api.github.com/repos/' .. REPO .. '/releases/latest'
 local RELEASES_URL    = 'https://github.com/' .. REPO .. '/releases'
 local USER_AGENT      = 'TriuneAutoCombat-UpdateCheck'
@@ -85,7 +85,7 @@ local st = {
 }
 
 local function chat(fmt, ...)
-    print(string.format('\ay[Triune Update]\ax ' .. fmt, ...))
+    print(string.format('\ay[MoriAC Update]\ax ' .. fmt, ...))
 end
 
 local function saveSettings()
@@ -549,7 +549,7 @@ local function finishResponse(code, body)
     if r.newer then
         local skipped = (cfg.skipTag == tag)
         if st.manual or not skipped then
-            chat('\agA newer Triune release is available\ax: %s -> \ag%s\ax%s', cur, tag,
+            chat('\agA newer MoriAC release is available\ax: %s -> \ag%s\ax%s', cur, tag,
                 r.published ~= '' and ('  (' .. r.published .. ')') or '')
             chat('  %s', r.url)
             if skipped and st.manual then chat('  (you chose to skip %s; /ac update unskip to be reminded again)', tag) end
@@ -604,7 +604,7 @@ local function drawNotice()
     local flags = 0
     if ImGuiWindowFlags then flags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) end ---@diagnostic disable-line: deprecated
     core.preBeginWindow('update_check')
-    local open, draw = ImGui.Begin('Triune Update Available###TriuneUpdateNotice', true,
+    local open, draw = ImGui.Begin('MoriAC Update Available###TriuneUpdateNotice', true,
         core.windowFlags and core.windowFlags('update_check', flags) or flags)
     if not open then
         st.noticeOpen = false
@@ -782,7 +782,7 @@ function plugin.onDrawSettings()
     local autoVal = ImGui.Checkbox('Check for new releases automatically##updAuto', cfg.autoCheck)
     if autoVal ~= cfg.autoCheck then cfg.autoCheck = autoVal; saveSettings() end
     if ImGui.IsItemHovered() then
-        core.setTooltip(string.format('Runs one check %d s after Triune loads (per character), with the frequency below.', STARTUP_DELAY_S))
+        core.setTooltip(string.format('Runs one check %d s after MoriAC loads (per character), with the frequency below.', STARTUP_DELAY_S))
     end
 
     local curIdx = 1
@@ -883,7 +883,7 @@ function plugin.onCommand(cmd, args)
 end
 
 plugin.help = {
-    '  \ag/ac update [now|show|skip|unskip|auto on|off|link]\ax - Check GitHub for a newer Triune release (non-blocking)',
+    '  \ag/ac update [now|show|skip|unskip|auto on|off|link]\ax - Check GitHub for a newer MoriAC release (non-blocking)',
 }
 
 -- Exposed for tests

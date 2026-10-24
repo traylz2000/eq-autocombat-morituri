@@ -195,11 +195,11 @@ local function identityTag()
 end
 
 function M.filePath()
-    return M.resolveDir() .. '/triune_' .. identityTag() .. '.log'
+    return M.resolveDir() .. '/moriac_' .. identityTag() .. '.log'
 end
 
 function M.dumpPath()
-    return M.resolveDir() .. '/triune_dump_' .. identityTag() .. '_' .. os.date('%Y%m%d_%H%M%S') .. '.log'
+    return M.resolveDir() .. '/moriac_dump_' .. identityTag() .. '_' .. os.date('%Y%m%d_%H%M%S') .. '.log'
 end
 
 function M.currentFilePath() return st.filePath end
@@ -219,7 +219,7 @@ end
 local function writeHeader(f)
     local server, char = 'unknown', 'unknown'
     pcall(function() server, char = st.identity() end)
-    f:write(string.format('==== Triune v%s log session %s | %s @ %s ====\n',
+    f:write(string.format('==== MoriAC v%s log session %s | %s @ %s ====\n',
         tostring(st.version), dateStamp(), tostring(char), tostring(server)))
     if st.headerInfo then
         local ok, rows = pcall(st.headerInfo)

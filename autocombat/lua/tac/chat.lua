@@ -41,7 +41,7 @@
 -- a click here does the same with /say (see isSaylink, /tacchat saylink).
 --
 -- Layout, filters and colors persist per character in
--- config/triune_chat_<Name>.lua. Window visibility is ctrl.show_chat (header
+-- config/moriac_chat_<Name>.lua. Window visibility is ctrl.show_chat (header
 -- button, Window Layout manager, /tacchat).
 -- ============================================================================
 
@@ -49,7 +49,7 @@ local plugin = {
     id                 = 'chat',
     name               = 'Chat Windows',
     version            = '1.10.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Chat window replacement: channel-filtered tabs, multiple windows, colors, timestamps, an input line and keyword filters.',
     defaultEnabled     = true,
     tickInterval       = 0.05,
@@ -145,7 +145,7 @@ local CHANNELS = {
     { id = 'consider',   label = 'Consider',               group = 'Info', color = 'C0C0FF' },
     { id = 'zone',       label = 'Zone & travel',          group = 'Info', color = 'FFFFFF' },
     { id = 'system',     label = 'System / server',        group = 'Info', color = 'FFFF99' },
-    { id = 'triune',     label = 'Triune messages',        group = 'Info', color = 'FFB380' },
+    { id = 'triune',     label = 'MoriAC messages',        group = 'Info', color = 'FFB380' },
     { id = 'mq',         label = 'MacroQuest output',      group = 'Info', color = 'B3B3FF' },
     { id = 'unknown',    label = 'Unclassified',           group = 'Info', color = 'D0D0D0' },
 }
@@ -425,14 +425,14 @@ local function traceDump(reason)
     local path = string.format('%s/tac_chat_trace_%s.txt', dir, name)
     local f = io.open(path, 'w')
     if not f then return end
-    f:write('-- Triune Chat draw trace, ' .. os.date() .. '\n-- frame step (oldest first)\n')
+    f:write('-- MoriAC Chat draw trace, ' .. os.date() .. '\n-- frame step (oldest first)\n')
     local count = math.min(t.n, TRACE_MAX)
     for i = t.n - count + 1, t.n do
         f:write(t.steps[(i - 1) % TRACE_MAX + 1] or '', '\n')
     end
     f:write('-- ERROR: ' .. tostring(reason) .. '\n')
     f:close()
-    print('\ay[Triune Chat]\ax draw trace written to ' .. path)
+    print('\ay[MoriAC Chat]\ax draw trace written to ' .. path)
 end
 
 -- Runs a draw function under pcall so an error inside an ImGui scope never
@@ -448,7 +448,7 @@ local function guarded(where, fn, ...)
         trace('ERROR %s', rt.stats.drawErr)
         if not rt.stats.drawErrShown then
             rt.stats.drawErrShown = true
-            print('\ar[Triune Chat]\ax draw error (window kept alive): ' .. rt.stats.drawErr)
+            print('\ar[MoriAC Chat]\ax draw error (window kept alive): ' .. rt.stats.drawErr)
             -- The diagnostics themselves must never throw out of the guard.
             local okDiag, errDiag = pcall(function()
                 traceDump(rt.stats.drawErr)
@@ -551,7 +551,7 @@ local SYSTEM_PATTERNS = {
     '^To begin searching for items', '^Your (.-) has been (created|changed)%.$',
 }
 
-local MQ_PREFIXES = { '[Nav]', '[MQ2', '[MQ]', '[Lua]', '[TAC', '[Triune' }
+local MQ_PREFIXES = { '[Nav]', '[MQ2', '[MQ]', '[Lua]', '[TAC', '[MoriAC' }
 
 local function matchAny(text, patterns)
     for _, p in ipairs(patterns) do
@@ -614,7 +614,7 @@ local function classify(raw, ctx)
 
     -- MQ / Triune output (arrives through the same event as game text)
     if text:sub(1, 1) == '[' then
-        if text:find('^%[Triune') or text:find('^%[TAC') then return result('triune', nil, text) end
+        if text:find('^%[MoriAC') or text:find('^%[Triune') or text:find('^%[TAC') then return result('triune', nil, text) end
         -- The personal loot system: "[NMS] X sold for ...", "[NMS] Active
         -- looter: you.", "[NMS Loot] offer 1748 slot ... "Item"" - its own
         -- channel so a tab can show or hide the auto-sell stream on its own.
@@ -858,7 +858,8 @@ local function configPath()
         local n = mq.TLO.Me.CleanName()
         if n and n ~= '' then name = tostring(n) end
     end)
-    rt.configPath = string.format('%s/triune_chat_%s.lua', (mq and mq.configDir) or 'config', name)
+    rt.configPath = string.format('%s/moriac_chat_%s.lua', (mq and mq.configDir) or 'config', name)
+    if core and core.migrateConfigFile then core.migrateConfigFile(rt.configPath) end
     return rt.configPath
 end
 
@@ -917,7 +918,7 @@ local function defaultWindows()
                 newTab('loot', 'Loot & XP', 'loot', 'say'),
                 newTab('tells', 'Tells', 'tells', 'tell'),
                 newNotifyTab('notify'),
-                newTab('triune', 'Triune', 'triune', 'say'),
+                newTab('triune', 'MoriAC', 'triune', 'say'),
             },
         },
     }
@@ -1126,7 +1127,7 @@ local function sanitizeConfig(c)
 end
 
 function saveConfig()
-    local body = '-- Triune Chat Windows config (per character)\nreturn ' .. serialize(cfg) .. '\n'
+    local body = '-- MoriAC Chat Windows config (per character)\nreturn ' .. serialize(cfg) .. '\n'
     if not H.atomicWrite(configPath(), function(f) f:write(body) end) then return false end
     rt.dirty = false
     rt.lastSave = os.time()
@@ -1914,7 +1915,7 @@ local function openCapture()
     rt.capturePath = string.format('%s/tac_chat_capture_%s.txt', logsDir(), myName())
     local f = io.open(rt.capturePath, 'a')
     if not f then return false end
-    f:write(string.format('-- Triune Chat capture started %s (channel | line, control bytes escaped)\n', os.date()))
+    f:write(string.format('-- MoriAC Chat capture started %s (channel | line, control bytes escaped)\n', os.date()))
     rt.captureFile = f
     return true
 end
@@ -1930,14 +1931,14 @@ local function setCapture(on)
     cfg.capture = (on == true)
     if cfg.capture then
         if openCapture() then
-            print('\ag[Triune Chat]\ax capture on: ' .. tostring(rt.capturePath))
+            print('\ag[MoriAC Chat]\ax capture on: ' .. tostring(rt.capturePath))
         else
             cfg.capture = false
-            print('\ar[Triune Chat]\ax could not open capture file ' .. tostring(rt.capturePath))
+            print('\ar[MoriAC Chat]\ax could not open capture file ' .. tostring(rt.capturePath))
         end
     else
         closeCapture()
-        print('\ay[Triune Chat]\ax capture off')
+        print('\ay[MoriAC Chat]\ax capture off')
     end
     markDirty()
 end
@@ -1948,7 +1949,7 @@ end
 local registeredEvents = {}
 
 -- ----------------------------------------------------------------------------
--- Tell / notification history: config/triune_chat_history_<Name>.txt. One
+-- Tell / notification history: config/moriac_chat_history_<Name>.txt. One
 -- line per tell (in or out) and per notification (a mention or a highlight
 -- hit), appended as they arrive and flushed on the tick like the other log
 -- files, so a crash loses at most the last few hundred milliseconds. The
@@ -1961,7 +1962,9 @@ local registeredEvents = {}
 H.FIELDS = 7
 
 function H.path()
-    return string.format('%s/triune_chat_history_%s.txt', ((mq and mq.configDir) or 'config'):gsub('[/\\]+$', ''), safeFileName(myName()))
+    local p = string.format('%s/moriac_chat_history_%s.txt', ((mq and mq.configDir) or 'config'):gsub('[/\\]+$', ''), safeFileName(myName()))
+    if core and core.migrateConfigFile then core.migrateConfigFile(p) end
+    return p
 end
 
 -- Fields are tab-separated; a backslash and every control byte (the \x12 of
@@ -2278,7 +2281,7 @@ end
 function GL.note(key, msg)
     if GL.noted[key] then return end
     GL.noted[key] = true
-    print('\ay[Triune Chat]\ax ' .. msg)
+    print('\ay[MoriAC Chat]\ax ' .. msg)
 end
 
 -- Writes `text` back into the game's edit box; true when it took.
@@ -2465,7 +2468,7 @@ function GL.poll()
         GL.errors = GL.errors + 1
         if GL.errors >= GL.MAX_ERRORS then
             GL.disabled = tostring(err)
-            print('\ay[Triune Chat]\ax item-window link capture stopped after repeated errors: ' .. tostring(err))
+            print('\ay[MoriAC Chat]\ax item-window link capture stopped after repeated errors: ' .. tostring(err))
         end
     end
 end
@@ -2495,7 +2498,7 @@ function GL.status()
         lines[#lines + 1] = 'displayed items: ' .. (#shown > 0 and table.concat(shown, ', ') or '(none)')
     end)
     if not ok then lines[#lines + 1] = 'error: ' .. tostring(err) end
-    for _, l in ipairs(lines) do print('\ag[Triune Chat]\ax ' .. l) end
+    for _, l in ipairs(lines) do print('\ag[MoriAC Chat]\ax ' .. l) end
 end
 
 -- Refreshes the names the classifier compares against (me, my pets).
@@ -3153,7 +3156,7 @@ local function drawLineContextMenuBody(win, tab)
         -- which can open items you do not carry (mq.ExecuteTextLink cannot on
         -- this server's link format).
         if ImGui.MenuItem('Show link in MQ window (clickable there)') then
-            print('\ag[Triune Chat]\ax link: ' .. e.raw)
+            print('\ag[MoriAC Chat]\ax link: ' .. e.raw)
         end
         -- Re-post an item someone linked: the same raw link into my input line.
         for i, l in ipairs(extractItemLinks(e.raw)) do
@@ -3857,7 +3860,7 @@ local function drawGeneralPage()
     local hs = ImGui.Checkbox('Keep tells and notifications across restarts##genHist', cfg.history.on)
     if hs ~= cfg.history.on then chatCommand('history', hs and 'on' or 'off') end
     if ImGui.IsItemHovered and ImGui.IsItemHovered() and core.setTooltip then
-        core.setTooltip('Every tell (in or out) and every Notifications line is written to config/triune_chat_history_<Name>.txt as it arrives.\nThe next start (after a camp or a crash) puts the last ones back into the Tells and Notifications tabs, dated when they are from another day.\n/tacchat history on|off|clear does the same from a command.')
+        core.setTooltip('Every tell (in or out) and every Notifications line is written to config/moriac_chat_history_<Name>.txt as it arrives.\nThe next start (after a camp or a crash) puts the last ones back into the Tells and Notifications tabs, dated when they are from another day.\n/tacchat history on|off|clear does the same from a command.')
     end
     ImGui.SameLine()
     ImGui.SetNextItemWidth(core.px(160))
@@ -4767,7 +4770,7 @@ local function drawTabContents(win, tab, ti)
         if showStall then ImGui.SameLine() end
     end
     if showStall then
-        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], string.format('waiting for Triune tick (%ds)', tickAge))
+        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], string.format('waiting for MoriAC tick (%ds)', tickAge))
     end
     if not (showNew or showEcho or showStall) then
         if rt.stats.drawErr then
@@ -5079,13 +5082,13 @@ local function drawWindows()
             local keys = {}
             for k, v in pairs(cfg) do keys[#keys + 1] = tostring(k) .. '=' .. type(v) end
             table.sort(keys)
-            print(string.format('\ay[Triune Chat]\ax config had no windows at draw time (init ran: %s, keys: %s); reloading',
+            print(string.format('\ay[MoriAC Chat]\ax config had no windows at draw time (init ran: %s, keys: %s); reloading',
                 tostring(rt.initCount or 0), table.concat(keys, ' ')))
         end
         local ok, err = pcall(loadConfig)
         if not ok or type(cfg.windows) ~= 'table' then
             cfg.windows = defaultWindows()
-            if not ok then print('\ar[Triune Chat]\ax config reload failed: ' .. tostring(err)) end
+            if not ok then print('\ar[MoriAC Chat]\ax config reload failed: ' .. tostring(err)) end
         end
     end
     if rt.trace then rt.trace.frame = (rt.trace.frame or 0) + 1 end
@@ -5093,7 +5096,7 @@ local function drawWindows()
         -- Something in the last frame broke: keep the window usable with the
         -- simplest layout until the cause is fixed.
         rt.safeMode = true
-        print('\ay[Triune Chat]\ax switched to safe mode (one pane, default font) after a draw error; /tacchat safemode off to retry.')
+        print('\ay[MoriAC Chat]\ax switched to safe mode (one pane, default font) after a draw error; /tacchat safemode off to retry.')
     end
     rt.frameFailed = false
     -- A name clicked in a line last frame: open that conversation now, before
@@ -5174,7 +5177,7 @@ function chatCommand(sub, arg1, arg2)
     elseif sub == 'tell' then
         local name = trim(tostring(arg1 or ''))
         if name == '' then
-            print('\ay[Triune Chat]\ax /tacchat tell <name> opens that person\'s tab in the Tells window')
+            print('\ay[MoriAC Chat]\ax /tacchat tell <name> opens that person\'s tab in the Tells window')
             return
         end
         openTellTab(name, true)
@@ -5192,14 +5195,14 @@ function chatCommand(sub, arg1, arg2)
             local name = trim(tostring(arg2 or ''))
             cfg.gameLinksWindow = (name ~= '' and name ~= 'default') and name or nil
             markDirty()
-            print('\ag[Triune Chat]\ax game chat input read from Window[' .. (cfg.gameLinksWindow or 'ChatWindow') .. '].')
+            print('\ag[MoriAC Chat]\ax game chat input read from Window[' .. (cfg.gameLinksWindow or 'ChatWindow') .. '].')
             return
         end
         local on
         if what == 'on' then on = true elseif what == 'off' then on = false else on = not cfg.gameLinks end
         if on ~= cfg.gameLinks then cfg.gameLinks = on; markDirty() end
         if on then GL.disabled = nil; GL.errors = 0; GL.last = nil end
-        print('\ag[Triune Chat]\ax item window icon links ' .. (on and 'go to the chat input.' or 'stay in the game\'s chat line.'))
+        print('\ag[MoriAC Chat]\ax item window icon links ' .. (on and 'go to the chat input.' or 'stay in the game\'s chat line.'))
         return
     elseif sub == 'saylink' then
         -- The proxy item id of dialogue links. A link that opens as
@@ -5210,30 +5213,30 @@ function chatCommand(sub, arg1, arg2)
             cfg.saylinkId = math.floor(id)
             markDirty()
         elseif arg1 and arg1 ~= '' and tostring(arg1):lower() ~= 'status' then
-            print('\ay[Triune Chat]\ax usage: /tacchat saylink <item id>|status')
+            print('\ay[MoriAC Chat]\ax usage: /tacchat saylink <item id>|status')
             return
         end
-        print(string.format('\ag[Triune Chat]\ax dialogue links: item id %d says the link text on click (stock EQEmu 999999).', cfg.saylinkId))
+        print(string.format('\ag[MoriAC Chat]\ax dialogue links: item id %d says the link text on click (stock EQEmu 999999).', cfg.saylinkId))
         return
     elseif sub == 'complete' then
         local what = tostring(arg1 or ''):lower()
         local on
         if what == 'on' then on = true elseif what == 'off' then on = false else on = not cfg.mentionComplete end
         if on ~= cfg.mentionComplete then cfg.mentionComplete = on; if not on then rt.ac = nil end; markDirty() end
-        print(string.format('\ag[Triune Chat]\ax @Name completion %s (%d names known).', on and 'on' or 'off', rt.namesN))
+        print(string.format('\ag[MoriAC Chat]\ax @Name completion %s (%d names known).', on and 'on' or 'off', rt.namesN))
         return
     elseif sub == 'gameline' then
         local what = tostring(arg1 or ''):lower()
         local on
         if what == 'on' then on = true elseif what == 'off' then on = false else on = not cfg.gameLineClose end
         if on ~= cfg.gameLineClose then cfg.gameLineClose = on; markDirty() end
-        print('\ag[Triune Chat]\ax the game\'s chat line is ' .. (on and 'closed when Enter opens this input.' or 'left alone.'))
+        print('\ag[MoriAC Chat]\ax the game\'s chat line is ' .. (on and 'closed when Enter opens this input.' or 'left alone.'))
         return
     elseif sub == 'history' then
         local what = tostring(arg1 or ''):lower()
         if what == 'clear' then
             H.clear()
-            print('\ag[Triune Chat]\ax tell / notification history cleared.')
+            print('\ag[MoriAC Chat]\ax tell / notification history cleared.')
             return
         end
         local on
@@ -5249,7 +5252,7 @@ function chatCommand(sub, arg1, arg2)
             end
             markDirty()
         end
-        print(string.format('\ag[Triune Chat]\ax tells and notifications %s across restarts (%d lines kept in %s).',
+        print(string.format('\ag[MoriAC Chat]\ax tells and notifications %s across restarts (%d lines kept in %s).',
             on and 'are kept' or 'are not kept', cfg.history.lines, H.path()))
         return
     elseif sub == 'tab' then
@@ -5259,7 +5262,7 @@ function chatCommand(sub, arg1, arg2)
             win.open = true
             ctrl.show_chat = true
         else
-            print('\ay[Triune Chat]\ax no tab named ' .. tostring(arg1))
+            print('\ay[MoriAC Chat]\ax no tab named ' .. tostring(arg1))
             return
         end
     elseif sub == 'settings' then
@@ -5272,31 +5275,31 @@ function chatCommand(sub, arg1, arg2)
             newWindow(arg2)
         elseif op == 'close' then
             local w = findWindow(arg2)
-            if w then closeWindow(w) else print('\ay[Triune Chat]\ax no window named ' .. tostring(arg2)) end
+            if w then closeWindow(w) else print('\ay[MoriAC Chat]\ax no window named ' .. tostring(arg2)) end
             return
         else
-            print('\ay[Triune Chat]\ax /tacchat window new <name> | close <name>')
+            print('\ay[MoriAC Chat]\ax /tacchat window new <name> | close <name>')
             return
         end
     elseif sub == 'mute' or sub == 'unmute' then
         local name = trim(arg1 or ''):lower()
-        if name == '' then print('\ay[Triune Chat]\ax /tacchat ' .. sub .. ' <name>'); return end
+        if name == '' then print('\ay[MoriAC Chat]\ax /tacchat ' .. sub .. ' <name>'); return end
         cfg.muted[name] = (sub == 'mute') or nil
         invalidateTabs()
         markDirty()
-        print(string.format('\ag[Triune Chat]\ax %s %s', sub == 'mute' and 'muted' or 'unmuted', name))
+        print(string.format('\ag[MoriAC Chat]\ax %s %s', sub == 'mute' and 'muted' or 'unmuted', name))
         return
     elseif sub == 'ghost' then
         local name = trim(tostring(arg1 or ''))
         local win
         if name ~= '' then win = findWindow(name) else win = cfg.windows[1] end
         if not win then
-            print('\ay[Triune Chat]\ax no window called ' .. name .. ' (/tacchat tabs lists them)')
+            print('\ay[MoriAC Chat]\ax no window called ' .. name .. ' (/tacchat tabs lists them)')
             return
         end
         win.ghost = not win.ghost
         markDirty()
-        print(string.format('\ag[Triune Chat]\ax %s: ghost %s (%s)', win.title, win.ghost and 'on' or 'off',
+        print(string.format('\ag[MoriAC Chat]\ax %s: ghost %s (%s)', win.title, win.ghost and 'on' or 'off',
             win.ghost and 'only the text shows until the mouse is over the window' or 'always drawn in full'))
         return
     elseif sub == 'timestamps' then
@@ -5309,10 +5312,10 @@ function chatCommand(sub, arg1, arg2)
         cfg.windows = defaultWindows()
         rt.tabs = {}
         markDirty()
-        print('\ag[Triune Chat]\ax layout reset to defaults')
+        print('\ag[MoriAC Chat]\ax layout reset to defaults')
         return
     elseif sub == 'tabs' then
-        print(string.format('\ag[Triune Chat]\ax config v%s from %s', tostring(cfg.version), tostring(rt.configPath)))
+        print(string.format('\ag[MoriAC Chat]\ax config v%s from %s', tostring(cfg.version), tostring(rt.configPath)))
         for _, win in ipairs(cfg.windows) do
             for ti, tab in ipairs(win.tabs) do
                 local chans = {}
@@ -5329,10 +5332,10 @@ function chatCommand(sub, arg1, arg2)
         local on = tostring(arg1 or ''):lower()
         if on == 'off' then
             rt.trace = nil
-            print('\ay[Triune Chat]\ax draw trace off')
+            print('\ay[MoriAC Chat]\ax draw trace off')
         else
             rt.trace = { steps = {}, n = 0, frame = 0 }
-            print('\ag[Triune Chat]\ax draw trace on; the last ' .. TRACE_MAX .. ' steps are written to logs/tac_chat_trace_<Name>.txt on a draw error (or /tacchat trace dump)')
+            print('\ag[MoriAC Chat]\ax draw trace on; the last ' .. TRACE_MAX .. ' steps are written to logs/tac_chat_trace_<Name>.txt on a draw error (or /tacchat trace dump)')
             if on == 'dump' then traceDump('manual dump') end
         end
         return
@@ -5345,38 +5348,38 @@ function chatCommand(sub, arg1, arg2)
             markDirty()
         end
         invalidateTabs()
-        print(string.format('\ag[Triune Chat]\ax safe mode %s', rt.safeMode and 'on (one pane, default font)' or 'off'))
+        print(string.format('\ag[MoriAC Chat]\ax safe mode %s', rt.safeMode and 'on (one pane, default font)' or 'off'))
         return
     elseif sub == 'unsplit' then
         for _, w in ipairs(cfg.windows) do unsplit(w) end
-        print('\ag[Triune Chat]\ax all windows unsplit')
+        print('\ag[MoriAC Chat]\ax all windows unsplit')
         return
     elseif sub == 'stats' then
         local s = rt.stats
-        print(string.format('\ag[Triune Chat]\ax %d lines (%d unclassified), peak %d/s, slowest drain %.1f ms, history callbacks %d%s',
+        print(string.format('\ag[MoriAC Chat]\ax %d lines (%d unclassified), peak %d/s, slowest drain %.1f ms, history callbacks %d%s',
             s.total, s.unknown, s.peak, s.drainMaxMs, s.cbCalls, s.appendErr and (', append error: ' .. s.appendErr) or ''))
-        print(string.format('\ag[Triune Chat]\ax last event %s | last tick %s | last draw %s | queued %d | ring %d | engine %s',
+        print(string.format('\ag[MoriAC Chat]\ax last event %s | last tick %s | last draw %s | queued %d | ring %d | engine %s',
             agoText(s.lastEventAt), agoText(s.lastTickAt), agoText(s.lastDrawAt), #rt.queue, ringCount(rt.ring), ctrl.running and 'running' or 'paused'))
-        print(string.format('\ag[Triune Chat]\ax per-frame delivery: %s (%d lines pumped in the draw)', rt.drawEvents and 'on' or 'off', rt.drawPumped))
-        if s.lastCb then print('\ag[Triune Chat]\ax last input callback: ' .. s.lastCb) end
-        if s.lastKeyCb then print('\ag[Triune Chat]\ax last key callback (Tab / Up / Down): ' .. s.lastKeyCb) end
-        print(string.format('\ag[Triune Chat]\ax input focus: SetKeyboardFocusHere %d times, focusRequested %s (key %s), refocus %d, last input %s | game line: model %s, closed by keypress %d times, links placed %d',
+        print(string.format('\ag[MoriAC Chat]\ax per-frame delivery: %s (%d lines pumped in the draw)', rt.drawEvents and 'on' or 'off', rt.drawPumped))
+        if s.lastCb then print('\ag[MoriAC Chat]\ax last input callback: ' .. s.lastCb) end
+        if s.lastKeyCb then print('\ag[MoriAC Chat]\ax last key callback (Tab / Up / Down): ' .. s.lastKeyCb) end
+        print(string.format('\ag[MoriAC Chat]\ax input focus: SetKeyboardFocusHere %d times, focusRequested %s (key %s), refocus %d, last input %s | game line: model %s, closed by keypress %d times, links placed %d',
             s.focusCalls or 0, tostring(rt.focusRequested), tostring(rt.focusKey), rt.inputRefocus, tostring(rt.lastInputKey),
             GL.gameFocus and 'open' or 'closed', s.keypresses or 0, s.gameLinks or 0))
-        if s.drawErr then print('\ay[Triune Chat]\ax last draw error: ' .. tostring(s.drawErr)) end
-        print(string.format('\ag[Triune Chat]\ax settings editor: %s, page %s, header clicks %d (last %s)',
+        if s.drawErr then print('\ay[MoriAC Chat]\ax last draw error: ' .. tostring(s.drawErr)) end
+        print(string.format('\ag[MoriAC Chat]\ax settings editor: %s, page %s, header clicks %d (last %s)',
             rt.editor and 'open' or 'closed', tostring(rt.editor and rt.editor.page), s.edClicks or 0, tostring(s.edLastClick)))
-        print(string.format('\ag[Triune Chat]\ax @Name completion: %s, %d names known, list drawn %d times, open now: %s%s',
+        print(string.format('\ag[MoriAC Chat]\ax @Name completion: %s, %d names known, list drawn %d times, open now: %s%s',
             cfg.mentionComplete and 'on' or 'off', rt.namesN, s.acDrawn or 0,
             rt.ac and (#rt.ac.matches .. ' match(es) for "@' .. rt.ac.prefix .. '"') or 'no',
             s.acErr and (', list error: ' .. s.acErr) or ''))
         if s.holes or s.drawErr then
-            print(string.format('\ay[Triune Chat]\ax queue repairs %d (%s) | last renderer error: %s', s.holes or 0, tostring(s.holeInfo), tostring(s.drawErr)))
+            print(string.format('\ay[MoriAC Chat]\ax queue repairs %d (%s) | last renderer error: %s', s.holes or 0, tostring(s.holeInfo), tostring(s.drawErr)))
         end
-        if s.ghost then print('\ag[Triune Chat]\ax ghost windows: ' .. s.ghost) end
+        if s.ghost then print('\ag[MoriAC Chat]\ax ghost windows: ' .. s.ghost) end
         return
     else
-        print('\ay[Triune Chat]\ax /tacchat [show|hide|toggle|focus|settings|clear|capture on|off|tab <name>|tell <name>|tabs|window new|close <name>|mute|unmute <name>|timestamps|stats|trace on|off|dump|safemode on|off|unsplit|reset]')
+        print('\ay[MoriAC Chat]\ax /tacchat [show|hide|toggle|focus|settings|clear|capture on|off|tab <name>|tell <name>|tabs|window new|close <name>|mute|unmute <name>|timestamps|stats|trace on|off|dump|safemode on|off|unsplit|reset]')
 
         return
     end
@@ -5420,20 +5423,20 @@ function plugin.onInit(coreApi)
     -- every new one. A re-init keeps the session's ring (and history state).
     if freshRing or not rt.hist then
         local n = H.load()
-        if n > 0 then print(string.format('\ag[Triune Chat]\ax restored %d tell / notification line%s from the last session.', n, n == 1 and '' or 's')) end
+        if n > 0 then print(string.format('\ag[MoriAC Chat]\ax restored %d tell / notification line%s from the last session.', n, n == 1 and '' or 's')) end
     end
     registerEvents()
     if cfg.capture and not openCapture() then cfg.capture = false end
     if cfg.lastDrawFailed then
         rt.safeMode = true
-        print('\ay[Triune Chat]\ax the last session ended with a draw error: starting in safe mode (one pane, default font). /tacchat safemode off to retry the saved layout.')
+        print('\ay[MoriAC Chat]\ax the last session ended with a draw error: starting in safe mode (one pane, default font). /tacchat safemode off to retry the saved layout.')
     end
     for _, cmd in ipairs({ '/tacchat' }) do
         if mq.unbind then pcall(mq.unbind, cmd) end
         local ok = pcall(mq.bind, cmd, chatCommand)
         if ok then table.insert(boundCommands, cmd) end
     end
-    print(string.format('\ag[Triune Chat]\ax v%s loaded. /tacchat or /ac chat toggles the chat windows.', plugin.version))
+    print(string.format('\ag[MoriAC Chat]\ax v%s loaded. /tacchat or /ac chat toggles the chat windows.', plugin.version))
 end
 
 function plugin.onDestroy()
@@ -5484,7 +5487,7 @@ local function pumpEvents()
     local ok, err = pcall(mq.doevents, 'TACChatAll')
     if not ok then
         rt.drawEvents = false
-        print('\ay[Triune Chat]\ax per-frame event delivery unavailable (' .. tostring(err) .. '); lines arrive on the core tick.')
+        print('\ay[MoriAC Chat]\ax per-frame event delivery unavailable (' .. tostring(err) .. '); lines arrive on the core tick.')
         return
     end
     if #rt.queue > before then rt.drawPumped = rt.drawPumped + (#rt.queue - before) end

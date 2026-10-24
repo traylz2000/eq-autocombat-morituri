@@ -1,8 +1,18 @@
-# Triune AutoCombat Change Log
+# Morituri Auto Combat Change Log
 
-> This is the **eq-autocombat-morituri** fork (Project Morituri). Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
+> **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
 ## 2026-10-24
+
+- **Renamed to Morituri Auto Combat (MoriAC). Start it with `/lua run moriac`** (user request). It's still `/ac` in game.
+  - `lua/triune.lua` is now `lua/moriac.lua` and `config/triune_data.lua` is now `config/moriac_data.lua`. `config/ingame.cfg` runs moriac, and `/ac restart` re-runs moriac.
+  - User-visible text says "Morituri Auto Combat" / "MoriAC": window titles, chat prefixes (`[MoriAC]`, `[MoriAC Chat]`, ...), tooltips and help. Only string literals were changed. Hidden ImGui window IDs (`###triune...`) are unchanged, so **window positions and layouts carry over**.
+  - Saved files are now `moriac_*`: `moriac_loadout_<server>_<char>.lua`, plus chat, chat history, DPS, map, buffbot, buttons and bank cache files, and `Logs/moriac_*.log`. **Nothing is lost on upgrade.** The first time a `moriac_*` file is needed and only the `triune_*` one exists, the old file is copied over (`runtime.migrateConfigFile`, also `core.migrateConfigFile` for plugins). The old file is left in place, and an old `triune_data.lua` is still found.
+  - `/moriacrun` is the start/pause keybind command. `/triunerun` still works, so existing hot buttons and binds keep working.
+  - The chat window still files `[Triune ...]` lines from boxes running an old build under the MoriAC tab.
+  - Version is now **0.9**, the fork's own pre-release line. The update checker watches `traylz2000/eq-autocombat-morituri` releases, not upstream Triune, so it will never suggest installing upstream over MoriAC.
+  - README rewritten at the top for MoriAC: four classes, install (upstream full zip only for navmeshes and game DB, then this repo's `lua/` and `config/`), upgrade notes, first run on the new sidebar UI with the Auto checkbox and Group + Pets.
+  - Tests: Suite M4 (script name, file names, copy-not-move migration that never overwrites, keybind alias, update repo).
 
 - **Action editors rebuilt: Spells, Clickies, Abilities, AAs, Disciplines (`lua/triune.lua`).** Phase P3. Each page is now a compact table with one line per spell, item or ability, plus a labelled **detail panel** under it for the selected line. This replaces the rows of 12-16 unlabelled widgets (`^ v G3 [RDY] Nec ... 1 Unl Boss Burn X`) that ran about 1100px wide and needed sideways scrolling.
   - **Per-spell Auto checkbox.** You can now stop a spell from being cast automatically without deleting it (user request). Before, the only way was dragging its % to 0, which nobody could find. The line and its settings are kept, the gem stays memorized so you can cast it yourself, and turning it back on restores its old threshold (kept in `pct_off`). Saved files stay compatible: Off still writes `pct = 0`, which the engine already treats as disabled, and lines switched off with the old slider come back at 100%.

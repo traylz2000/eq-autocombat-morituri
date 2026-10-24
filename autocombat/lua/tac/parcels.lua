@@ -28,7 +28,7 @@ local plugin = {
     id                 = 'parcels',
     name               = 'Parcel Helper',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Parcel delivery notifier (HUD badge) and one-click Collect All at parcel merchants.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
@@ -140,7 +140,7 @@ local function addLog(text, kind)
 end
 
 local function say(fmt, ...)
-    print(string.format('\ag[Triune Parcels]\ax ' .. fmt, ...))
+    print(string.format('\ag[MoriAC Parcels]\ax ' .. fmt, ...))
 end
 
 local function windowOpen(path)
@@ -680,7 +680,7 @@ local function drawSettingsBody()
 
     v = ImGui.Checkbox('Chat line when parcel status changes##parcelAnnounce', settings.announceArrivals == true)
     if v ~= (settings.announceArrivals == true) then settings.announceArrivals = v; core.saveLoadout(true) end
-    if ImGui.IsItemHovered() then core.setTooltip('The client already prints "You have received a new parcel delivery!"; this adds a Triune line with the count.') end
+    if ImGui.IsItemHovered() then core.setTooltip('The client already prints "You have received a new parcel delivery!"; this adds a MoriAC line with the count.') end
 end
 
 local function drawStatusLine(colors)
@@ -846,7 +846,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('parcels')
-    local open, draw = ImGui.Begin('Triune Parcels###TriuneParcels', ctrl.show_parcels, core.windowFlags and core.windowFlags('parcels', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC Parcels###TriuneParcels', ctrl.show_parcels, core.windowFlags and core.windowFlags('parcels', windowFlags) or windowFlags)
     if not open then
         ctrl.show_parcels = false
         state.autoOpened = false

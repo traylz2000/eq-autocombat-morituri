@@ -18,7 +18,7 @@ local plugin = {
     id                 = 'dps',
     name               = 'DPS Parser',
     version            = '4.3.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     uses               = { boxnet = 'group DPS meter fed by the other boxes (Group tab, compact window)' },
     description        = 'Live combat-log DPS parser with per-fight player / pet breakdowns, encounter history, and chat reports.',
     defaultEnabled     = true,
@@ -354,7 +354,8 @@ local function getConfigFilePath()
     local myName = 'Default'
     local ok, name = pcall(function() return mq.TLO.Me.CleanName() end)
     if ok and name and name ~= '' then myName = name end
-    cachedConfigPath = string.format('%s/triune_dps_%s.lua', mq.configDir or 'config', myName)
+    cachedConfigPath = string.format('%s/moriac_dps_%s.lua', mq.configDir or 'config', myName)
+    if core and core.migrateConfigFile then core.migrateConfigFile(cachedConfigPath) end
     return cachedConfigPath
 end
 
@@ -362,7 +363,7 @@ local function saveConfig()
     local path = getConfigFilePath()
     local file = io.open(path, "w")
     if not file then return end
-    file:write("-- Triune DPS Parser Config\nreturn {\n")
+    file:write("-- MoriAC DPS Parser Config\nreturn {\n")
     file:write(string.format("    compact = %s,\n", tostring(cfg.compact)))
     file:write(string.format("    combatTimeout = %.1f,\n", cfg.combatTimeout))
     file:write(string.format("    reportChannel = %q,\n", cfg.reportChannel))
@@ -896,7 +897,7 @@ local function reportGroupDPS(channelOverride)
     for _, r in ipairs(rows) do
         parts[#parts + 1] = string.format('%s %s (%d%%)', tostring(r.name), fmtNum(r.dps), math.floor((r.pct or 0) * 100 + 0.5))
     end
-    mq.cmd(string.format('/%s [Triune DPS] %s %s dps: %s', channel, summary.live and 'Group (live)' or 'Group (last fight)',
+    mq.cmd(string.format('/%s [MoriAC DPS] %s %s dps: %s', channel, summary.live and 'Group (live)' or 'Group (last fight)',
         fmtNum(summary.dps), table.concat(parts, ' | ')))
 end
 
@@ -1393,7 +1394,7 @@ local function reportDPS(channelOverride)
     
     local target = (rt.currentTargetName ~= '' and rt.currentTargetName ~= 'None') and rt.currentTargetName or 'Combat'
     
-    local msg = string.format("[Triune DPS] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
+    local msg = string.format("[MoriAC DPS] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
         target, dur, totalDps, tostring(rt.totalDamage))
         
     local totals = calculateCategoryTotals(rt.playerBreakdown, rt.petBreakdown)
@@ -1428,7 +1429,7 @@ local function reportHistoricalFight(h, channelOverride)
     local spPct = h.totalDmg > 0 and math.floor(((h.spellDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local dotPct = h.totalDmg > 0 and math.floor(((h.dotDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     
-    local msg = string.format("[Triune DPS Log] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
+    local msg = string.format("[MoriAC DPS Log] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
         h.targetName, h.duration, h.peakDps, tostring(h.totalDmg))
         
     msg = msg .. string.format(" | Types: Melee %d%%, Skill %d%%, Spell %d%%, DoT %d%%", mPct, skPct, spPct, dotPct)
@@ -1830,7 +1831,7 @@ local function drawMiniDpsGui()
     if core.preBeginWindow then core.preBeginWindow('dps_compact') end
     local flags = ImGuiWindowFlags.AlwaysAutoResize
     if core.windowFlags then flags = core.windowFlags('dps_compact', flags) end
-    local open, draw = ImGui.Begin("Triune DPS###TriuneDPSMiniWindow", ctrl.show_dps, flags)
+    local open, draw = ImGui.Begin("MoriAC DPS###TriuneDPSMiniWindow", ctrl.show_dps, flags)
     ctrl.show_dps = open
     if open and draw then
         if core.postBeginWindow then core.postBeginWindow('dps_compact') end
@@ -1941,7 +1942,7 @@ local function drawDpsGui()
     
     core.pushTheme()
     core.preBeginWindow('dps')
-    local open, draw = ImGui.Begin("Triune DPS Parser v" .. VERSION .. "###TriuneDPSWindow", ctrl.show_dps, core.windowFlags and core.windowFlags('dps', 0) or 0)
+    local open, draw = ImGui.Begin("MoriAC DPS Parser v" .. VERSION .. "###TriuneDPSWindow", ctrl.show_dps, core.windowFlags and core.windowFlags('dps', 0) or 0)
     ctrl.show_dps = open
     if not open then
         ctrl.show_dps = false
@@ -2349,11 +2350,11 @@ local function dpsCommandHandler(cmd, arg1, arg2)
             rt.guiOpen = false
             rt.inspectorOpen = false
             saveConfig()
-            print("\127300000[Triune DPS]\127777777 Window Closed.")
+            print("\127300000[MoriAC DPS]\127777777 Window Closed.")
         else
             ctrl.show_dps = true
             rt.guiOpen = true
-            print(string.format("\127300000[Triune DPS]\127777777 Window Opened."))
+            print(string.format("\127300000[MoriAC DPS]\127777777 Window Opened."))
         end
     elseif sub == 'show' or sub == 'open' then
         ctrl.show_dps = true
@@ -2363,20 +2364,20 @@ local function dpsCommandHandler(cmd, arg1, arg2)
         rt.guiOpen = false
         rt.inspectorOpen = false
         saveConfig()
-        print("\127300000[Triune DPS]\127777777 Window Closed.")
+        print("\127300000[MoriAC DPS]\127777777 Window Closed.")
     elseif sub == 'compact' or sub == 'mini' then
         cfg.compact = not cfg.compact
         saveConfig()
-        print(string.format("\127300000[Triune DPS]\127777777 Compact mode: %s.", cfg.compact and "ON" or "OFF"))
+        print(string.format("\127300000[MoriAC DPS]\127777777 Compact mode: %s.", cfg.compact and "ON" or "OFF"))
     elseif sub == 'reset' or sub == 'clear' then
         resetCurrentFight()
-        print("\127300000[Triune DPS]\127777777 Current fight statistics reset.")
+        print("\127300000[MoriAC DPS]\127777777 Current fight statistics reset.")
     elseif sub == 'pause' then
         cfg.paused = true
-        print("\127300000[Triune DPS]\127777777 DPS tracking paused.")
+        print("\127300000[MoriAC DPS]\127777777 DPS tracking paused.")
     elseif sub == 'resume' or sub == 'start' then
         cfg.paused = false
-        print("\127300000[Triune DPS]\127777777 DPS tracking resumed.")
+        print("\127300000[MoriAC DPS]\127777777 DPS tracking resumed.")
     elseif sub == 'report' then
         local channel = (arg1 and arg1 ~= '') and arg1:lower() or nil
         reportDPS(channel)
@@ -2385,7 +2386,7 @@ local function dpsCommandHandler(cmd, arg1, arg2)
         local channel = (arg1 and arg1 ~= '') and arg1:lower() or nil
         reportGroupDPS(channel)
     else
-        print("\127300000[Triune DPS]\127777777 Commands: /dps [show|hide|toggle|compact|reset|pause|resume|report <channel>|group <channel>]")
+        print("\127300000[MoriAC DPS]\127777777 Commands: /dps [show|hide|toggle|compact|reset|pause|resume|report <channel>|group <channel>]")
     end
     core.saveLoadout(true)
 end
@@ -2408,7 +2409,7 @@ function plugin.onInit(coreApi)
         local ok = pcall(mq.bind, cmd, dpsCommandHandler)
         if ok then table.insert(boundCommands, cmd) end
     end
-    print(string.format("\127300000[Triune DPS]\127777777 v%s loaded! Use /dps or /ac dps to toggle window.", VERSION))
+    print(string.format("\127300000[MoriAC DPS]\127777777 v%s loaded! Use /dps or /ac dps to toggle window.", VERSION))
 end
 
 function plugin.onDestroy()

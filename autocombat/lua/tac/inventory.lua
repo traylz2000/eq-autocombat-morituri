@@ -37,7 +37,7 @@ local plugin = {
     id                 = 'inventory',
     name               = 'Inventory & Bank Manager',
     version            = '2.1.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Inventory / bank / shared bank search, container visualizer, organization assistant with an offline bank cache, and every other box\'s inventory with item transfers between characters.',
     defaultEnabled     = true,
     tickInterval       = 0.05,
@@ -1016,7 +1016,9 @@ local function getBankCachePath()
     if not ok or not server or server == '' then server = 'DefaultServer' end
     if not ok2 or not charName or charName == '' then charName = 'DefaultChar' end
     local cfg = mq.configDir or '.'
-    return string.format('%s/triune_inv_bank_%s_%s.lua', cfg, server, charName)
+    local p = string.format('%s/moriac_inv_bank_%s_%s.lua', cfg, server, charName)
+    if core and core.migrateConfigFile then core.migrateConfigFile(p) end
+    return p
 end
 
 local inMemoryBankCache = nil
@@ -1041,7 +1043,7 @@ function scanner.saveBankCache(bankItems, bankContainers, force, sharedContainer
     if not f then return false end
     lastSavedBankSig = sig
 
-    f:write('-- Triune Inventory Bank Cache\n')
+    f:write('-- MoriAC Inventory Bank Cache\n')
     f:write(string.format('return {\n  syncTime = %q,\n  items = {\n', os.date('%Y-%m-%d %H:%M:%S')))
     for _, it in ipairs(bankItems) do
         local augStr = invLogic.formatAugs(it):gsub(', ', '|')
@@ -2913,7 +2915,7 @@ end
 
 local function chat(fmt, ...)
     if not cfg.announce then return end
-    print(string.format('\ag[Triune Inv]\ax ' .. fmt, ...))
+    print(string.format('\ag[MoriAC Inv]\ax ' .. fmt, ...))
 end
 
 -- Game reads the give workflow depends on, in one table so tests can drive a
@@ -3957,7 +3959,7 @@ local function DrawInventoryManagerUI()
     end
 
     core.preBeginWindow('inventory')
-    local open, draw = ImGui.Begin("Triune Inventory & Bank Manager###TriuneInventoryManager", ctrl.show_inv, core.windowFlags and core.windowFlags('inventory', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin("MoriAC Inventory & Bank Manager###TriuneInventoryManager", ctrl.show_inv, core.windowFlags and core.windowFlags('inventory', windowFlags) or windowFlags)
     if not open then
         ctrl.show_inv = false
         if core.preEndWindow then core.preEndWindow('inventory', false) end
@@ -4335,31 +4337,31 @@ function plugin.onCommand(cmd, args)
         local last = qty and (#args - 1) or #args
         local text = table.concat(args, ' ', 4, last)
         if to == '' or text == '' then
-            print('\ay[Triune Inv]\ax usage: /ac inv give <Name> <item name|id> [quantity]')
+            print('\ay[MoriAC Inv]\ax usage: /ac inv give <Name> <item name|id> [quantity]')
             return true
         end
         if (tonumber(state.lastScanTime) or 0) == 0 then scanner.scanAll() end
         local it, why = findMyItem(text)
         if not it then
-            print('\ar[Triune Inv]\ax ' .. tostring(why))
+            print('\ar[MoriAC Inv]\ax ' .. tostring(why))
             return true
         end
         local ok, err = requestGive(it, to, qty)
         if ok then
-            print(string.format('\ag[Triune Inv]\ax Giving %s to %s.', it.name, to))
+            print(string.format('\ag[MoriAC Inv]\ax Giving %s to %s.', it.name, to))
         else
-            print(string.format('\ar[Triune Inv]\ax Cannot give %s: %s', it.name, tostring(err)))
+            print(string.format('\ar[MoriAC Inv]\ax Cannot give %s: %s', it.name, tostring(err)))
         end
         return true
     elseif sub == 'find' then
         local text = table.concat(args, ' ', 3)
         if text == '' then
-            print('\ay[Triune Inv]\ax usage: /ac inv find <text>')
+            print('\ay[MoriAC Inv]\ax usage: /ac inv find <text>')
             return true
         end
         if (tonumber(state.lastScanTime) or 0) == 0 then scanner.scanAll() end
         local rows = invLogic.filterBoxItems(allBoxItems(), text, 'ALL', 'ALL')
-        print(string.format('\ag[Triune Inv]\ax %d match(es) for "%s" across %d box snapshot(s):', #rows, text, 1 + (function() local n = 0 for _, r in pairs(state.net.peers) do if r.items then n = n + 1 end end return n end)()))
+        print(string.format('\ag[MoriAC Inv]\ax %d match(es) for "%s" across %d box snapshot(s):', #rows, text, 1 + (function() local n = 0 for _, r in pairs(state.net.peers) do if r.items then n = n + 1 end end return n end)()))
         for i, it in ipairs(rows) do
             if i > 25 then print('  ...') break end
             print(string.format('  \ay%s\ax  %s  \at%s\ax%s', it.owner or '?', it.displayLocation or '', it.name or '?', it.stackable and (' x' .. tostring(it.count or 1)) or ''))
@@ -4368,12 +4370,12 @@ function plugin.onCommand(cmd, args)
     elseif sub == 'refresh' then
         local name = args[3]
         local n = name and (requestSnapshot(name, true) and 1 or 0) or requestAllSnapshots(true)
-        print(string.format('\ag[Triune Inv]\ax Asked %d box(es) for a fresh inventory snapshot.', n))
+        print(string.format('\ag[MoriAC Inv]\ax Asked %d box(es) for a fresh inventory snapshot.', n))
         return true
     end
     ctrl.show_inv = not ctrl.show_inv
     core.saveLoadout(true)
-    print(string.format('\ag[Triune]\ax Inventory & Bank Manager %s.', ctrl.show_inv and 'OPENED' or 'CLOSED'))
+    print(string.format('\ag[MoriAC]\ax Inventory & Bank Manager %s.', ctrl.show_inv and 'OPENED' or 'CLOSED'))
     return true
 end
 

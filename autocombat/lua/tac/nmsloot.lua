@@ -59,7 +59,7 @@ local plugin = {
     id                 = 'nmsloot',
     name               = 'NMS Loot',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'Personal loot (#nms) console: shows which box holds the active looter slot, moves it between boxes over the Box Network, lists and acts on the items offered to any box.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
@@ -83,7 +83,7 @@ local ctrl, ImGui, mq = nil, nil, nil  ---@type table, table, table
 -- ----------------------------------------------------------------------------
 -- Constants
 -- ----------------------------------------------------------------------------
-local TAG               = '[Triune NMS]'   -- our own chat prints (the server's prefixes are below)
+local TAG               = '[MoriAC NMS]'   -- our own chat prints (the server's prefixes are below)
 local NMS_PREFIXES      = { '[NMS Loot]', '[NMS]' }   -- every server reply starts with one of these (longest first)
 local HANDLE_MAX        = 32
 local LINK              = string.char(18)   -- \x12 wraps EQ links
@@ -1001,7 +1001,7 @@ local function drawSettingsBody()
     if rows ~= cfg.compactRows then cfg.compactRows = rows; core.saveLoadout(true) end
     v = ImGui.Checkbox('Announce looter changes in chat##nmsAnnounce', cfg.announce)
     if v ~= cfg.announce then cfg.announce = v; core.saveLoadout(true) end
-    v = ImGui.Checkbox('Ask the server who holds the slot when Triune loads##nmsInit', cfg.statusOnInit)
+    v = ImGui.Checkbox('Ask the server who holds the slot when MoriAC loads##nmsInit', cfg.statusOnInit)
     if v ~= cfg.statusOnInit then cfg.statusOnInit = v; core.saveLoadout(true) end
     if ImGui.IsItemHovered() then core.setTooltip('One #nms status right after the plugin starts, so the window is filled without a click.') end
     v = ImGui.Checkbox('Run #nms requests sent by other boxes##nmsAccept', cfg.acceptRemote)
@@ -1469,7 +1469,7 @@ local function drawCompactWindow()
             if handoff and handoff.setCurrentZone then
                 handoff.setCurrentZone()
             else
-                print('\ag[Triune NMS]\ax Enable the NMS Looter Handoff plugin to set the looting zone.')
+                print('\ag[MoriAC NMS]\ax Enable the NMS Looter Handoff plugin to set the looting zone.')
             end
         end
         if ImGui.IsItemHovered() then core.setTooltip('Set the active-looting zone to this character\'s current zone or DZ instance.') end
@@ -1502,7 +1502,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('nmsloot')
-    local open, draw = ImGui.Begin('Triune NMS Loot###TriuneNmsLoot', ctrl.show_nmsloot, core.windowFlags and core.windowFlags('nmsloot', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC NMS Loot###TriuneNmsLoot', ctrl.show_nmsloot, core.windowFlags and core.windowFlags('nmsloot', windowFlags) or windowFlags)
     if not open then
         ctrl.show_nmsloot = false
         if core.preEndWindow then core.preEndWindow('nmsloot', false) end

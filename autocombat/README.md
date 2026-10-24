@@ -1,21 +1,23 @@
-# Triune AutoCombat
+# Morituri Auto Combat (MoriAC)
 
-A combat bot and set of in-game tools for the **[Project Triune](https://nms.bestemu.com/)** EverQuest server, running on [MacroQuest](https://macroquest.org/).
+A combat bot and set of in-game tools for the **Project Morituri** EverQuest server, running on [MacroQuest](https://macroquest.org/).
 
-On Project Triune every character is three classes at once. Triune AutoCombat runs all three for you: it casts your spells, fires your AAs and discs, pulls mobs, controls your pets, keeps your boxes together, and sits to med when it is safe. Everything is set up from one in-game window - no macros to write.
+On Project Morituri every character is four classes at once. Morituri Auto Combat runs all four for you: it casts your spells, fires your AAs and discs, pulls mobs, controls your pets, keeps your boxes together, and sits to med when it is safe. Everything is set up from one in-game window, with no macros to write.
+
+MoriAC is a fork of [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) by gennro, rebuilt for Morituri's four-class characters and with a new in-game interface.
 
 ---
 
 ## Install
 
 1. Download the latest **RoF2** MacroQuest from [macroquest/macroquest/releases](https://github.com/macroquest/macroquest/releases) and extract it somewhere like `C:\MacroQuest`.
-2. Download Triune from [Triune AutoCombat releases](https://github.com/gennro/TriuneAutocombat/releases/latest):
-   - **`TriuneAutocombat-full.zip`** - first install. Has everything, including the MQ2Nav zone navmeshes.
-   - **`TriuneAutocombat-Update.zip`** - updating. Everything except the navmeshes (they rarely change).
-3. Extract the zip **into the root of your MacroQuest folder**. It merges `lua/`, `config/` and `resources/` into place. Overwrite if asked - your own settings and loadouts are never touched.
-4. Start `MacroQuest.exe`, then log into Project Triune.
+2. **Zone navmeshes and the game database** come from the upstream [Triune AutoCombat full release](https://github.com/gennro/TriuneAutocombat/releases/latest) (`TriuneAutocombat-full.zip`). Extract it into the root of your MacroQuest folder once.
+3. Copy this repo's `autocombat/lua` and `autocombat/config` folders over your MacroQuest folder. Overwrite if asked. Your own settings are never touched.
+4. Start `MacroQuest.exe`, then log into Project Morituri.
 
-Triune opens by itself when you log in. If you close it, type `/ac` or `/lua run triune`.
+MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac`.
+
+**Coming from Triune or the earlier Morituri port?** Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
 
 > Windows users: add your MacroQuest folder as an antivirus exception before running it.
 
@@ -23,20 +25,20 @@ Triune opens by itself when you log in. If you close it, type `/ac` or `/lua run
 
 ## First run
 
-1. **Check your classes.** The main window shows the three classes it detected. Click **Re-detect** if they are wrong.
-2. **Set up what to cast.** Go through the tabs: **Spell Gems** (spells), **Abilities** (kick, bash, backstab...), **AAs**, **Disciplines** and **Clickies**. Each entry gets a simple rule for when to fire it, such as *Target HP < 90%*, *My HP < 40%*, *Missing Buff* or *Always*. **Import Bar** fills the spell list from whatever you have memorized.
-3. In **Spell Gems**, mark emergency heals, lifetaps, or other spells **High Priority** to check them after Abilities and Disciplines but before Clickies. Other spells remain after Clickies; the overall action-category order stays fixed.
-4. **Pick a mode** on the **Control** tab and click **Start** (or type `/ac run`).
-
-Your setup is saved automatically and reloads next time.
+1. **Check your classes.** The window title and **Setup -> Settings** show the four classes it detected. Click **Re-detect** if they are wrong.
+2. **Set up what to cast.** Work through the **Actions** pages in the sidebar: **Spells**, **Abilities** (kick, bash, backstab...), **AAs**, **Disciplines** and **Clickies**. Click a line to edit it in the panel underneath: who it targets and when it fires, such as *HP <= 70%*, *missing buff* or *in combat*. **Import Bar** fills the spell list from whatever you have memorized.
+3. The **Auto** checkbox on each spell line turns auto-casting on or off. An unticked spell is never cast automatically but stays memorized, so you can still cast it yourself.
+4. To heal everyone, players and pets alike, with one line, use the **Group + Pets** target. The group targets (*Me, then Group*, *Group, then Me*, *Whole Group*) heal players only.
+5. Mark emergency heals or lifetaps **High priority** so they're checked after Abilities and Disciplines but before Clickies.
+6. **Pick a mode** in the command bar at the top and click **Start** (or type `/ac run`).
 
 ---
 
 ## Combat modes
 
-| Mode | Use it when | What Triune does |
+| Mode | Use it when | What MoriAC does |
 |---|---|---|
-| **Manual** | You want to drive | You move and pick targets. Triune attacks, casts, heals and uses your abilities. |
+| **Manual** | You want to drive | You move and pick targets. MoriAC attacks, casts, heals and uses your abilities. |
 | **Puller - Camp** | You are the puller | Runs out, tags a mob, brings it back to camp and fights it there. |
 | **Puller - Hunt** | Solo roaming | Wanders the zone and kills mobs where they stand. |
 | **Assist - Chase** | Boxed melee | Follows the Main Assist and attacks their target. |
@@ -83,7 +85,7 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
 | GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
 | Floating damage | Settings -> Plugins | Big animated numbers for crits. |
-| Update Checker | `/ac update` | Tells you when a newer Triune release is out. Nothing is downloaded. |
+| Update Checker | `/ac update` | Tells you when a newer MoriAC release is out. Nothing is downloaded. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
 Each of these is a plugin in `lua/tac/`. Turn them on or off under **Settings -> Plugins**.
@@ -107,19 +109,19 @@ Type `/ac help` in game for the full list.
 | `/ac wp add` / `/ac wp clear` | Add a waypoint here / clear the route |
 | `/ac pet attack\|back\|hold on` | Pet commands (any `#petcmd` verb) |
 | `/ac net <all\|zone\|group\|Name> <command>` | Run a command on the boxes: an `/ac` command (`/ac net all burn on`) or any slash command as typed (`/ac net group /ac manual`, `/ac net all /camp`) |
-| `/ac scale 1.25` | Make every Triune window bigger (or smaller) |
+| `/ac scale 1.25` | Make every MoriAC window bigger (or smaller) |
 | `/ac status` | Print what the bot is doing |
 | `/ac restart` | Reload the whole script |
-| `/triunerun` | Start/pause - bind this to a key |
+| `/moriacrun` | Start/pause - bind this to a key (`/triunerun` still works) |
 
 ---
 
 ## When something goes wrong
 
 - **Not moving or pulling?** Look at the Status tab. It shows whether MQ2Nav and MQ2MoveUtils are loaded and whether the zone has a navmesh, with buttons to load or reload them.
-- **Stuck on terrain?** Triune remembers where it got stuck and routes around it next time. Clear those spots under **Settings -> Navigation**.
-- **Need to report a bug?** Turn on **Log To File** (`/ac log on`) and, when it happens, run `/ac dump`. Attach the files from your MacroQuest `Logs/` folder (`triune_<server>_<char>.log` and `triune_dump_...log`). `/ac debug` prints extra detail to chat.
-- **Game feels slow with Lua scripts?** Triune sets MQ2Lua's `turboNum` to 10000 on first start (the default of 500 makes every Lua script crawl). If you set it higher yourself, Triune leaves it alone.
+- **Stuck on terrain?** MoriAC remembers where it got stuck and routes around it next time. Clear those spots under **Settings -> Navigation**.
+- **Need to report a bug?** Turn on **Log To File** (`/ac log on`) and, when it happens, run `/ac dump`. Attach the files from your MacroQuest `Logs/` folder (`moriac_<server>_<char>.log` and `moriac_dump_...log`). `/ac debug` prints extra detail to chat.
+- **Game feels slow with Lua scripts?** MoriAC sets MQ2Lua's `turboNum` to 10000 on first start (the default of 500 makes every Lua script crawl). If you set it higher yourself, Triune leaves it alone.
 - **A plugin broke?** It is isolated - it shows an error under Settings -> Plugins and the rest keeps running. Fix or disable it there.
 
 ---
@@ -130,10 +132,11 @@ All paths are inside your MacroQuest folder.
 
 | File | What it holds |
 |---|---|
-| `config/triune_loadout_<server>_<char>.lua` | Each character's settings and loadouts. Never overwritten by updates. |
-| `config/triune_chat_<Name>.lua` | Chat Windows layout and colours, per character. |
-| `Logs/triune_*.log` | Diagnostic logs (when Log To File is on). |
-| `lua/triune.lua` | The bot itself. |
+| `config/moriac_loadout_<server>_<char>.lua` | Each character's settings and loadouts. Never overwritten by updates. |
+| `config/moriac_chat_<Name>.lua` | Chat Windows layout and colours, per character. |
+| `Logs/moriac_*.log` | Diagnostic logs (when Log To File is on). |
+| `lua/moriac.lua` | The bot itself. |
+| `config/moriac_data.lua` | Spell, discipline and AA data for Project Morituri. |
 | `lua/tac/*.lua` | The plugins listed above. Drop your own `.lua` plugin here and it loads. |
 | `resources/gamedb/` | The offline game database (in both release zips). |
 | `resources/MQ2Nav/` | Zone navmeshes (full release only). |
@@ -148,16 +151,15 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 
 ## Links
 
-- [Triune AutoCombat releases](https://github.com/gennro/TriuneAutocombat/releases/latest)
+- [MoriAC on GitHub](https://github.com/traylz2000/eq-autocombat-morituri)
+- [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) (upstream; navmeshes and game database)
 - [MacroQuest releases (RoF2)](https://github.com/macroquest/macroquest/releases)
-- [Project Triune](https://nms.bestemu.com/)
-- [Release notes](RELEASES.md) - short summary per release
 - [Change log](CHANGELOG.md) - every change in detail
 
 ---
 
 ## Version
 
-Current version: **3.2**
+Current version: **0.9**
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.

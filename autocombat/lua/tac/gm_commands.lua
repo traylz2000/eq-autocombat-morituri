@@ -28,7 +28,7 @@ local plugin = {
     id                 = 'gm_commands',
     name               = 'GM Commands',
     version            = '1.0.0',
-    author             = 'Triune',
+    author             = 'MoriAC',
     description        = 'EQEmu GM (#) command reference and runner: search every command, fill in its arguments, run it, keep favourites. Off by default; needs GM status on the account.',
     defaultEnabled     = false,
     tickInterval       = 0.5,
@@ -821,7 +821,7 @@ local function refresh()
 end
 
 local function say(fmt, ...)
-    print(string.format('\ag[Triune GM]\ax ' .. fmt, ...))
+    print(string.format('\ag[MoriAC GM]\ax ' .. fmt, ...))
 end
 
 local function nowSec() return os.clock() end
@@ -1491,7 +1491,7 @@ local function drawWindow()
         windowFlags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) ---@diagnostic disable-line: deprecated
     end
     core.preBeginWindow('gm_commands')
-    local open, draw = ImGui.Begin('Triune GM Commands###TriuneGMCommands', ctrl.show_gm_commands, core.windowFlags and core.windowFlags('gm_commands', windowFlags) or windowFlags)
+    local open, draw = ImGui.Begin('MoriAC GM Commands###TriuneGMCommands', ctrl.show_gm_commands, core.windowFlags and core.windowFlags('gm_commands', windowFlags) or windowFlags)
     if not open then
         ctrl.show_gm_commands = false
         if core.preEndWindow then core.preEndWindow('gm_commands', false) end
