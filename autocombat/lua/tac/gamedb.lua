@@ -3557,7 +3557,7 @@ end
 local function minInput(id, width, value, tooltip)
     ImGui.SetNextItemWidth(core.px(width))
     local v, changed = ImGui.InputInt(id, value, 0, 0)
-    if ImGui.IsItemHovered() then ImGui.SetTooltip(tooltip) end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', tostring(tooltip)) end
     if changed then return math.max(0, v), true end
     return value, false
 end
