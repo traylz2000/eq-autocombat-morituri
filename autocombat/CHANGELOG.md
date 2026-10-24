@@ -1,5 +1,22 @@
 # Triune AutoCombat Change Log
 
+> This is the **eq-autocombat-morituri** fork (Project Morituri). Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
+
+## 2026-10-24
+
+- **Morituri port onto upstream v3.2 (`lua/triune.lua`, `lua/tac/boxnet.lua`, `lua/tac/spellbook.lua`, `lua/tac/hud_group.lua`, `config/triune_data.lua`).** Project Morituri characters are a 4-class gestalt, not Triune's 3-class trio. This re-applies the Morituri port of v3.1 on top of v3.2.
+  - New `CLASS_SLOTS = 4` constant, exposed to plugins as `core.CLASS_SLOTS`. Every class-slot loop (pet slots, class picker, status class badges, window title) uses it instead of a literal.
+  - 4th class slot colour (Amethyst Violet). Default `DATA.era_expansion` is 8, and the Morituri `triune_data.lua` replaces the Triune one.
+  - `runtime.trioHasPetClass` is renamed to `runtime.quartetHasPetClass`. Labels now say "Quartet" or "Classes" instead of "Trio", including plugin labels the original Morituri port missed. The Box Network classes column is wider so four abbreviations fit.
+  - Tests: the suite is repointed at `autocombat/`, and new Suite M1 guards the port (no literal 3-slot loops, 4th pet slot, era 8).
+
+### In-game checklist
+- [ ] Window title shows all four classes.
+- [ ] Settings -> Character Classes shows four class pickers; Re-detect fills all four.
+- [ ] Pets tab lists a slot per pet class, including a 4th.
+
+---
+
 ## 2026-10-11
 
 - **Canonical Version Bump to 3.2 (`TAC/lua/triune.lua`, `README.md`, `TAC/lua/tac/hud_unitframes.lua`, `tests/test_pure_logic.lua`, `.agents/AGENTS.md`, `RELEASES.md`).** Release of the code-review fixes below plus the new GM Commands plugin. Bumped the version across the main script, the README, the unit-frame window title fallbacks, the test suites and the AGENTS.md examples; `RELEASES.md` has the `## 3.2` summary the release workflow (which now requires it) turns into the GitHub release page. Tag the release as `v3.2`.

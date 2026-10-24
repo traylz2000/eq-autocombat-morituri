@@ -70,9 +70,12 @@ local MQSHORT = {
     BERSERKER = 'Ber', BER = 'Ber', BERSERKERS = 'Ber',
 }
 
--- the character's gestalt trio (editable). Declared here, before classColor,
+-- the character's gestalt classes (editable). Declared here, before classColor,
 -- so slot colors below can be looked up by position in this list.
 local myClasses         = {}
+-- Class slots per character. Project Morituri characters are a 4-class
+-- gestalt (quartet); upstream Triune was 3. Loop over this, never a literal.
+local CLASS_SLOTS       = 4
 
 -- Set by the "Re-detect" button (drawClassPicker runs inside the ImGui render
 -- callback, a non-yieldable thread) and drained in the main loop below. Do
@@ -95,7 +98,7 @@ local ERR               = { 0.95, 0.35, 0.35, 1 }
 -- ============================================================================
 -- Data loading
 -- ============================================================================
-local DATA              = { era_expansion = 5, spells = {}, discs = {}, aas = {} }
+local DATA              = { era_expansion = 8, spells = {}, discs = {}, aas = {} }
 local DATA_OK           = false
 do
     local paths = { mq.configDir .. '/triune_data.lua' }
@@ -780,7 +783,7 @@ local stuckState = {
     cannotSeeAttempts = 0
 }
 
-function runtime.trioHasPetClass()
+function runtime.quartetHasPetClass()
     for _, c in ipairs(myClasses) do if petState.PET_CLASSES[c] then return true end end
     return false
 end
@@ -824,6 +827,7 @@ local function classColor(abbr)
         { 0.30, 0.70, 1.00 }, -- slot 1: Arcane Blue
         { 1.00, 0.55, 0.30 }, -- slot 2: Ember Gold
         { 0.37, 0.88, 0.64 }, -- slot 3: Jade Green
+        { 0.80, 0.45, 0.95 }, -- slot 4: Amethyst Violet
     }
     for i, c in ipairs(myClasses) do
         if c == abbr then
@@ -1328,7 +1332,7 @@ local function isSpawnAlive(id)
 end
 
 -- ============================================================================
--- Multi-pet tracking (this server lets each pet class of the trio keep its own
+-- Multi-pet tracking (this server lets each pet class of the quartet keep its own
 -- pet, so up to three at once). The single source of truth is
 -- petState.myPets[cls] = spawnId with two invariants that every writer below
 -- keeps: an ID is tracked under at most one class, and every tracked ID is a
@@ -1452,10 +1456,10 @@ local function prunePetTracking(throttled)
             end
         end
     end
-    local inTrio = {}
-    for _, c in ipairs(myClasses) do inTrio[c] = true end
-    for c in pairs(petState.myPets) do -- classes that left the trio
-        if not inTrio[c] then petState.myPets[c] = nil; changed = true end
+    local inSet = {}
+    for _, c in ipairs(myClasses) do inSet[c] = true end
+    for c in pairs(petState.myPets) do -- classes that left the quartet
+        if not inSet[c] then petState.myPets[c] = nil; changed = true end
     end
     if changed then petState.petsCache = nil end
 end
@@ -1486,7 +1490,7 @@ local function trackPet(cls, id, learnName)
     end
 end
 
--- Collects and returns all living spawn IDs belonging to the player (multi-pet support for trio classes).
+-- Collects and returns all living spawn IDs belonging to the player (multi-pet support for quartet classes).
 -- Cached for a fraction of a second because the HUDs and the gem evaluator call it many times per tick.
 local function getAllMyPets()
     local now = os.clock()
@@ -1552,7 +1556,7 @@ local function getAllMyPets()
     return pets
 end
 
--- Returns true if the player currently has an active living pet (or any live trio pet in petState.myPets)
+-- Returns true if the player currently has an active living pet (or any live quartet pet in petState.myPets)
 local function hasActivePet()
     local pets = getAllMyPets()
     return #pets > 0
@@ -1582,7 +1586,7 @@ local function sendPetCmd(verb, scope)
     print(string.format('\ag[Triune Pet]\ax Issued: \at%s\ax', fullCmd))
 end
 
--- Best guess at which trio class a pet spawn belongs to: a name one of our
+-- Best guess at which quartet class a pet spawn belongs to: a name one of our
 -- classes learned from its own summon wins, then the pet's race / name archetype.
 function runtime.detectPetClassFromSpawn(s)
     if not s or not s() then return nil end
@@ -1685,7 +1689,7 @@ local function reconcilePets(quiet)
     end
 end
 
--- One entry per trio slot ({ slotNum, cls, scope, isPetCls, petId }) plus the
+-- One entry per quartet slot ({ slotNum, cls, scope, isPetCls, petId }) plus the
 -- IDs of any living pet of ours that no slot owns (swarm pets, familiars).
 -- A pet never appears in two slots: IDs and names are deduplicated.
 local function getMultiPetList()
@@ -1698,7 +1702,7 @@ local function getMultiPetList()
     local mePetId = 0
     pcall(function() mePetId = mq.TLO.Me.Pet.ID() or 0 end)
 
-    for i = 1, 3 do
+    for i = 1, CLASS_SLOTS do
         local cls = myClasses[i]
         if cls then
             local isPetCls = petState.PET_CLASSES[cls] == true
@@ -4836,12 +4840,12 @@ function runtime.actionClassInfo(name)
     return (myClasses and myClasses[1]) or 'War'
 end
 
--- Retrieves all combat abilities and skills for the character's Gestalt Trio classes
+-- Retrieves all combat abilities and skills for the character's Gestalt Quartet classes
 local function getClientAbilities()
     local clientList = {}
     local seen = {}
 
-    -- 1. Populate abilities belonging strictly to the character's Gestalt Trio classes
+    -- 1. Populate abilities belonging strictly to the character's Gestalt Quartet classes
     for _, cls in ipairs(myClasses or {}) do
         local list = CLASS_ACTIONS[cls]
         if list then
@@ -7137,6 +7141,7 @@ function runtime.initPluginManager()
             getDiscCooldownAndDuration = getDiscCooldownAndDuration,
             getNumGems            = getNumGems,
             classColor            = classColor,
+            CLASS_SLOTS           = CLASS_SLOTS,
             cleanSpellName        = cleanSpellName,
             normalizeSpellName    = normalizeSpellName,
             requestClassRedetect  = function() reDetectRequested = true end,
@@ -8878,7 +8883,7 @@ function UI.drawClassPicker()
         'Wiz', 'Mag', 'Enc', 'Bst', 'Ber' }
     if ImGui.CollapsingHeader('Character Classes & Loadout', ImGuiTreeNodeFlags.DefaultOpen) then
         ImGui.TextDisabled('Auto-detected from Inventory Window on login; adjust manually if needed:')
-        for i = 1, 3 do
+        for i = 1, CLASS_SLOTS do
             ImGui.SetNextItemWidth(UI.px(95))
             local currentVal = myClasses[i]
             local currentIdx = 1
@@ -8895,11 +8900,11 @@ function UI.drawClassPicker()
                 -- Rebuild without holes: every consumer walks myClasses with
                 -- ipairs, so a nil in slot 1 or 2 silently hid the later classes.
                 local picked = {}
-                for j = 1, 3 do
+                for j = 1, CLASS_SLOTS do
                     local v = (j == i) and (newIdx ~= 1 and CLASS_PICKER_OPTIONS[newIdx] or nil) or myClasses[j]
                     if v then picked[#picked + 1] = v end
                 end
-                for j = 1, 3 do myClasses[j] = picked[j] end
+                for j = 1, CLASS_SLOTS do myClasses[j] = picked[j] end
                 runtime.saveLoadout()
             end
             ImGui.SameLine()
@@ -8977,7 +8982,7 @@ UI.HELP_TARGETS = {
         { opt = 'F: Me, then Group',  color = GOOD, desc = 'Checks you first, then present, living group members in range. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
         { opt = 'F: Group, then Me',  color = GOOD, desc = 'Checks present, living group members in range first, then you. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
         { opt = 'F: Whole Group',     color = GOOD, desc = 'Targets your character to cast group-wide spells (group heals, group buffs, group auras).' },
-        { opt = 'F: Pet',             color = GOOD, desc = 'Targets your summoned pet. On multi-class trio characters with multiple pets, prioritizes the pet class matching the spell, lowest HP pet, or pet missing the buff.' },
+        { opt = 'F: Pet',             color = GOOD, desc = 'Targets your summoned pet. On multi-class quartet characters with multiple pets, prioritizes the pet class matching the spell, lowest HP pet, or pet missing the buff.' },
 }
 UI.HELP_CONDITIONS = {
         { when = 'always',               desc = 'Casts whenever the spell gem or ability is ready and off cooldown (respects mana and reagent requirements).' },
@@ -9253,7 +9258,7 @@ function UI.drawGemList(gemsTable, idPrefix, isActiveSet, allowBurn)
                 end
                 ImGui.SameLine()
 
-                -- class combo (none + trio)
+                -- class combo (none + quartet)
                 local classOpts = { '--' }
                 for _, c in ipairs(myClasses) do classOpts[#classOpts + 1] = c end
                 local curCi = cls and idxOf(classOpts, cls) or 1
@@ -11278,8 +11283,8 @@ function UI.drawStatusTab()
     end
 
 
-    -- 3. Player, Gestalt Trio & Pet Vitals Card
-    if UI.drawCollapsingStatusHeader('vitals', 'Player, Gestalt Trio & Pet Vitals', 'statusVitals') then
+    -- 3. Player, Gestalt Quartet & Pet Vitals Card
+    if UI.drawCollapsingStatusHeader('vitals', 'Player, Gestalt Quartet & Pet Vitals', 'statusVitals') then
         local myHpPct, myCurHp, myMaxHp, myManaPct, myCurMana, myMaxMana, myEndPct, myCurEnd, myMaxEnd
         local isDuck, isSit, isFeign, isLev
         pcall(function()
@@ -11320,9 +11325,9 @@ function UI.drawStatusTab()
             UI.drawStatusProgressBar((myEndPct or 0) / 100.0, -1, UI.px(14), endStr, 0.95, 0.60, 0.25, 1.0)
         end
 
-        -- Status flags & Trio class badges
-        accent(GOLD, 'Gestalt Trio:')
-        for i = 1, 3 do
+        -- Status flags & Quartet class badges
+        accent(GOLD, 'Gestalt Quartet:')
+        for i = 1, CLASS_SLOTS do
             local cls = myClasses[i]
             if cls and cls ~= '' and cls ~= '-- None --' then
                 ImGui.SameLine()
@@ -11338,7 +11343,7 @@ function UI.drawStatusTab()
         ImGui.SameLine(); ImGui.TextDisabled(string.format('Feigning: %s', isFeign and 'Yes' or 'No'))
         ImGui.SameLine(); ImGui.TextDisabled(string.format('Lev: %s', isLev and 'Yes' or 'No'))
 
-        -- Active Pet Vitals (support all pets across the trio)
+        -- Active Pet Vitals (support all pets across the quartet)
         local petSlots, extraPets = getMultiPetList()
         local activePets = {}
         local seenPetIds = {}
@@ -13262,8 +13267,8 @@ function UI.drawPetControlTab()
 
     ImGui.Separator()
 
-    -- 2. Trio Pet Telemetry & Individual Cards
-    accent(GOLD, 'Active Trio Pet Telemetry')
+    -- 2. Quartet Pet Telemetry & Individual Cards
+    accent(GOLD, 'Active Quartet Pet Telemetry')
     for _, slot in ipairs(petSlots) do
         local slotHeader = string.format('Slot %d: [%s] ', slot.slotNum, slot.cls)
         local info = getPetSpawnInfo(slot.petId)
@@ -13485,7 +13490,7 @@ function UI.drawPetControlTab()
             accent(ARC, 'Identity & Position:')
             ImGui.Text(string.format('Clean Name: %s', pinfo.cleanName))
             ImGui.Text(string.format('Full Name: %s', pinfo.name))
-            ImGui.Text(string.format('Trio Class: %s (Scope: %s)', slot.cls, slot.scope or 'all'))
+            ImGui.Text(string.format('Class: %s (Scope: %s)', slot.cls, slot.scope or 'all'))
             ImGui.Text(string.format('Race / Model: %s', pinfo.race))
             ImGui.Text(string.format('Spawn Class: %s', pinfo.class))
             ImGui.Text(string.format('Level: %d', pinfo.level))
@@ -14924,8 +14929,8 @@ function UI.drawSettingsTab()
         end
     end
 
-    -- 6. Pet Management & Discipline (conditionally shown if trio has pet class or active pet)
-    if runtime.trioHasPetClass() or hasActivePet() then
+    -- 6. Pet Management & Discipline (conditionally shown if quartet has pet class or active pet)
+    if runtime.quartetHasPetClass() or hasActivePet() then
         if ImGui.CollapsingHeader('Pet Management & Discipline', ImGuiTreeNodeFlags.DefaultOpen) then
             ImGui.SetNextItemWidth(UI.px(180))
             local petAssistVal = ImGui.SliderInt('Pet Assist At %##pa', ctrl.pet_assist_at or 100, 1, 100, '%d%%')
@@ -15691,7 +15696,7 @@ function UI.drawFullGui()
     local winFlags = ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0
     local show
     local clsList = {}
-    for i = 1, 3 do
+    for i = 1, CLASS_SLOTS do
         local c = myClasses and myClasses[i]
         if c and c ~= '' and c ~= '-- None --' then
             table.insert(clsList, c)
@@ -17585,7 +17590,7 @@ local function hasAffliction(targetId, kind)
     local cleanName = ''
     pcall(function() cleanName = s.CleanName() or '' end)
 
-    -- 2a. NetBots check (trio / box group members sharing debuff counters)
+    -- 2a. NetBots check (quartet / box group members sharing debuff counters)
     if cleanName ~= '' then
         local nbCnt = 0
         pcall(function()
@@ -24252,7 +24257,7 @@ local function combatTick()
     end
 
     -- Pet classes on this server can have multiple simultaneous pets (one per
-    -- pet class in the trio) -- the standard single-pet "/pet attack" only ever
+    -- pet class in the quartet) -- the standard single-pet "/pet attack" only ever
     -- addresses one of them. This server's own multi-pet extension command
     -- handles all of them at once; fire it once per new target, not every tick.
     -- "#petcmd ..." has no leading slash, so mq.cmd() can't parse it directly
@@ -24262,7 +24267,7 @@ local function combatTick()
     -- Also skip while casting -- the game rejects any command mid-cast ("You
     -- can't use that command while casting"); leaving lastPetCmdTargetId
     -- unset lets it retry on a later tick once the cast finishes. And skip
-    -- entirely for a trio with no pet class at all (e.g. War/Pal/Mnk) -- there's
+    -- entirely for a quartet with no pet class at all (e.g. War/Pal/Mnk/Rog) -- there's
     -- nothing to send, and it was spamming the /say line for no reason.
     --
     -- A manually-clicked target reaches haveNPC+engage on a clean, isolated
@@ -24902,7 +24907,7 @@ local function triuneCommand(...)
             for _, hl in ipairs(runtime.pluginManager.helpLines()) do print(hl) end
         end
         print('  \ag/ac pet <verb> [scope]\ax - Dispatch server #petcmd (attack, back, follow, hold on, taunt off, etc.)')
-        print('  \ag/ac pet status\ax - Print active pet status for all trio classes')
+        print('  \ag/ac pet status\ax - Print active pet status for all quartet classes')
         print('  \ag/ac petscan\ax - Re-scan zone for active pets belonging to player')
         print('  \ag/ac pethold [on|off]\ax - Toggle automatic out-of-combat Pet Hold')
         print('  \ag/ac petassist [1-100]\ax - Set mob HP % threshold for sending pets to attack')

@@ -737,7 +737,7 @@ function plugin.onDrawUI()
                     ImGui.SameLine()
                     accent(GOLD, '[Box]')
                     if ImGui.IsItemHovered() then
-                        core.setTooltip('%s', string.format('One of your boxes (Box Network, not in this group)\nTrio: %s\nMode: %s (%s)',
+                        core.setTooltip('%s', string.format('One of your boxes (Box Network, not in this group)\nClasses: %s\nMode: %s (%s)',
                             mem.cls or '?', tostring(mem.boxMode or '?'), mem.boxRunning and 'running' or 'paused'))
                     end
                 end

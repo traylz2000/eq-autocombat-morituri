@@ -1381,7 +1381,7 @@ local function drawPeerTable(GOOD, WARN, ERR, MUTED, ARC)
     local tableFlags = ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingFixedFit + ImGuiTableFlags.Resizable + ImGuiTableFlags.ScrollY
     if not ImGui.BeginTable('BoxNetPeers', 12, tableFlags, ImVec2(0, 200)) then return end
     ImGui.TableSetupColumn('Name', ImGuiTableColumnFlags.WidthFixed, core.px(110))
-    ImGui.TableSetupColumn('Trio', ImGuiTableColumnFlags.WidthFixed, core.px(90))
+    ImGui.TableSetupColumn('Classes', ImGuiTableColumnFlags.WidthFixed, core.px(120))
     ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthFixed, core.px(80))
     ImGui.TableSetupColumn('Mode', ImGuiTableColumnFlags.WidthFixed, core.px(110))
     ImGui.TableSetupColumn('State', ImGuiTableColumnFlags.WidthFixed, core.px(70))

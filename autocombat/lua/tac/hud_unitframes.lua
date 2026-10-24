@@ -5,7 +5,7 @@
 -- An ultra-compact, fully responsive popout window that replaces default EQ
 -- target, player, and pet windows. Features real-time Target + ToT with aggro
 -- warnings, target buffs/debuffs with timers, player vitals (HP, Mana, End,
--- XP, AAXP), and multi-pet HP bars for the Gestalt Trio.
+-- XP, AAXP), and multi-pet HP bars for the Gestalt Quartet.
 --
 -- Vitals are snapshotted at most every 50ms into a cache shared by the fiber
 -- (main loop) and the render pass; the render pass refreshes when the main

@@ -907,7 +907,7 @@ local function drawWindow()
     end
     core.postBeginWindow('spellbook')
 
-    ImGui.TextColored(0.4, 0.8, 1.0, 1.0, "ACTIVE GESTALT TRIO:")
+    ImGui.TextColored(0.4, 0.8, 1.0, 1.0, "ACTIVE GESTALT CLASSES:")
     ImGui.SameLine()
 
     local tabs = state.casterClasses

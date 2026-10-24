@@ -48,7 +48,7 @@ local snap = { slots = {}, slotCount = 0, activeCount = 0, currentTargetId = 0 }
 -- slotStatic[slot] = { id = <spawn id>, name, level, class, con, targetType, spawnType }
 local slotStatic = {}
 
--- Set of pet spawn ids (own, group and Trio extra pets) from
+-- Set of pet spawn ids (own, group and quartet extra pets) from
 -- core.getMultiPetList(), built once per refresh instead of per slot.
 local function buildPetIdSet()
     local set = {}
@@ -88,7 +88,7 @@ end
 local FRIENDLY_SLOT_PATTERNS = { 'pet', 'mercenary', 'group tank', 'group assist', 'group puller', 'raid assist', 'specific pc' }
 
 -- Returns true when this slot should be hidden: pets (own, group, and the
--- Trio's extra pets) and friendly PCs are not hostiles, so they only clutter
+-- quartet's extra pets) and friendly PCs are not hostiles, so they only clutter
 -- the extended target list unless the user opts in. `petIds` is the pet id
 -- set from buildPetIdSet() (built once per refresh); when nil it is looked
 -- up on the spot.
