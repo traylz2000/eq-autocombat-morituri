@@ -10,6 +10,8 @@ MoriAC is a fork of [Triune AutoCombat](https://github.com/gennro/TriuneAutocomb
 
 ## Install
 
+Step-by-step instructions with a check after each step are on the [main project page](../README.md). Short version:
+
 1. Download the latest **RoF2** MacroQuest from [macroquest/macroquest/releases](https://github.com/macroquest/macroquest/releases) and extract it somewhere like `C:\MacroQuest`.
 2. **Zone navmeshes and the game database** come from the upstream [Triune AutoCombat full release](https://github.com/gennro/TriuneAutocombat/releases/latest) (`TriuneAutocombat-full.zip`). Extract it into the root of your MacroQuest folder once.
 3. Copy this repo's `autocombat/lua` and `autocombat/config` folders over your MacroQuest folder. Overwrite if asked. Your own settings are never touched.
