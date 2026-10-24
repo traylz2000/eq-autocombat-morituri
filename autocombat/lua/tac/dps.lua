@@ -2480,7 +2480,7 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     core.accent(GOLD, 'DPS Parser')
-    local compact = ImGui.Checkbox('Compact Mini HUD mode##dpsCompact', cfg.compact == true)
+    local compact = ImGui.Checkbox('Compact mini HUD##dpsCompact', cfg.compact == true)
     if compact ~= (cfg.compact == true) then cfg.compact = compact; saveConfig() end
     local paused = ImGui.Checkbox('Pause tracking##dpsPaused', cfg.paused == true)
     if paused ~= (cfg.paused == true) then cfg.paused = paused end

@@ -735,42 +735,43 @@ function plugin.onDrawSettings()
     local colors = core.colors or {}
     local GOLD = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
 
-    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], 'Floating Text Configuration:')
-    ImGui.Text(string.format('Lifetime: %.1fs | Max Concurrent: %d | Combo Window: %.1fs',
+    ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], 'Floating crit text')
+    ImGui.TextDisabled(string.format('Lifetime %.1fs | up to %d at once | combo window %.1fs',
         FX.LIFETIME, FX.MAX_FLOATERS, FX.COMBO_WINDOW))
     if core.ctrl then
         local cur = (core.ctrl.show_crit_floaters ~= false)
-        local val = ImGui.Checkbox('Show Critical Hit Floating Text##fdEnabled', cur)
+        local val = ImGui.Checkbox('Show floating text for critical hits##fdEnabled', cur)
         if val ~= cur then
             core.ctrl.show_crit_floaters = val
             saveCfg()
         end
     end
 
-    ImGui.PushItemWidth(220)
-    local v = ImGui.SliderFloat('Text Scale##fdTextScale', cfg.textScale, 0.5, 2.0, '%.2fx')
+    core.formLabel('Text scale', 220)
+    local v = ImGui.SliderFloat('##fdTextScale', cfg.textScale, 0.5, 2.0, '%.2fx')
     if type(v) == 'number' and v ~= cfg.textScale then cfg.textScale = clamp(v, 0.5, 2.0); saveCfg() end
-    v = ImGui.SliderFloat('Effects Intensity##fdIntensity', cfg.intensity, 0.0, 2.0, '%.2fx')
+    core.formLabel('Effects intensity', 220)
+    v = ImGui.SliderFloat('##fdIntensity', cfg.intensity, 0.0, 2.0, '%.2fx')
     if type(v) == 'number' and v ~= cfg.intensity then cfg.intensity = clamp(v, 0.0, 2.0); saveCfg() end
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip('Scales particle bursts, shockwave rings, screen flash and shake. 0 turns them all off.')
     end
-    v = ImGui.SliderFloat('Damage Tier Scale##fdTierScale', cfg.tierScale, 0.05, 5.0, '%.2fx')
+    core.formLabel('Damage tier scale', 220)
+    v = ImGui.SliderFloat('##fdTierScale', cfg.tierScale, 0.05, 5.0, '%.2fx')
     if type(v) == 'number' and v ~= cfg.tierScale then cfg.tierScale = clamp(v, 0.05, 5.0); saveCfg() end
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip('Lower this at low levels so your hits reach the BIG / HUGE / MASSIVE tiers.')
     end
-    ImGui.PopItemWidth()
     ImGui.TextDisabled(string.format('Tiers: BIG >= %s | HUGE >= %s | MASSIVE >= %s',
         fmtNum(FX.TIERS[3].min * cfg.tierScale), fmtNum(FX.TIERS[2].min * cfg.tierScale), fmtNum(FX.TIERS[1].min * cfg.tierScale)))
 
-    local cb = ImGui.Checkbox('Combo Counter##fdCombo', cfg.comboCounter)
+    local cb = ImGui.Checkbox('Combo counter##fdCombo', cfg.comboCounter)
     if cb ~= cfg.comboCounter then cfg.comboCounter = (cb == true); saveCfg() end
     ImGui.SameLine()
-    cb = ImGui.Checkbox('Screen Flash##fdFlash', cfg.screenFlash)
+    cb = ImGui.Checkbox('Screen flash##fdFlash', cfg.screenFlash)
     if cb ~= cfg.screenFlash then cfg.screenFlash = (cb == true); saveCfg() end
     ImGui.SameLine()
-    cb = ImGui.Checkbox('Screen Shake##fdShake', cfg.screenShake)
+    cb = ImGui.Checkbox('Screen shake##fdShake', cfg.screenShake)
     if cb ~= cfg.screenShake then cfg.screenShake = (cb == true); saveCfg() end
 
     ImGui.TextDisabled(string.format('Session best: crit %s | heal %s | streak x%d',

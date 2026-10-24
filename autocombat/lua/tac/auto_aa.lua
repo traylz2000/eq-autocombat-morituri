@@ -3096,12 +3096,12 @@ function plugin.onDrawSettings()
     ctrl = core.ctrl
     accent(GOLD, 'Auto AA Spender')
     ImGui.TextWrapped('Full configuration lives in the Auto AA window (header button or /ac aawin). Quick toggles:')
-    local spendVal = ImGui.Checkbox('Auto-Spend AA##aaPlgSpend', ctrl.auto_spend_aa or false)
+    local spendVal = ImGui.Checkbox('Spend AA points automatically##aaPlgSpend', ctrl.auto_spend_aa or false)
     if spendVal ~= (ctrl.auto_spend_aa or false) then
         ctrl.auto_spend_aa = spendVal
         core.saveLoadout(true)
     end
-    local fwVal = ImGui.Checkbox('Auto-Summon Fireworks##aaPlgFw', ctrl.auto_summon_fireworks or false)
+    local fwVal = ImGui.Checkbox('Summon fireworks automatically##aaPlgFw', ctrl.auto_summon_fireworks or false)
     if fwVal ~= (ctrl.auto_summon_fireworks or false) then
         ctrl.auto_summon_fireworks = fwVal
         core.saveLoadout(true)

@@ -1700,8 +1700,8 @@ function plugin.onDrawSettings()
     end
     if ImGui.IsItemHovered() then core.setTooltip('Default: any box connected to this MacroQuest launcher is trusted. Turn on to restrict to named characters.') end
     if net.allowInput == nil then net.allowInput = table.concat(cfg.allowlist or {}, ', ') end
-    ImGui.SetNextItemWidth(core.px(320))
-    local txt = ImGui.InputTextWithHint('Allowlist##bnAllow', 'Names, comma separated', net.allowInput or '')
+    core.formLabel('Allowlist', 320)
+    local txt = ImGui.InputTextWithHint('##bnAllow', 'Names, comma separated', net.allowInput or '')
     if type(txt) == 'string' then net.allowInput = txt end
     ImGui.SameLine()
     if ImGui.Button('Apply##bnAllowApply', core.px(60), core.px(22)) then
@@ -1715,15 +1715,15 @@ function plugin.onDrawSettings()
         core.saveLoadout(true)
     end
 
-    ImGui.SetNextItemWidth(core.px(200))
-    local hb = ImGui.SliderFloat('Heartbeat interval (s)##bnHb', cfg.heartbeatSec, 0.25, 5.0, '%.2f')
+    core.formLabel('Heartbeat every (s)', 200)
+    local hb = ImGui.SliderFloat('##bnHb', cfg.heartbeatSec, 0.25, 5.0, '%.2f')
     if type(hb) == 'number' and math.abs(hb - cfg.heartbeatSec) > 0.001 then
         cfg.heartbeatSec = hb
         if cfg.peerTimeoutSec < hb * 3 then cfg.peerTimeoutSec = hb * 3 end
         core.saveLoadout(true)
     end
-    ImGui.SetNextItemWidth(core.px(200))
-    local to = ImGui.SliderFloat('Peer timeout (s)##bnTimeout', cfg.peerTimeoutSec, 2.0, 60.0, '%.1f')
+    core.formLabel('Peer timeout (s)', 200)
+    local to = ImGui.SliderFloat('##bnTimeout', cfg.peerTimeoutSec, 2.0, 60.0, '%.1f')
     if type(to) == 'number' and math.abs(to - cfg.peerTimeoutSec) > 0.001 then
         cfg.peerTimeoutSec = to
         core.saveLoadout(true)

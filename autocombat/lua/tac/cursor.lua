@@ -429,7 +429,7 @@ function plugin.onDrawSettings()
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
     core.accent(GOLD, 'Cursor Item Manager')
-    local autoVal = ImGui.Checkbox('Auto-Clear Items on Pick (Continuous)##curAuto', state.autoClearOnPick)
+    local autoVal = ImGui.Checkbox('Clear the cursor automatically when an item lands on it##curAuto', state.autoClearOnPick)
     if autoVal ~= state.autoClearOnPick then
         state.autoClearOnPick = autoVal
         core.saveLoadout(true)
