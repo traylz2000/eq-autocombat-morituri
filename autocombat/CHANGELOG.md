@@ -2,6 +2,14 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-25
+
+- **Fix: another character's classes stuck after switching characters.** The new character's name showed, but the classes stayed those of the character you played before, even after `/ac restart`. Two causes:
+  - Just after a switch the Inventory window can still show the old character's classes. That stale read got saved under the new name.
+  - Saved classes were re-checked only when fewer than four were saved, so a wrong four-class list was never corrected.
+  - The fix: on every load, MoriAC now checks the saved classes against the live character. It checks again 5 seconds later. A detection that lacks your live main class (`Me.Class`) counts as stale and is ignored. When the saved list is wrong, MoriAC replaces it, says so in chat, re-assigns spell lines to the right class and saves.
+  - Tests: Suite M5 covers `runtime.pickClasses`.
+
 ## 2026-10-24
 
 - **`/lua run mac` starts MoriAC** (short for Morituri Auto Combat). `lua/mac.lua` loads `moriac.lua` under the name `mac`, so `/ac restart` comes back as `mac` and the exit hint says `/lua stop mac`.

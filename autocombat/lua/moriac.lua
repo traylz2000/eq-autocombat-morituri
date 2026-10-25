@@ -5157,14 +5157,46 @@ function runtime.fixGemClasses()
     return fixed
 end
 
--- A saved loadout can hold fewer classes than the character has (older
--- builds read only the first class on each line of the Inventory window).
--- Re-detect and keep the fuller list. Must run on the main coroutine
--- (detection may open the Inventory window and wait).
+-- The live primary class (Me.Class) as a canonical abbreviation, or nil.
+function runtime.liveMainClass()
+    local ok, c = pcall(function() return mq.TLO.Me.Class.ShortName() end)
+    if not ok or not c or c == '' or c == 'NULL' then return nil end
+    return toCanonicalClassAbbr(c)
+end
+
+-- Which class list to use, given the saved list, a fresh detection and the
+-- live primary class. Returns nil to keep the saved list.
+--  * A detection that lacks the live primary class is a stale read (the
+--    Inventory window can still show the previous character just after a
+--    character switch), so it is ignored.
+--  * A saved list that names a class the detection doesn't, or lacks the
+--    primary class, belongs to someone else: the detection wins.
+--  * Otherwise a fuller detection wins (older builds saved partial lists).
+function runtime.pickClasses(saved, detected, main)
+    if type(detected) ~= 'table' or #detected == 0 then return nil end
+    local function has(list, c)
+        for _, x in ipairs(list or {}) do if x == c then return true end end
+        return false
+    end
+    if main and not has(detected, main) then return nil end
+    saved = saved or {}
+    if #saved == 0 then return detected end
+    if main and not has(saved, main) then return detected end
+    for _, c in ipairs(detected) do
+        if not has(saved, c) then return detected end
+    end
+    if #detected > #saved then return detected end
+    return nil
+end
+
+-- Checks the saved class list against the live character and fixes it: a
+-- partial list from an older build, or another character's classes (a
+-- stale Inventory read at a character switch got saved under the new
+-- name). Must run on the main coroutine (detection may open the Inventory
+-- window and wait).
 function runtime.healClasses()
-    if myClasses and #myClasses >= CLASS_SLOTS then return false end
-    local detected = detectClasses(false)
-    if not detected or #detected <= #(myClasses or {}) then return false end
+    local detected = runtime.pickClasses(myClasses, detectClasses(false), runtime.liveMainClass())
+    if not detected then return false end
     print(string.format('\ag[MoriAC]\ax Classes updated from your Inventory window: %s (the saved setup had %s).',
         table.concat(detected, ' / '), (#(myClasses or {}) > 0) and table.concat(myClasses, ' / ') or 'none'))
     myClasses = detected
@@ -6741,19 +6773,23 @@ function runtime.onCharacterChanged()
     ctrl = defaultCtrl()
     runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
     lvlMin, lvlMax = 1, 65
+    myClasses = {} -- never carry the previous character's classes over
     if ALLDATA[myName] then
         runtime.applyEntry(ALLDATA[myName])
         runtime.healClasses()
         scanKnownDiscs()
     else
-        local detected = detectClasses(true)
+        local detected = runtime.pickClasses(nil, detectClasses(true), runtime.liveMainClass())
         if detected then myClasses = detected end
         runtime.importCurrentGems() -- new character: seed the loadout from the current bar
     end
-    if not myClasses or #myClasses == 0 then
-        local liveClasses = detectClasses(false)
-        if liveClasses then myClasses = liveClasses end
+    if #myClasses == 0 then
+        local main = runtime.liveMainClass()
+        if main then myClasses = { main } end
     end
+    -- Check again shortly: just after a character switch the Inventory window
+    -- can still show the previous character's classes.
+    runtime.classRecheckAt = os.time() + 5
     runtime.wpReset(false)
     ctrl.running = false -- never auto-start on load
 end
@@ -25572,6 +25608,10 @@ local function runMainLoop()
                     print(string.format('\ag[MoriAC]\ax Re-assigned %d spell line(s) to the class that owns the spell.', fixed))
                 end
             end
+        end
+        if runtime.classRecheckAt and os.time() >= runtime.classRecheckAt then
+            runtime.classRecheckAt = nil
+            runtime.loopStep('class recheck', runtime.healClasses)
         end
         if runtime.classDumpRequested then
             runtime.classDumpRequested = false
