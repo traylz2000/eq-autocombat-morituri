@@ -4,6 +4,12 @@
 
 ## 2026-10-25
 
+- **Disciplines up to level 70, and cooldowns for Morituri AAs (`config/moriac_data.lua`).**
+  - The Discs page now lists the level 66-70 (Omens of War) disciplines for War, Pal, Rng, SK, Mnk, Rog, Bst and Ber, 39 in all. Examples: Aura of Runes, Savage Onslaught, Counterforce, Heel of Kanji, Rapid Kick and Soul Shield. They come from the same PEQ spell database as the existing list. Bards and pure casters have none in this range. Fists of Wu uses Morituri's level 66 (PEQ says 68).
+  - AAs that showed a 0s cooldown now have their real one, so they sort into the right short / mid / burn group. War: Brace For Impact 15m, Heroic Blade 15m, Imperator's Charge 3m, Imperator's Precision 3m, Battle Stomp 1m. Mnk: Five Point Palm 10m, Infusion of Thunder 10m, Zan Fi's Whistle 10m. SK: Ragged Bite of Agony 1m, Soul Touch 15m, T'Vyl's Resolve 15m.
+  - New AAs: **Knee Strike** (War, 30s) and **Two-Finger Wasp Touch** (Mnk, 3m).
+  - Check in game: with *Trained only* / *Purchased only* on, the new lines appear for a character that has them, and each one fires.
+
 - **Redetect button on the top bar**, next to Compact. It does the same as `/ac redetect`: reads your classes again from the Inventory window.
 
 - **Fix: another character's classes stuck after switching characters.** The new character's name showed, but the classes stayed those of the character you played before, even after `/ac restart`. Two causes:
