@@ -4,6 +4,12 @@
 
 ## 2026-10-25
 
+- **Spells up to level 70 (`config/moriac_data.lua`, `lua/moriac.lua`).**
+  - 375 level 66-70 spells for the 12 classes with spells: Clr 39, Dru 39, Shm 37, Wiz 37, Mag 42, Nec 35, Enc 35, SK 24, Brd 23, Rng 22, Pal 21, Bst 21. They come from the same PEQ spell database as the existing list. Each one gets its beneficial / type tag (dd, dot, buff, heal, pet) by the same rule the existing list follows. That rule reproduces 2,870 of the 2,871 existing tags.
+  - The Spells page level filter now goes to 70 (it stopped at 65 before). It defaults to 1-70. Characters saved with the old 1-65 range get raised to 70 when they load.
+  - Tests: Suite M7 checks that the data reaches 70, a few known entries, and the filter cap.
+  - Check in game: on the Spells page, a level 66+ spell (e.g. Pious Light, Ancient: Core Fire) shows in the spell picker with *Scribed only* off, and you can add and cast it.
+
 - **Disciplines up to level 70, and cooldowns for Morituri AAs (`config/moriac_data.lua`).**
   - The Discs page now lists the level 66-70 (Omens of War) disciplines for War, Pal, Rng, SK, Mnk, Rog, Bst and Ber, 39 in all. Examples: Aura of Runes, Savage Onslaught, Counterforce, Heel of Kanji, Rapid Kick and Soul Shield. They come from the same PEQ spell database as the existing list. Bards and pure casters have none in this range. Fists of Wu uses Morituri's level 66 (PEQ says 68).
   - AAs that showed a 0s cooldown now have their real one, so they sort into the right short / mid / burn group. War: Brace For Impact 15m, Heroic Blade 15m, Imperator's Charge 3m, Imperator's Precision 3m, Battle Stomp 1m. Mnk: Five Point Palm 10m, Infusion of Thunder 10m, Zan Fi's Whistle 10m. SK: Ragged Bite of Agony 1m, Soul Touch 15m, T'Vyl's Resolve 15m.

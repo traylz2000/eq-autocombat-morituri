@@ -147,7 +147,7 @@ local function getNumGems()
     if n and n >= 8 and n <= 12 then return n end
     return 12
 end
-local lvlMin, lvlMax = 1, 65
+local lvlMin, lvlMax = 1, 70 -- runtime.MAX_LEVEL (runtime is defined below)
 
 -- loadout.gems[i] = { cls=, spell=, target=, when=, pct=, priority_before_clickies= }  (or nil)
 -- loadout.aas, loadout.discs, loadout.actions are maps: name -> { cls=, target=, when=, enabled=, pct=, ... }
@@ -600,6 +600,7 @@ sanitizeModeConfig(ctrl)
 
 -- Runtime & state management tables
 local runtime = {
+    MAX_LEVEL = 70, -- Morituri level cap; top of the Spells page level filter
     plugins = {},
     pluginManager = nil,
     pullState = 'IDLE',
@@ -5434,6 +5435,8 @@ function runtime.applyEntry(e)
     if type(e) ~= 'table' then return end
     if type(e.classes) == 'table' and #e.classes > 0 then myClasses = e.classes end
     lvlMin = e.lvlMin or lvlMin; lvlMax = e.lvlMax or lvlMax
+    -- 65 was the old cap and default: saves from then would hide the 66+ spells.
+    if lvlMax == 65 then lvlMax = runtime.MAX_LEVEL end
     clearFilteredSpellsCache()
     loadout.gems = {}
     if type(e.gems) == 'table' then
@@ -6772,7 +6775,7 @@ function runtime.onCharacterChanged()
     loadout = { gems = {}, aas = {}, discs = {}, actions = {}, clickies = {} }
     ctrl = defaultCtrl()
     runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
-    lvlMin, lvlMax = 1, 65
+    lvlMin, lvlMax = 1, runtime.MAX_LEVEL
     myClasses = {} -- never carry the previous character's classes over
     if ALLDATA[myName] then
         runtime.applyEntry(ALLDATA[myName])
@@ -9869,7 +9872,7 @@ function UI.drawSpellDetail(gems, i)
         ImGui.SetNextItemWidth(UI.px(40))
         local newLvlMax = ImGui.InputInt('##lmax', lvlMax, 0, 0)
         if newLvlMax < 1 then newLvlMax = 1 end
-        if newLvlMax > 65 then newLvlMax = 65 end
+        if newLvlMax > runtime.MAX_LEVEL then newLvlMax = runtime.MAX_LEVEL end
         if newLvlMax ~= lvlMax then lvlMax = newLvlMax; clearFilteredSpellsCache() end
         if lvlMin > lvlMax then lvlMin = lvlMax end
         ImGui.SameLine()
