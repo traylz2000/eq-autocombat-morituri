@@ -4,6 +4,16 @@
 
 ## 2026-10-25
 
+- **New Puller submode: Lure** (`/ac puller lure`, or pick *Lure* under Mode). It pulls like Camp: it goes out to the *Engage from* distance, tags the mob with the bow, Throw Stone, a spell or the pet, and walks back to camp. Then, instead of running out to meet the mob, it waits at camp, facing the mob, until the mob is in fighting reach. Pets wait too. While it waits the status line says *Waiting at camp for ...*.
+  - **The mob doesn't come.** If it hasn't come any closer for **Stop waiting after** seconds (Pulling section, 3-60, default 10), for example because it is rooted, stuck or casting from range, the puller goes to it and fights as Camp would.
+  - **Summoned or knocked away.** More than 40 units from camp, the puller walks back to camp (not fighting on the way, like a Camp drag) and the mob follows. A summon ("You have been summoned!") also cancels an earlier "stopped coming" decision, so it heads home then too.
+  - Everything else is shared with Camp: camp spot, pull radius and levels, the drag home, pet hold on the way, aggro switching.
+  - Tests: Suite M8 covers the wait / give-up / leash decisions and the movement guards. The sanitizer keeps `Lure` for Puller. The UI smoke test renders Puller / Lure.
+  - Check in game:
+    - Pull a mob standing in a group from bow range. The puller should walk back to camp and wait there while the mob comes in.
+    - A rooted or stuck mob should get the puller walking to it after about 10 seconds.
+    - Getting summoned should walk the puller back to camp with the mob following.
+
 - **Spells up to level 70 (`config/moriac_data.lua`, `lua/moriac.lua`).**
   - 375 level 66-70 spells for the 12 classes with spells: Clr 39, Dru 39, Shm 37, Wiz 37, Mag 42, Nec 35, Enc 35, SK 24, Brd 23, Rng 22, Pal 21, Bst 21. They come from the same PEQ spell database as the existing list. Each one gets its beneficial / type tag (dd, dot, buff, heal, pet) by the same rule the existing list follows. That rule reproduces 2,870 of the 2,871 existing tags.
   - The Spells page level filter now goes to 70 (it stopped at 65 before). It defaults to 1-70. Characters saved with the old 1-65 range get raised to 70 when they load.

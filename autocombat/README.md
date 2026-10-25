@@ -56,6 +56,7 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
 |---|---|---|
 | **Manual** | You want to drive | You move and pick targets. MoriAC attacks, casts, heals and uses your abilities. |
 | **Puller - Camp** | You are the puller | Runs out, tags a mob, brings it back to camp and fights it there. |
+| **Puller - Lure** | You pull from range | Like Camp, but after the tag it waits at camp for the mob to walk in instead of running out to meet it. If the mob stops coming (*Stop waiting after*, default 10 s) it goes to it. If it gets summoned or knocked more than 40 units from camp, it walks back and the mob follows. |
 | **Puller - Hunt** | Solo roaming | Wanders the zone and kills mobs where they stand. |
 | **Assist - Chase** | Boxed melee | Follows the Main Assist and attacks their target. |
 | **Assist - Camp** | Boxed, stay put | Holds at camp and only fights what comes in. |
@@ -117,7 +118,7 @@ Type `/ac help` in game for the full list.
 | `/ac` | Start or pause |
 | `/moriac ...` | Same as `/ac ...` (`/triune ...` also still works) |
 | `/ac run` / `/ac pause` | Start / pause |
-| `/ac manual`, `/ac puller camp`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
+| `/ac manual`, `/ac puller camp`, `/ac puller lure`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
 | `/ac ma <name>` | Set the Main Assist |
 | `/ac burn` | Toggle Burn mode |
 | `/ac memall` | Memorize any missing spells |

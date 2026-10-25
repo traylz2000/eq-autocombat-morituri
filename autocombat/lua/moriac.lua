@@ -161,7 +161,7 @@ local loadout        = { gems = {}, aas = {}, discs = {}, actions = {}, clickies
 local MODES = {
     PRIMARY       = { 'Manual', 'Puller', 'Assist' },
     SUBMODES      = {
-        Puller = { 'Hunt', 'Camp' },
+        Puller = { 'Hunt', 'Camp', 'Lure' },
         Assist = { 'Chase', 'Camp', 'Backline' },
     },
     PULL_STYLES   = { 'Melee', 'Spell', 'Pet', 'Ranged' },
@@ -171,12 +171,13 @@ local MODES = {
     },
     DESC          = {
         Manual = 'Fights your current or acquired target automatically. Does not roam.',
-        Puller = 'Pulling & hunting engine. Hunt roams and solo-kills; Camp pulls mobs back to set camp.',
+        Puller = 'Pulling & hunting engine. Hunt roams and solo-kills; Camp pulls mobs back to set camp; Lure tags from range and waits at camp for the mob.',
         Assist = 'Assists the Main Assist. Chase follows MA; Camp holds camp spot; Backline is ranged/caster support.',
     },
     SUB_DESC      = {
         ['Puller:Hunt']     = 'Roams within search radius looking for valid mobs and kills them on the spot.',
         ['Puller:Camp']     = 'Pulls mobs within radius back to set camp location and tanks/fights them at camp.',
+        ['Puller:Lure']     = 'Like Camp, but after the tag it waits at camp for the mob to walk in instead of meeting it. Walks back to camp if summoned.',
         ['Assist:Chase']    = 'Follows Main Assist everywhere and assists on MA target.',
         ['Assist:Camp']     = 'Holds set camp position and assists MA on MA target, returning to camp when idle.',
         ['Assist:Backline'] = 'Ranged/caster support; assists MA without moving to melee range.',
@@ -224,7 +225,7 @@ local function sanitizeModeConfig(c)
     end
 
     if c.mode == 'Puller' then
-        if c.submode ~= 'Hunt' and c.submode ~= 'Camp' then c.submode = 'Hunt' end
+        if c.submode ~= 'Hunt' and c.submode ~= 'Camp' and c.submode ~= 'Lure' then c.submode = 'Hunt' end
     elseif c.mode == 'Assist' then
         if c.submode ~= 'Chase' and c.submode ~= 'Camp' and c.submode ~= 'Backline' then c.submode = 'Chase' end
     else
@@ -333,6 +334,8 @@ local function sanitizeModeConfig(c)
     if c.combat_style ~= 'Melee' and c.combat_style ~= 'Ranged' and c.combat_style ~= 'Spell' then
         c.combat_style = 'Melee'
     end
+    local lw = tonumber(c.lure_wait_sec)
+    c.lure_wait_sec = lw and math.max(3, math.min(60, math.floor(lw))) or 10
     local rd = tonumber(c.ranged_dist)
     if not rd then
         c.ranged_dist = 40
@@ -371,6 +374,7 @@ local function defaultCtrl()
         pull_spell_gem       = 1,
         pull_engage_dist     = 100,
         pull_stand_back      = false,
+        lure_wait_sec        = 10,    -- Puller (Lure): stop waiting once the mob has not come closer for this long
         xtar_nav_dist        = 150,
         ignore_distant_xtargets = true,
         combat_style         = 'Melee',
@@ -2456,6 +2460,83 @@ local function stopMoving()
     pursuit.detourTargetKey = nil
     pursuit.detourStartedAt = 0
     pursuit.detourExpiresAt = 0
+end
+
+-- ============================================================================
+-- Puller (Lure): pull like Camp, then wait at camp for the mob to walk in
+-- ============================================================================
+-- Camp and Lure share every camp-puller path (camp spot, drag home, pet hold):
+-- those checks read (ctrl.submode == 'Camp' or ctrl.submode == 'Lure'). Lure
+-- only exists under Puller, so Assist's 'Camp' checks are unaffected.
+runtime.LURE_LEASH = 40 -- further than this from camp, a Lure puller walks back
+
+-- One Lure decision for the current fight target:
+--   'camp'  -> away from camp (summoned, knocked back): walk home, the mob follows
+--   'hold'  -> stay put facing it; it is still on its way in
+--   'fight' -> it has arrived, or stopped coming: fight it the normal way
+-- The wait ends once the mob has not got closer for ctrl.lure_wait_sec, so a
+-- rooted, stuck or casting mob still gets killed (the puller goes to it, as
+-- Camp would). A summon (runtime.lureSummonedAt) cancels that and the leash
+-- applies again. State lives in runtime.lure; now is os.clock().
+function runtime.lureStep(now, id, mobDist, reach, campDist)
+    local w = runtime.lure
+    if not w or w.id ~= id then
+        w = { id = id, best = 1e9, progressAt = now, gaveUp = false, summonSeen = runtime.lureSummonedAt or 0 }
+        runtime.lure = w
+    end
+    if (runtime.lureSummonedAt or 0) > w.summonSeen then
+        w.summonSeen = runtime.lureSummonedAt
+        w.gaveUp = false
+    end
+    if w.gaveUp then return 'fight' end
+    if campDist > runtime.LURE_LEASH then
+        w.best, w.progressAt = 1e9, now -- start the wait afresh once home
+        return 'camp'
+    end
+    if mobDist <= reach then return 'fight' end
+    if mobDist < w.best - 2 then w.best, w.progressAt = mobDist, now end
+    if now - w.progressAt >= (tonumber(ctrl.lure_wait_sec) or 10) then
+        w.gaveUp = true
+        return 'fight'
+    end
+    return 'hold'
+end
+
+-- Applies runtime.lureStep to the Puller (Lure) fight target: holds, walks
+-- home (pullState TO_CAMP) or lets the normal fight logic run.
+function runtime.lureTick(id)
+    runtime.lureHoldId = nil
+    local c = ctrl.camp_loc
+    if not c or not id or id <= 0 then return 'fight' end
+    local now = os.clock()
+    local step = runtime.lureStep(now, id, distToId(id), runtime.styleReach(id), distToLoc(c.x, c.y, c.z))
+    local name = tostring(mq.TLO.Target.CleanName() or 'the mob')
+    if step == 'camp' then
+        print(string.format('\ay[MoriAC]\ax Lure: away from camp -- walking back, %s can follow.', name))
+        runtime.pullState = 'TO_CAMP'
+        stopMoving()
+    elseif step == 'hold' then
+        runtime.lureHoldId = id
+        if isMoveActive() then stopMoving() end
+        if (now - (runtime.lureFaceAt or 0)) > 0.5 then
+            runtime.lureFaceAt = now
+            mq.cmd('/face fast')
+        end
+        if runtime.lureAnnouncedId ~= id then
+            runtime.lureAnnouncedId = id
+            print(string.format('\ay[MoriAC]\ax Lure: waiting at camp for %s (%.0f away).', name, distToId(id)))
+        end
+    elseif runtime.lure and runtime.lure.gaveUp and runtime.lureGaveUpId ~= id then
+        runtime.lureGaveUpId = id
+        print(string.format('\ay[MoriAC]\ax Lure: %s stopped coming -- going to it.', name))
+    end
+    return step
+end
+
+-- True while a Puller (Lure) is holding at camp for this target: the
+-- re-close and "too far away" movement must leave it standing.
+function runtime.lureHolding(id)
+    return ctrl.mode == 'Puller' and ctrl.submode == 'Lure' and id ~= nil and id > 0 and runtime.lureHoldId == id
 end
 
 function runtime.stopMovementForCast(cls, spell)
@@ -9111,7 +9192,7 @@ UI.HELP_COMMANDS = (function() return {
         { cmd = '/dps reset',                         desc = 'Reset active combat damage counters' },
         { cmd = '/ac zplane [5-100]',                 desc = 'Configure Hunter Tier 1 same-floor / Z plane height threshold (default 15)' },
         { cmd = '/ac huntz [10-300]',                 desc = 'Configure Hunter Tier 2 max vertical height difference (default 75)' },
-        { cmd = '/ac <mode> [submode]',               desc = 'Switch combat mode (e.g. /ac manual, /ac puller hunt, /ac puller camp, /ac assist chase, /ac backline, /ac tank)' },
+        { cmd = '/ac <mode> [submode]',               desc = 'Switch combat mode (e.g. /ac manual, /ac puller hunt, /ac puller camp, /ac puller lure, /ac assist chase, /ac backline, /ac tank)' },
         { cmd = '/ac ma [target|clear|<name>|<id>]',  desc = 'Configure Main Assist by player ID or name, or set from current PC target' },
         { cmd = '/ac style [melee|ranged|spell]',     desc = 'Set combat style: Melee (/attack at melee reach), Ranged (bow via server #attackmode), or Spell (never auto-attacks)' },
         { cmd = '/ac range [dist]',                   desc = 'Set engagement distance for the active style (melee 5-50, ranged/spell 5-200); /ac meleerange and /ac rangeddist target a specific one' },
@@ -11925,6 +12006,18 @@ function UI.drawControlTab()
             end
         end
 
+        if ctrl.submode == 'Lure' then
+            UI.formLabel('Stop waiting after')
+            ctrl.lure_wait_sec = ImGui.SliderInt('##lureWaitSec', ctrl.lure_wait_sec or 10, 3, 60, '%d s')
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s',
+                    'Lure: after the tag you wait at camp for the mob to walk in.\n'
+                    .. 'If it has not come any closer for this long (rooted, stuck, casting from range),\n'
+                    .. 'you go to it and fight it like Camp mode would.\n'
+                    .. 'Pulled or summoned more than ' .. runtime.LURE_LEASH .. ' units away from camp, you walk back and it follows.')
+            end
+        end
+
         UI.formLabel('Rest below HP')
         local pullMinHpVal = ImGui.SliderInt('##pullMinHpCtrl', ctrl.pull_min_hp_pct or 0, 0, 95, (ctrl.pull_min_hp_pct or 0) == 0 and 'never' or '%d%%')
         ctrl.pull_min_hp_pct = pullMinHpVal
@@ -12052,7 +12145,7 @@ function UI.drawControlTab()
             ImGui.EndDisabled()
         end
     end
-    if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and UI.pageSection('pullCamp', 'Camp & pull area', true) then
+    if ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and UI.pageSection('pullCamp', 'Camp & pull area', true) then
         do
             if not ctrl.camp_loc then accent(WARN, 'Set a camp: the puller brings mobs back to it.') end
             UI.campRow('puller', 'No camp set.', 'Make this spot the camp; pulls are brought back here.',
@@ -14761,7 +14854,7 @@ end
 -- The modes that anchor to ctrl.camp_loc.
 function UI.modeUsesCamp()
     if ctrl.mode == 'Manual' then return true end
-    return (ctrl.mode == 'Puller' or ctrl.mode == 'Assist') and ctrl.submode == 'Camp'
+    return (ctrl.mode == 'Puller' or ctrl.mode == 'Assist') and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
 end
 
 -- What the engine is doing right now: text plus colour for the compact
@@ -14801,6 +14894,7 @@ function UI.miniActivity()
     end)
     local attacking = false
     pcall(function() attacking = (mq.TLO.Me.Combat() == true) end)
+    if runtime.lureHolding(tId) then return 'Waiting at camp for ' .. tostring(tName or 'target'), WARN end
     if tId > 0 and (attacking or runtime.pullState == 'FIGHTING') and isHostileTarget(tId) then
         return 'Fighting ' .. tostring(tName or 'target'), { 1.0, 0.45, 0.40, 1.0 }
     end
@@ -17663,7 +17757,7 @@ function runtime.resolvePetTargetId(when, spellName, cls, pct)
 end
 
 function runtime.resolveAllEnemiesTargetId(spellName, when, pct, cls, extra)
-    local isPulling = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp')
+    local isPulling = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure'))
     local maxZ = isPulling and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75)
     local maxDist = (ctrl and ctrl.xtar_nav_dist) or 150
     local myZ = mq.TLO.Me.Z() or 0
@@ -17909,7 +18003,7 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
     elseif b == 'Unmezzed Add' then
         id = firstNPCXtarget(true)
     elseif b == 'Nearest Add' then
-        local isPulling = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp')
+        local isPulling = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure'))
         local maxZ = isPulling and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75)
         id = firstNPCXtarget(false, maxZ)
         if not id then
@@ -19917,7 +20011,7 @@ end
 -- XTarget the Hunt picker just chose.
 function runtime.huntXtarMaxDist()
     local base = (ctrl and ctrl.xtar_nav_dist) or 150
-    if not ctrl or ctrl.mode ~= 'Puller' or ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets then return base end
+    if not ctrl or ctrl.mode ~= 'Puller' or (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') or ctrl.ignore_distant_xtargets then return base end
     local hasWps = (ctrl.waypoints and #ctrl.waypoints > 0 and ctrl.use_waypoints ~= false)
     local maxScan = hasWps and (ctrl.waypoint_scan_radius or 100) or (ctrl.hunter_radius or 1500)
     return math.max(base, maxScan)
@@ -20151,6 +20245,7 @@ local function repositionCloser()
     local tid = tgt.ID()
     if not ctrl.running then return end
     if isMoveActive() then return end
+    if runtime.lureHolding(tid) then return end -- Lure waits for the mob to come in
     if (os.clock() - pursuit.lastTooFarRepositionAt) < 1.0 then return end
     pursuit.lastTooFarRepositionAt = os.clock()
 
@@ -20286,6 +20381,8 @@ end
 -- All anchored to the start of the system message: unanchored '#*#too far
 -- away#*#' etc. also fired on player and pet chat ("Name tells you, 'I beg
 -- forgiveness, Master. That target is too far away.'").
+-- Puller (Lure): a summon cancels "stopped coming, go to it" so the leash walks us home.
+mq.event('MoriacSummoned', '#*#You have been summoned!#*#', function() runtime.lureSummonedAt = os.clock() end)
 mq.event('TriuneTooFar1', 'Your target is too far away#*#', function() repositionCloser() end)
 mq.event('TriuneTooFar1b', 'You are too far away#*#', function() repositionCloser() end)
 mq.event('TriuneTooFar2', 'Your target is out of range, get closer#*#', function() repositionCloser() end)
@@ -21221,7 +21318,7 @@ function isoH.referencePoints()
             if #refs >= C.REF_LEGS then break end
         end
     end
-    local anchor = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp') and ctrl.camp_loc or ctrl.hunter_combat_loc
+    local anchor = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')) and ctrl.camp_loc or ctrl.hunter_combat_loc
     if anchor and anchor.x and anchor.y then
         local d = isoH.dist2D(mx, my, anchor.x, anchor.y)
         if d >= C.REF_MIN_DIST and d <= C.REF_MAX_DIST then
@@ -21588,7 +21685,7 @@ end
 
 function runtime.checkCombatStall()
     if (ctrl.mode == 'Assist' and ctrl.submode == 'Backline')
-        or (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState ~= 'FIGHTING') then
+        or (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState ~= 'FIGHTING') then
         return
     end
 
@@ -21955,7 +22052,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
     local wp = runtime.wpNode and runtime.wpNode()
     if wp and wp.kind == 'Travel' then return nil, true end
     local isPulling    = (ctrl.mode == 'Puller')
-    local isCampMode   = isPulling and (ctrl.submode == 'Camp')
+    local isCampMode   = isPulling and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
     local minLv        = minLevel or (isCampMode and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1))
     local maxLv        = maxLevel or (isCampMode and (ctrl.pull_max_level or 100) or (ctrl.hunter_max_level or 100))
 
@@ -22131,7 +22228,7 @@ function runtime.checkCloserTarget(curTargetId, searchRadius, searchMaxZ, minLev
     pursuit.lastCloserScanAt = now
 
     local isPulling = (ctrl.mode == 'Puller')
-    local isCampMode = isPulling and (ctrl.submode == 'Camp')
+    local isCampMode = isPulling and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
     local minL = minLevel or (isCampMode and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1))
     local maxL = maxLevel or (isCampMode and (ctrl.pull_max_level or 100) or (ctrl.hunter_max_level or 100))
     local maxZ = searchMaxZ or (isCampMode and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75))
@@ -23393,7 +23490,7 @@ local function combatTick()
             haveNPC = false
             clearTarget()
         elseif not isXTargetId(t.ID()) then
-            local isPulling = (ctrl.submode == 'Camp')
+            local isPulling = (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
             local minL = isPulling and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1)
             local maxL = isPulling and (ctrl.pull_max_level or 100) or (ctrl.hunter_max_level or 100)
             local lvl = t.Level() or 0
@@ -23470,7 +23567,7 @@ local function combatTick()
             moveTowardLoc(ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, 15)
         end
     elseif ctrl.mode == 'Puller' then
-        if ctrl.submode == 'Camp' then
+        if ctrl.submode == 'Camp' or ctrl.submode == 'Lure' then
             if runtime.combatHold() then
                 stopMoving()
                 return
@@ -23484,7 +23581,10 @@ local function combatTick()
                 runtime.pullState = 'IDLE'
                 runtime.pullTargetId = 0
             end
-            if haveNPC and runtime.pullState == 'FIGHTING' then
+            if haveNPC and runtime.pullState == 'FIGHTING' and ctrl.submode == 'Lure'
+                and runtime.lureTick(pt.ID()) ~= 'fight' then
+                engage = false -- Lure: holding at camp for it, or walking back to camp
+            elseif haveNPC and runtime.pullState == 'FIGHTING' then
                 local id = pt.ID()
                 if moveToward(id, desiredRange(id)) then
                     engage = true
@@ -24000,7 +24100,7 @@ local function combatTick()
         end
     end
     if not isPullStandBack then
-        local isDraggingToCamp = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState == 'TO_CAMP')
+        local isDraggingToCamp = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState == 'TO_CAMP')
         if haveNPC and not isDraggingToCamp and autoAttackOk then
             local curDist = (tid > 0) and distToId(tid) or 999
             local maxReach
@@ -24056,7 +24156,7 @@ local function combatTick()
                         mq.cmd('/face fast')
                     end
                 end
-            elseif not isMoveActive() and curDist > maxReach and tid > 0 then
+            elseif not isMoveActive() and curDist > maxReach and tid > 0 and not runtime.lureHolding(tid) then
                 -- Mob moved, was pushed, or is out of striking/ranged reach: re-close distance.
                 -- Ranged/Spell wait for the current cast to finish first -- starting a
                 -- nav mid-cast just interrupts it for a few units of drift.
@@ -24118,8 +24218,8 @@ local function combatTick()
 
     -- Puller Camp Mode: Keep pets on HOLD while traveling to mob or dragging mob back to camp,
     -- until the mob is brought within camp fight range.
-    local isPullingToCamp = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState ~= 'FIGHTING')
-    if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and (ctrl.pull_style or 'Melee') == 'Pet' and runtime.pullState == 'TO_MOB' then
+    local isPullingToCamp = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState ~= 'FIGHTING')
+    if ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and (ctrl.pull_style or 'Melee') == 'Pet' and runtime.pullState == 'TO_MOB' then
         isPullingToCamp = false
     end
     if isPullingToCamp and ctrl.camp_loc then
@@ -24148,7 +24248,7 @@ local function combatTick()
     -- "hold all" on the same tick, flip-flopping the pets until the tag landed.
     local isHuntPetApproach = (ctrl.mode == 'Puller' and (ctrl.pull_style or 'Melee') == 'Pet'
         and haveNPC and not engage
-        and (ctrl.submode == 'Hunt' or (ctrl.submode == 'Camp' and runtime.pullState == 'TO_MOB')))
+        and (ctrl.submode == 'Hunt' or ((ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState == 'TO_MOB')))
 
     if petHoldEnabled and (not (haveNPC and engage) or isPullingToCamp) and not isHuntPetApproach then
         if not petState.petHoldActive then
@@ -24552,6 +24652,8 @@ local function setTriuneMode(arg1, arg2)
             newSubmode = 'Hunt'
         elseif k2 == 'camp' or k2 == 'pull' then
             newSubmode = 'Camp'
+        elseif k2 == 'lure' or k2 == 'wait' then
+            newSubmode = 'Lure'
         else
             newSubmode = ctrl.submode or 'Camp'
         end
