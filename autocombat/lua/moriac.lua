@@ -15357,6 +15357,9 @@ function UI.drawCommandBar()
         runtime.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then UI.setTooltip('Shrink MoriAC to the compact HUD (/ac compact).') end
+    ImGui.SameLine()
+    if ImGui.Button('Redetect##cbRedetect') then reDetectRequested = true end
+    if ImGui.IsItemHovered() then UI.setTooltip('Read your classes again from the Inventory window (/ac redetect). Use it when the classes in the title are wrong.') end
 end
 
 -- RUNNING / PAUSED, then what the engine is doing (or, while paused, what

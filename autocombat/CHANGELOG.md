@@ -4,6 +4,8 @@
 
 ## 2026-10-25
 
+- **Redetect button on the top bar**, next to Compact. It does the same as `/ac redetect`: reads your classes again from the Inventory window.
+
 - **Fix: another character's classes stuck after switching characters.** The new character's name showed, but the classes stayed those of the character you played before, even after `/ac restart`. Two causes:
   - Just after a switch the Inventory window can still show the old character's classes. That stale read got saved under the new name.
   - Saved classes were re-checked only when fewer than four were saved, so a wrong four-class list was never corrected.

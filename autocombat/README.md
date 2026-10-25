@@ -38,7 +38,7 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
 
 ## The main window
 
-- **Top bar:** Start/Pause, Burn, the mode pickers, the **Windows** menu (every plugin window) and **Compact** (a small HUD you can ghost over the game).
+- **Top bar:** Start/Pause, Burn, the mode pickers, the **Windows** menu (every plugin window) **Compact** (a small HUD you can ghost over the game) and **Redetect** (reads your four classes again, same as `/ac redetect`).
 - **Status line:** RUNNING/PAUSED and what MoriAC is doing right now. Below it, any problem (missing MQ2Nav, no navmesh...) with a button to fix it.
 - **Sidebar:**
   - **Overview**
