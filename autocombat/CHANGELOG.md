@@ -4,6 +4,17 @@
 
 ## 2026-10-26
 
+- **Cure clickies (Blackflame Sphere and the like) fire when someone is afflicted, and stop spamming.**
+  - The bug: a clicky with a beneficial effect was added with *missing buff*. A cure leaves no buff, so the line fired once and then marked itself done until you zoned or died. Set to *always*, it clicked every 1.5 s whether anyone was cursed or not.
+  - Now an item that removes curse, corruption, poison or disease counters (read from its spell's effects) is added with the matching *has Curse* / *has Corruption* / *has Poison* / *has Disease* condition. Its target follows the spell: group cures check the whole group, single-target ones you first and then the group, self-only ones just you.
+  - Cure clickies already in your list with *missing buff* or *always* are switched over the first time they're checked, with a chat line for each.
+  - **Cure pacing** applies to every cure (spells, AAs and clickies):
+    - After a cure goes off on someone, the same cure waits before trying that person again: 2.5 s for you, 6 s for anyone else, plus the cast time. Another character's affliction status reaches you a few seconds late, which is what caused the repeat clicks.
+    - Six tries on the same person within a minute without it clearing rests that cure on them for 30 s, with one chat line. That covers a curse the item can't fully remove.
+    - When the person reads as clean again, their count resets.
+  - Limits that remain: a groupmate who isn't one of your boxes (no Box Network / NetBots) only shows as cursed while you have them targeted.
+  - Tests: Suite M12.
+
 - **New plugin: Timed Commands (`lua/tac/timers.lua`).** It runs a command every N minutes.
   - Ships with `/say kratos` every 10 minutes for the Morituri buff. The first run is 5 s after MoriAC loads.
   - Each timer has a command (any slash command; text without a `/` is said), an interval (1-120 min), *When* (always, only while MoriAC is running, or only out of combat), and *Run it when MoriAC loads*.

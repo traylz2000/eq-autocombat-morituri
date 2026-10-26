@@ -10442,6 +10442,12 @@ function UI.addClickieFromCursor()
     local defTarget = isBene and 'F: Myself' or 'E: Current Target'
     local defWhen = isBene and 'missing buff' or 'in combat'
     local defPct = 100
+    -- A cure leaves no buff to look for: fire it when someone has what it cures.
+    local cureWhen = isBene and runtime.cureCondition(spellName) or nil
+    if cureWhen then
+        defWhen = cureWhen
+        defTarget = runtime.cureTargetFor(spellName)
+    end
 
     local entry = {
         name = itemName,
@@ -10453,6 +10459,7 @@ function UI.addClickieFromCursor()
         burn_only = false,
         enabled = true,
         cast_time = castTime,
+        kind = cureWhen and 'cure' or nil,
     }
 
     table.insert(loadout.clickies, entry)
@@ -18227,6 +18234,133 @@ function runtime.reconcileSungBuffs()
     end
 end
 
+-- ============================================================================
+-- Cure pacing and cure-effect detection
+-- ============================================================================
+runtime.CURE_CONDITIONS = {
+    ['has Poison'] = true, ['has Disease'] = true, ['has Poison/Disease'] = true,
+    ['has Curse'] = true, ['has Corruption'] = true,
+}
+runtime.CURE_HOLD_SELF  = 2.5  -- your own counters update at once
+runtime.CURE_HOLD_OTHER = 6.0  -- NetBots / Box Network / target buffs lag a few seconds
+runtime.CURE_MAX_TRIES  = 6    -- this many cures on one target in a minute without it clearing...
+runtime.CURE_BACKOFF    = 30   -- ...rest that cure on that target this long
+runtime.cureHolds = {}
+
+-- After a cure fires on a target, its affliction can still read as present
+-- for a few seconds (the status of another character arrives late), and an
+-- item with no recast timer was clicked again every 1.5 s. Each cure fired
+-- holds the same condition on the same target until the status has had time
+-- to catch up (plus the cast time); repeated tries that never clear it back
+-- off with one chat line (a curse too strong for the item, or one the client
+-- reports but the cure cannot touch).
+function runtime.noteCureFired(when, id, name, now, castSec, isSelf)
+    if not runtime.CURE_CONDITIONS[when] or not id or id <= 0 then return end
+    now = now or os.clock()
+    local key = tostring(id) .. '|' .. when
+    local h = runtime.cureHolds[key] or { tries = {} }
+    local recent = {}
+    for _, t in ipairs(h.tries) do
+        if (now - t) < 60 then recent[#recent + 1] = t end
+    end
+    recent[#recent + 1] = now
+    h.tries = recent
+    if #recent >= runtime.CURE_MAX_TRIES then
+        h.untilAt = now + runtime.CURE_BACKOFF
+        h.tries = {}
+        print(string.format('\ay[MoriAC]\ax %s: still afflicted after %d tries -- resting it on that target for %ds.',
+            tostring(name or when), runtime.CURE_MAX_TRIES, runtime.CURE_BACKOFF))
+    else
+        h.untilAt = now + (tonumber(castSec) or 0) + (isSelf and runtime.CURE_HOLD_SELF or runtime.CURE_HOLD_OTHER)
+    end
+    runtime.cureHolds[key] = h
+end
+
+function runtime.cureHeld(when, id, now)
+    local h = runtime.cureHolds[tostring(id) .. '|' .. tostring(when)]
+    return h ~= nil and (now or os.clock()) < (h.untilAt or 0)
+end
+
+-- The target is clean again: forget its tries.
+function runtime.cureCleared(when, id)
+    runtime.cureHolds[tostring(id) .. '|' .. tostring(when)] = nil
+end
+
+-- Fire-function hook: entry `e` (gem / AA / clickie) just went off on `id`.
+function runtime.cureFiredFor(e, id, name)
+    if not e or not runtime.CURE_CONDITIONS[e.when] then return end
+    local castSec = 0
+    pcall(function() castSec = (tonumber(mq.TLO.Spell(name).CastTime()) or 0) / 1000 end)
+    local myId = 0
+    pcall(function() myId = mq.TLO.Me.ID() or 0 end)
+    -- A group cure is checked against everyone, whose status lags like any other's.
+    local isSelf = (id == myId) and baseTok(e.target) ~= 'Whole Group'
+    runtime.noteCureFired(e.when, id, name, os.clock(), castSec, isSelf)
+end
+
+-- Which cure condition a spell answers, from what it removes: SPA 116 curse,
+-- 369 corruption, 36 poison, 35 disease counters. nil when it cures nothing
+-- (or the client does not know the spell yet, which is not cached).
+runtime.cureConditionCache = {}
+function runtime.cureCondition(spellName)
+    if not spellName or spellName == '' then return nil end
+    local cached = runtime.cureConditionCache[spellName]
+    if cached ~= nil then return cached or nil end
+    local known, res = false, false
+    pcall(function()
+        local sp = mq.TLO.Spell(spellName)
+        if not sp() then return end
+        known = true
+        local poison, disease = checkHasSPA(sp, nil, nil, 36), checkHasSPA(sp, nil, nil, 35)
+        if checkHasSPA(sp, nil, nil, 116) then res = 'has Curse'
+        elseif checkHasSPA(sp, nil, nil, 369) then res = 'has Corruption'
+        elseif poison and disease then res = 'has Poison/Disease'
+        elseif poison then res = 'has Poison'
+        elseif disease then res = 'has Disease' end
+    end)
+    if not known then return nil end
+    runtime.cureConditionCache[spellName] = res
+    return res or nil
+end
+
+-- Default target for a cure: the spell's own reach. Group cures check the
+-- whole group, single-target ones you first and then the group, self-only
+-- ones just you.
+function runtime.cureTargetFor(spellName)
+    local tt = ''
+    pcall(function() tt = tostring(mq.TLO.Spell(spellName).TargetType() or ''):lower() end)
+    if tt:find('group', 1, true) then return 'F: Whole Group' end
+    if tt == 'single' then return 'F: Me, then Group' end
+    return 'F: Myself'
+end
+
+-- Clickies added before cure detection got "missing buff": a cure leaves no
+-- buff, so that fired once and then never again until you zoned or died
+-- (and "always" clicked it every 1.5 s). Point them at the affliction they
+-- cure instead. Runs once per loaded / edited clicky list.
+function runtime.fixCureClickies()
+    if runtime.cureClickiesChecked == loadout.clickies then return end
+    local pending = false
+    for _, c in ipairs(loadout.clickies or {}) do
+        if c.spell and c.spell ~= '' and (c.when == 'missing buff' or c.when == 'always') then
+            local cond = runtime.cureCondition(c.spell)
+            if cond then
+                c.when = cond
+                c.kind = 'cure'
+                if c.target == nil or c.target == 'F: Myself' then c.target = runtime.cureTargetFor(c.spell) end
+                print(string.format('\ag[MoriAC]\ax Clickie %s (%s) cures: it now fires when %s %s.',
+                    c.name, c.spell, tostring(c.target):gsub('^%a: ', ''), cond:lower()))
+                runtime.saveLoadout(true)
+            else
+                local known = false
+                pcall(function() known = mq.TLO.Spell(c.spell)() ~= nil end)
+                if not known then pending = true end -- spell not known yet: look again next pass
+            end
+        end
+    end
+    if not pending then runtime.cureClickiesChecked = loadout.clickies end
+end
+
 function runtime.conditionMet(when, pct, spellName, targetId, cls, token, extra)
     pct = tonumber(pct) or 0
     if pct <= 0 then return false end
@@ -18286,6 +18420,7 @@ function runtime.conditionMet(when, pct, spellName, targetId, cls, token, extra)
         ['has Poison/Disease'] = isPoisonedOrDiseased,
     })[when]
     if afflictionCheck then
+        if runtime.cureHeld and runtime.cureHeld(when, targetId) then return false end
         if token and baseTok(token) == 'Whole Group' then
             if afflictionCheck(mq.TLO.Me.ID()) then return true end
             local total = 0
@@ -18295,11 +18430,15 @@ function runtime.conditionMet(when, pct, spellName, targetId, cls, token, extra)
                 pcall(function() m = mq.TLO.Group.Member(i) end)
                 if m and m() and (m.ID() or 0) > 0 and afflictionCheck(m.ID()) then return true end
             end
+            if runtime.cureCleared then runtime.cureCleared(when, targetId) end
             return false
         end
-        return afflictionCheck(targetId)
+        local afflicted = afflictionCheck(targetId)
+        if not afflicted and runtime.cureCleared then runtime.cureCleared(when, targetId) end
+        return afflicted
     end
     if when == 'has Curse' then
+        if runtime.cureHeld and runtime.cureHeld(when, targetId) then return false end
         if token and baseTok(token) == 'Whole Group' then
             if isCursed(mq.TLO.Me.ID()) then return true end
             local total = 0
@@ -18309,11 +18448,15 @@ function runtime.conditionMet(when, pct, spellName, targetId, cls, token, extra)
                 pcall(function() m = mq.TLO.Group.Member(i) end)
                 if m and m() and (m.ID() or 0) > 0 and isCursed(m.ID()) then return true end
             end
+            if runtime.cureCleared then runtime.cureCleared(when, targetId) end
             return false
         end
-        return isCursed(targetId)
+        local cursed = isCursed(targetId)
+        if not cursed and runtime.cureCleared then runtime.cureCleared(when, targetId) end
+        return cursed
     end
     if when == 'has Corruption' then
+        if runtime.cureHeld and runtime.cureHeld(when, targetId) then return false end
         if token and baseTok(token) == 'Whole Group' then
             if isCorrupted(mq.TLO.Me.ID()) then return true end
             local total = 0
@@ -18323,9 +18466,12 @@ function runtime.conditionMet(when, pct, spellName, targetId, cls, token, extra)
                 pcall(function() m = mq.TLO.Group.Member(i) end)
                 if m and m() and (m.ID() or 0) > 0 and isCorrupted(m.ID()) then return true end
             end
+            if runtime.cureCleared then runtime.cureCleared(when, targetId) end
             return false
         end
-        return isCorrupted(targetId)
+        local corrupted = isCorrupted(targetId)
+        if not corrupted and runtime.cureCleared then runtime.cureCleared(when, targetId) end
+        return corrupted
     end
     if when == 'Aggro on Me' then
         local onMe = false
@@ -18489,6 +18635,7 @@ function runtime.castGem(i, g, id)
     end
     mq.cmdf('/cast "%s"', g.spell)
     runtime.lastCast[key] = os.clock()
+    if runtime.cureFiredFor then runtime.cureFiredFor(g, id, g.spell) end
     if id and id > 0 and g and g.spell and g.spell ~= '' then
         runtime.npcCastCounts = runtime.npcCastCounts or {}
         runtime.npcCastCounts[id] = runtime.npcCastCounts[id] or {}
@@ -18624,6 +18771,7 @@ function runtime.fireAA(name, a, id)
     end
     castTracker.castStartTime  = now
     mq.cmdf('/alt act %d', aa.ID())
+    if runtime.cureFiredFor then runtime.cureFiredFor(a, id, name) end
 
     local aaReuse = 0
     pcall(function()
@@ -19142,6 +19290,7 @@ runtime.useClickie = function(c, id)
     end
     mq.cmdf('/useitem "%s"', c.name)
     runtime.lastCast[key] = os.clock()
+    if runtime.cureFiredFor then runtime.cureFiredFor(c, id, effName) end
     print('\ag[MoriAC]\ax Clickie used: ' .. c.name .. (c.spell and (' (' .. c.spell .. ')') or ''))
 
     if id and id > 0 then
@@ -24967,6 +25116,7 @@ local function combatTick()
     -- above are unaffected (instant, no cast bar, usable on the move). Casts
     categoryRunners.clickies = function()
     prepareCastState()
+    runtime.fixCureClickies()
     if combatReady and not isCasting() and not isMoveActive() and canCastMove and loadout.clickies and #loadout.clickies > 0 then
         if not isCasting() and runtime.restoreTargetId ~= nil then
             local rId = runtime.restoreTargetId

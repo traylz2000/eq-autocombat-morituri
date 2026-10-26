@@ -30,7 +30,7 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
 ## First run
 
 1. **Check your classes.** The window title and **Setup -> Settings** show the four classes it detected. Click **Re-detect** if they are wrong.
-2. **Set up what to cast.** Work through the **Actions** pages in the sidebar: **Spells**, **Abilities** (kick, bash, backstab...), **AAs**, **Disciplines** and **Clickies**. Click a line to edit it in the panel underneath: who it targets and when it fires, such as *HP <= 70%*, *missing buff* or *in combat*. **Import Bar** fills the spell list from whatever you have memorized.
+2. **Set up what to cast.** Work through the **Actions** pages in the sidebar: **Spells**, **Abilities** (kick, bash, backstab...), **AAs**, **Disciplines** and **Clickies**. Click a line to edit it in the panel underneath: who it targets and when it fires, such as *HP <= 70%*, *missing buff* or *in combat*. **Import Bar** fills the spell list from whatever you have memorized. A cure item (such as a Blackflame Sphere) added to Clickies is set to fire when someone *has Curse* (or poison / disease / corruption, whatever it removes).
 3. The **Auto** checkbox on each spell line turns auto-casting on or off. An unticked spell is never cast automatically but stays memorized, so you can still cast it yourself.
 4. To heal everyone, players and pets alike, with one line, use the **Group + Pets** target. The group targets (*Me, then Group*, *Group, then Me*, *Whole Group*) heal players only.
 5. Mark emergency heals or lifetaps **High priority** so they're checked after Abilities and Disciplines but before Clickies.
