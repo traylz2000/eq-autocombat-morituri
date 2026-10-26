@@ -4,6 +4,13 @@
 
 ## 2026-10-26
 
+- **New plugin: Timed Commands (`lua/tac/timers.lua`).** It runs a command every N minutes.
+  - Ships with `/say kratos` every 10 minutes for the Morituri buff. The first run is 5 s after MoriAC loads.
+  - Each timer has a command (any slash command; text without a `/` is said), an interval (1-120 min), *When* (always, only while MoriAC is running, or only out of combat), and *Run it when MoriAC loads*.
+  - A timer never runs while you are dead, zoning or casting. When it comes due while held back, it runs as soon as it is allowed instead of a whole interval later. It works while MoriAC is paused.
+  - `/ac timers [list|now <n>|on <n>|off <n>]`. `/ac kratos` says it now and restarts the timer. Settings are under Setup -> Plugins -> Timed Commands.
+  - Tests: Suite M11. Suite 88 and Suite 92 now count 26 shipped plugins.
+
 - **New mode: Boss (submodes DPS and Tank)** for raid boss fights, where a second boss may be up across the room.
   - It fights only mobs that are already engaged and inside the **fight area**: a circle (*Fight area radius*, default 100) around the camp spot, or around where Boss mode started. It never chases past the edge, and walks back to the centre after 3 s with nothing to fight.
   - **Boss vs adds:** set *Boss names* (comma-separated, part of the name is enough; **Add Target** or `/ac bossname target`). With none set, any named mob is the boss. Every other engaged mob in the area is an add.

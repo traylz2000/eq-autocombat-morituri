@@ -8071,6 +8071,7 @@ function runtime.initPluginManager()
             'gm_commands.lua',
             'update_check.lua',
             'alerts.lua',
+            'timers.lua',
         }
         for _, f in ipairs(known) do
             if not fileSet[f:lower()] then

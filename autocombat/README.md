@@ -110,6 +110,7 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | Floating damage | Setup -> Plugins | Big animated numbers for crits. |
 | Updater | `/ac update` | Checks GitHub for changed MoriAC files when it starts. `/ac update install` downloads and installs them (old copies kept as `.bak`); then `/ac restart`. |
 | Alerts | `/ac alerts` | A sound and a big on-screen line when a mob enrages or rampages, you get summoned, your HP drops low, or any chat line you choose shows up. Works while MoriAC is paused. Set the triggers under Setup -> Plugins -> Alerts. |
+| Timed Commands | `/ac timers` | Runs a command every few minutes. Ships with `/say kratos` every 10 minutes (the Morituri buff), first run a few seconds after MoriAC loads. Works while MoriAC is paused, and never while you are dead, zoning or casting. Add your own under Setup -> Plugins -> Timed Commands. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
 Each of these is a plugin in `lua/tac/`. Turn them on or off under **Setup -> Plugins**. Its **Config** button has the plugin's settings and a **Show** box for each of its windows. HUD-style windows also close from their right-click menu.
@@ -140,6 +141,7 @@ Type `/ac help` in game for the full list.
 | `/ac restart` | Reload the whole script |
 | `/ac update` / `/ac update install` | Check for an update / install it (then `/ac restart`) |
 | `/ac alerts` / `/ac alerts mute` | List the alert triggers / silence their sounds |
+| `/ac timers [now\|on\|off <n>]` / `/ac kratos` | List the timed commands, run or toggle one / say kratos now |
 | `/moriacrun` | Start/pause - bind this to a key (`/triunerun` still works) |
 
 ---
