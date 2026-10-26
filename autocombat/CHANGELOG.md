@@ -4,6 +4,12 @@
 
 ## 2026-10-26
 
+- **Auto AA purchases work again (`lua/tac/auto_aa.lua` 1.3.0).** Every purchase showed "Initiating AA Window train sequence..." and then nothing. That covered automatic spending, **Spend Now** and the window's **Train** button.
+  - Purchases now use the client's own `/alt buy <index>` first: the next rank's index, the same command the MQ2AASpend plugin uses on RoF2. It counts as bought once your unspent AA drops: "Bought "X" (N AA left)". Only if no points are spent does it fall back to clicking through the AA window as before.
+  - `/alt buy` is instant and opens nothing, so the moving, casting and combat checks (which protect the multi-second window steps) no longer apply to it. One of those checks was cancelling every purchase silently.
+  - When the window steps are cancelled, chat now says why: "AA purchase of "X" stopped: you started moving / you started casting / combat started".
+  - Tests: Suite 91 now expects the purchase to begin with `/alt buy`, then covers a direct purchase landing and a miss falling back to the window.
+
 - **Cure clickies (Blackflame Sphere and the like) fire when someone is afflicted, and stop spamming.**
   - The bug: a clicky with a beneficial effect was added with *missing buff*. A cure leaves no buff, so the line fired once and then marked itself done until you zoned or died. Set to *always*, it clicked every 1.5 s whether anyone was cursed or not.
   - Now an item that removes curse, corruption, poison or disease counters (read from its spell's effects) is added with the matching *has Curse* / *has Corruption* / *has Poison* / *has Disease* condition. Its target follows the spell: group cures check the whole group, single-target ones you first and then the group, self-only ones just you.

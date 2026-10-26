@@ -3,12 +3,13 @@
 -- TAC/lua/tac/auto_aa.lua — Triune Auto AA Plugin
 -- ============================================================================
 -- Automatic Alternate Advancement spending: scans the character's AA window,
--- ranks abilities by the user's priority list, purchases them through the
--- game's own AA window (open it, pick the tab and row, click Train, confirm
--- the unspent total dropped, close it), handles the Fireworks / Special-tab
+-- ranks abilities by the user's priority list, purchases them with the
+-- client's /alt buy <index> (falling back to driving the game's own AA window:
+-- open it, pick the tab and row, click Train, close it; either way the
+-- unspent total has to drop to count), handles the Fireworks / Special-tab
 -- cap spender, auto-summons fireworks, and owns the "Auto AA" popout window
 -- (ctrl.show_auto_aa, header button) plus the /ac autoaa family of commands.
--- No MQ2AAspend: every purchase goes through the window trainer.
+-- No MQ2AAspend.
 --
 -- Combat coupling is expressed through two plugin hooks rather than shared
 -- runtime state:
@@ -24,7 +25,7 @@
 local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
-    version            = '1.2.0',
+    version            = '1.3.0',
     author             = 'MoriAC',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
@@ -1613,7 +1614,7 @@ function AA.startAATrainWorkflow(targetName, allowStop)
         aaType = aaType,
         targetTab = prefTab,
         prefTab = prefTab,
-        step = 'open',
+        step = 'direct',             -- /alt buy first; the AA window is the fallback
         tab = prefTab,
         maxTabs = 4,
         tabsTried = 0,               -- tabs searched so far (wraps around from prefTab)
@@ -1647,9 +1648,44 @@ function AA.restoreAAWindow(task)
     if task.openedByUs then AA.closeAAWindow() end
 end
 
-function AA.abortAATrain(task)
+function AA.abortAATrain(task, why)
     AA.restoreAAWindow(task)
     AA.pendingAATrain = nil
+    if why and task then
+        print(string.format('\ay[MoriAC]\ax AA purchase of "%s" stopped: %s. It will try again shortly.', tostring(task.name), why))
+    end
+end
+
+-- The index /alt buy takes for the next rank of `name`: the owned rank's
+-- NextIndex, else the ability's own index (rank 1), else its ID. 0 = none.
+function AA.buyIndex(name)
+    local idx = 0
+    pcall(function()
+        local ma = mq.TLO.Me.AltAbility(name)
+        if ma and ma() then
+            local r = tonumber(ma.Rank and ma.Rank() or 0) or 0
+            if r > 0 and ma.NextIndex then idx = tonumber(ma.NextIndex() or 0) or 0 end
+            if idx <= 0 and r == 0 and ma.Index then idx = tonumber(ma.Index() or 0) or 0 end
+        end
+        if idx <= 0 then
+            local ga = mq.TLO.AltAbility(name)
+            if ga and ga() then
+                if ga.Index then idx = tonumber(ga.Index() or 0) or 0 end
+                if idx <= 0 and ga.ID then idx = tonumber(ga.ID() or 0) or 0 end
+            end
+        end
+    end)
+    return idx
+end
+
+-- Fireworks / Special-tab buys are summoned once the purchase has landed.
+function AA.afterPurchaseSummon(task)
+    local isFw = task.name and (task.name:lower():find('firework') ~= nil
+        or (AA.isSpecialTabAA and AA.isSpecialTabAA(task.name) and true or false))
+    if isFw then
+        local fwId = tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788
+        AA.scheduleFireworksSummon(fwId, task.name)
+    end
 end
 
 function AA.processAATrainWorkflow()
@@ -1658,6 +1694,49 @@ function AA.processAATrainWorkflow()
 
     local now = os.clock()
 
+    -- Direct purchase: /alt buy <index>, confirmed by the unspent total
+    -- dropping. Only when that does not land is the AA window driven. It is
+    -- instant and opens nothing, so the moving / casting / combat guards
+    -- below (which protect the multi-second window workflow) do not apply.
+    if task.step == 'direct' or task.step == 'direct_verify' then
+        if now < (task.nextStepAt or 0) then return end
+    end
+    if task.step == 'direct' then
+        local idx = AA.buyIndex(task.name)
+        if idx <= 0 then
+            task.step = 'open'
+            task.nextStepAt = now
+            return
+        end
+        task.pointsBefore = nil
+        pcall(function() task.pointsBefore = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
+        mq.cmdf('/alt buy %d', idx)
+        print(string.format('\ag[MoriAC]\ax Buying "%s" (/alt buy %d)...', task.name, idx))
+        task.step = 'direct_verify'
+        task.verifyUntil = now + 3.0
+        task.nextStepAt = now + 0.3
+        return
+    elseif task.step == 'direct_verify' then
+        local after = nil
+        pcall(function() after = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
+        if task.pointsBefore ~= nil and after ~= nil and after < task.pointsBefore then
+            print(string.format('\ag[MoriAC]\ax Bought "%s" (%d AA left).', task.name, after))
+            AA.afterPurchaseSummon(task)
+            task.purchased = true
+            task.step = 'finish'
+            task.nextStepAt = now + 0.1
+            return
+        end
+        if now < (task.verifyUntil or 0) then
+            task.nextStepAt = now + 0.25
+            return
+        end
+        print(string.format('\ay[MoriAC]\ax /alt buy did not spend any points for "%s"; trying the AA window.', task.name))
+        task.step = 'open'
+        task.nextStepAt = now + 0.1
+        return
+    end
+
     -- Strict anti-pause check: abort immediately if player is moving, navigating, or casting
     local moving = false
     pcall(function()
@@ -1665,17 +1744,18 @@ function AA.processAATrainWorkflow()
         if rt.isMoveActive and rt.isMoveActive() then moving = true end
         if mq.TLO.Navigation and mq.TLO.Navigation.Active and mq.TLO.Navigation.Active() then moving = true end
     end)
-    if moving then
+    -- (A finished purchase still gets recorded, whatever is happening.)
+    if moving and task.step ~= 'finish' then
         if task.allowStop and (now - (task.startedAt or now)) < 0.35 then
             if rt.stopMoving then rt.stopMoving() end
             task.nextStepAt = now + 0.1
             return
         end
-        AA.abortAATrain(task)
+        AA.abortAATrain(task, 'you started moving')
         return
     end
-    if rt.isCasting() then
-        AA.abortAATrain(task)
+    if task.step ~= 'finish' and rt.isCasting() then
+        AA.abortAATrain(task, 'you started casting')
         return
     end
 
@@ -1688,12 +1768,13 @@ function AA.processAATrainWorkflow()
         if rt.isCombat and rt.isCombat() then inCombat = true return end
         if rt.anyXtarAlive and rt.anyXtarAlive(true) then inCombat = true return end
     end)
-    if inCombat then
-        AA.abortAATrain(task)
+    if inCombat and task.step ~= 'finish' then
+        AA.abortAATrain(task, 'combat started')
         return
     end
 
     if now < (task.nextStepAt or 0) then return end
+
 
     if task.step == 'open' then
         if AA.isAAWindowOpen() then
@@ -1941,17 +2022,11 @@ function AA.processAATrainWorkflow()
         end
 
         print(string.format('\ag[MoriAC]\ax Clicked Train Button in AA Window for "%s".', task.name))
-        -- Only a fireworks / Special-tab ability is summoned afterwards; a
-        -- regular AA configured as the cap spender must not trigger /alt act.
-        local isFw = task.name and (task.name:lower():find('firework') ~= nil
-            or (AA.isSpecialTabAA and AA.isSpecialTabAA(task.name) and true or false))
-        if isFw then
-            -- The purchase has to round-trip the server before the AA can be
-            -- activated; /alt act right after the click was a no-op. Schedule
-            -- the summon instead (see AA.processPendingFireworksSummon).
-            local fwId = tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788
-            AA.scheduleFireworksSummon(fwId, task.name)
-        end
+        -- Only a fireworks / Special-tab ability is summoned afterwards (a
+        -- regular AA configured as the cap spender must not trigger /alt act),
+        -- and only once the purchase has round-tripped the server: see
+        -- AA.processPendingFireworksSummon.
+        AA.afterPurchaseSummon(task)
         task.step = 'verify'
         task.verifyUntil = now + 2.5
         task.nextStepAt = now + 0.3
