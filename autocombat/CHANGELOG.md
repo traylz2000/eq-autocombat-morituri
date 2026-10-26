@@ -4,6 +4,21 @@
 
 ## 2026-10-26
 
+- **New mode: Boss (submodes DPS and Tank)** for raid boss fights, where a second boss may be up across the room.
+  - It fights only mobs that are already engaged and inside the **fight area**: a circle (*Fight area radius*, default 100) around the camp spot, or around where Boss mode started. It never chases past the edge, and walks back to the centre after 3 s with nothing to fight.
+  - **Boss vs adds:** set *Boss names* (comma-separated, part of the name is enough; **Add Target** or `/ac bossname target`). With none set, any named mob is the boss. Every other engaged mob in the area is an add.
+  - **Adds first.** DPS kills the lowest-HP add, so every box converges on the same one, and switches only if another add is 10 points lower. Once the adds are dead it joins on the boss at *Join the boss at HP* (default 98%).
+  - **DPS fights from behind the target:** melee sticks to its back, and bow and caster styles walk round behind it at range between casts. This pauses while you have the target's aggro.
+  - **Tank:** picks up mobs that are not on it first (adds before the boss), faces its target, and when a mob on it is outside its front arc, steps 12 ft to the spot inside the area that puts them all in front.
+  - A forced XTarget still outranks everything. Pets attack with you, as in Manual and Puller.
+  - `/ac boss [dps|tank]`, `/ac bossname [target|clear|<names>]`. Mode & Pulling has a **Boss fight** section with a live readout of the boss, the number of adds, and what you're on.
+  - Tests: Suite M10 covers name matching, add-before-boss order, the DPS HP wait, the tank's loose-mob pick and the back-step geometry. The smoke test renders both Boss submodes.
+  - Check in game:
+    - Two bosses up: only the one inside the area is fought.
+    - Adds die before the boss.
+    - Melee DPS end up on the boss's back.
+    - The tank steps out of a sandwich.
+
 - **The updater now installs updates (`lua/tac/update_check.lua`).** The old checker asked GitHub for the latest *release*, and MoriAC has never published one, so it always said "404 not found". It now reads a file list that every publish writes, compares it with your files, and can install what changed.
   - About 20 seconds after MoriAC starts it checks, then tells you in chat and in a popup how many files changed, and shows the newest changelog section.
   - `/ac update install` (or **Update Now**) downloads only the changed files from GitHub. It checks each one's size and CRC-32 against the list. If any file doesn't match, nothing is installed. Then it swaps them in and keeps each old copy as `<file>.bak`. Then `/ac restart` on each character loads the new version.

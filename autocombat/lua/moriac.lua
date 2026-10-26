@@ -159,10 +159,11 @@ local loadout        = { gems = {}, aas = {}, discs = {}, actions = {}, clickies
 -- combat control state (Control tab). NOTE: this is the control surface; wiring it
 -- Primary Combat Modes & Submodes
 local MODES = {
-    PRIMARY       = { 'Manual', 'Puller', 'Assist' },
+    PRIMARY       = { 'Manual', 'Puller', 'Assist', 'Boss' },
     SUBMODES      = {
         Puller = { 'Hunt', 'Camp', 'Lure' },
         Assist = { 'Chase', 'Camp', 'Backline' },
+        Boss   = { 'DPS', 'Tank' },
     },
     PULL_STYLES   = { 'Melee', 'Spell', 'Pet', 'Ranged' },
     PULL_CON_LIST = {
@@ -173,6 +174,7 @@ local MODES = {
         Manual = 'Fights your current or acquired target automatically. Does not roam.',
         Puller = 'Pulling & hunting engine. Hunt roams and solo-kills; Camp pulls mobs back to set camp; Lure tags from range and waits at camp for the mob.',
         Assist = 'Assists the Main Assist. Chase follows MA; Camp holds camp spot; Backline is ranged/caster support.',
+        Boss   = 'Raid boss fights. Only fights engaged mobs inside the fight area, kills adds before the boss, and never leaves the area.',
     },
     SUB_DESC      = {
         ['Puller:Hunt']     = 'Roams within search radius looking for valid mobs and kills them on the spot.',
@@ -181,6 +183,8 @@ local MODES = {
         ['Assist:Chase']    = 'Follows Main Assist everywhere and assists on MA target.',
         ['Assist:Camp']     = 'Holds set camp position and assists MA on MA target, returning to camp when idle.',
         ['Assist:Backline'] = 'Ranged/caster support; assists MA without moving to melee range.',
+        ['Boss:DPS']        = 'Kills adds first, then the boss once it is at the engage HP. Fights from behind the target.',
+        ['Boss:Tank']       = 'Grabs loose adds first, faces its target and backs up so no mob is hitting it from behind.',
     },
 }
 
@@ -220,7 +224,7 @@ local function sanitizeModeConfig(c)
         c.submode = 'Camp'
     end
 
-    if c.mode ~= 'Manual' and c.mode ~= 'Puller' and c.mode ~= 'Assist' then
+    if c.mode ~= 'Manual' and c.mode ~= 'Puller' and c.mode ~= 'Assist' and c.mode ~= 'Boss' then
         c.mode = 'Manual'
     end
 
@@ -228,6 +232,8 @@ local function sanitizeModeConfig(c)
         if c.submode ~= 'Hunt' and c.submode ~= 'Camp' and c.submode ~= 'Lure' then c.submode = 'Hunt' end
     elseif c.mode == 'Assist' then
         if c.submode ~= 'Chase' and c.submode ~= 'Camp' and c.submode ~= 'Backline' then c.submode = 'Chase' end
+    elseif c.mode == 'Boss' then
+        if c.submode ~= 'DPS' and c.submode ~= 'Tank' then c.submode = 'DPS' end
     else
         c.submode = 'Hunt'
     end
@@ -387,6 +393,11 @@ local function defaultCtrl()
         assist_at            = 98,
         assist_self_defense  = true,
         assist_behind        = true,
+        boss_names           = '',    -- Boss mode: comma-separated boss names; blank = any named mob in the area
+        boss_radius          = 100,   -- Boss mode: fight-area radius around camp_loc (or where Boss mode started)
+        boss_engage_at       = 98,    -- Boss (DPS): boss HP at or below which DPS joins in
+        boss_behind          = true,  -- Boss (DPS): fight from behind the target
+        boss_tank_front      = true,  -- Boss (Tank): back up so every mob on the tank is in front of it
         chase                = true,
         chase_dist           = 15,
         automem              = true,
@@ -9195,6 +9206,8 @@ UI.HELP_COMMANDS = (function() return {
         { cmd = '/ac zplane [5-100]',                 desc = 'Configure Hunter Tier 1 same-floor / Z plane height threshold (default 15)' },
         { cmd = '/ac huntz [10-300]',                 desc = 'Configure Hunter Tier 2 max vertical height difference (default 75)' },
         { cmd = '/ac <mode> [submode]',               desc = 'Switch combat mode (e.g. /ac manual, /ac puller hunt, /ac puller camp, /ac puller lure, /ac assist chase, /ac backline, /ac tank)' },
+        { cmd = '/ac boss [dps|tank]',                desc = 'Boss mode: fight only engaged mobs inside the fight area, adds before the boss (DPS fights from behind; Tank keeps mobs in front)' },
+        { cmd = '/ac bossname [target|clear|<names>]', desc = 'Boss mode: set the boss names (comma-separated), add your target\'s name, or clear (any named mob is the boss)' },
         { cmd = '/ac ma [target|clear|<name>|<id>]',  desc = 'Configure Main Assist by player ID or name, or set from current PC target' },
         { cmd = '/ac style [melee|ranged|spell]',     desc = 'Set combat style: Melee (/attack at melee reach), Ranged (bow via server #attackmode), or Spell (never auto-attacks)' },
         { cmd = '/ac range [dist]',                   desc = 'Set engagement distance for the active style (melee 5-50, ranged/spell 5-200); /ac meleerange and /ac rangeddist target a specific one' },
@@ -10787,6 +10800,7 @@ function UI.startEngine()
     end
     runtime.wpAcquired()
     if runtime.wpPatrol then runtime.wpPatrol.lastTick = nil end
+    if runtime.bossReset then runtime.bossReset() end
     ctrl.running = true
     runtime.wasRunning = true
     if not navLoaded() and ctrl.mode ~= 'Manual' then
@@ -11407,6 +11421,11 @@ function UI.ovModeDetails()
         ImGui.Text(string.format('Assist at %d%%, chase %s (%d ft), self-defense %s, stay behind %s',
             ctrl.assist_at or 98, yes(ctrl.chase), ctrl.chase_dist or 15,
             yes(ctrl.assist_self_defense ~= false), yes(ctrl.assist_behind ~= false)))
+    elseif ctrl.mode == 'Boss' then
+        local names = (ctrl.boss_names and ctrl.boss_names ~= '') and ctrl.boss_names or 'any named mob'
+        ImGui.Text(string.format('Boss %s, area %d ft, DPS joins at %d%%, from behind %s, tank keeps front %s',
+            names, tonumber(ctrl.boss_radius) or 100, tonumber(ctrl.boss_engage_at) or 98,
+            yes(ctrl.boss_behind ~= false), yes(ctrl.boss_tank_front ~= false)))
     else
         ImGui.Text(string.format('Auto-target XTarget %s, stick %s, auto-nav to target %s',
             yes(ctrl.manual_auto_xtarget ~= false), yes(ctrl.manual_stick ~= false), yes(ctrl.manual_auto_nav)))
@@ -12857,6 +12876,75 @@ function UI.drawControlTab()
                 ImGui.SetTooltip('When checked, follows the Main Assist at the configured Chase Distance when out of combat.\nWhen combat begins, holds backline position and assists with spells and ranged attacks without running into melee.')
             end
             accent(MUTED, 'Backline stays back at Chase Distance and assists MA with ranged/spells without moving to melee.')
+        end
+    end
+
+    -- Boss Mode Contextual Controls
+    if ctrl.mode == 'Boss' and UI.pageSection('bossFight', 'Boss fight', true) then
+        UI.formLabel('Boss names')
+        ImGui.SetNextItemWidth(UI.px(240))
+        local names = ImGui.InputText('##bossNames', ctrl.boss_names or '')
+        if type(names) == 'string' and names ~= (ctrl.boss_names or '') then
+            ctrl.boss_names = names
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then
+            UI.setTooltip('Comma-separated. A mob whose name contains one of these is the boss; every other engaged mob in the area is an add.\nLeave blank and any named mob in the area is the boss.')
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Add Target##bossAddTarget') then runtime.bossAddTargetName() end
+        if ImGui.IsItemHovered() then UI.setTooltip('Add your current target\'s name to the boss names.') end
+
+        UI.formLabel('Fight area radius')
+        ctrl.boss_radius = ImGui.SliderInt('##bossRadius', tonumber(ctrl.boss_radius) or 100, 30, 300, '%d ft')
+        if ImGui.IsItemHovered() then
+            UI.setTooltip('Only mobs inside this circle are fought, and you never chase past it.\nKeep it smaller than the distance to the next boss in the room.')
+        end
+        ImGui.Spacing()
+        UI.campRow('boss', 'No centre set: the area is centred where you stand when Boss mode starts.',
+            'Make this spot the centre of the fight area.')
+        ImGui.Spacing()
+
+        if ctrl.submode ~= 'Tank' then
+            UI.formLabel('Join the boss at HP')
+            ctrl.boss_engage_at = ImGui.SliderInt('##bossEngageAt', tonumber(ctrl.boss_engage_at) or 98, 1, 100, '%d%%')
+            if ImGui.IsItemHovered() then
+                UI.setTooltip('DPS waits for the tank until the boss is at or below this. Adds are attacked straight away.')
+            end
+            local behindVal = ImGui.Checkbox('Fight from behind the target##bossBehind', ctrl.boss_behind ~= false)
+            if behindVal ~= (ctrl.boss_behind ~= false) then
+                ctrl.boss_behind = behindVal
+                runtime.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                UI.setTooltip('Melee sticks to the target\'s back; bow and caster styles walk round behind it at range between casts.\nSuspended while you have the target\'s aggro.')
+            end
+        else
+            local frontVal = ImGui.Checkbox('Keep every mob in front of me##bossTankFront', ctrl.boss_tank_front ~= false)
+            if frontVal ~= (ctrl.boss_tank_front ~= false) then
+                ctrl.boss_tank_front = frontVal
+                runtime.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                UI.setTooltip('When a mob on you is hitting your back, step (inside the fight area) to where they are all in front,\nso you can block, parry and riposte. Loose mobs not on you are picked up first.')
+            end
+        end
+
+        local bs = runtime.bossState
+        if ctrl.running and bs then
+            ImGui.Spacing()
+            if bs.bossId then
+                accent(GOLD, string.format('Boss: %s (%d%%)', tostring(bs.bossName or '?'), tonumber(bs.bossHp) or 0))
+            else
+                accent(MUTED, 'Boss: none engaged in the area')
+            end
+            ImGui.SameLine()
+            accent(bs.adds > 0 and WARN or MUTED, string.format('Adds: %d', bs.adds))
+            if bs.why == 'wait' then
+                accent(MUTED, string.format('Waiting for the boss to reach %d%%.', tonumber(ctrl.boss_engage_at) or 98))
+            elseif bs.pick then
+                accent(GOOD, string.format('On %s', tostring(bs.pickName or '?')))
+            end
         end
     end
 end
@@ -14812,6 +14900,7 @@ function UI.applyPrimaryMode(newPrimaryMode)
         end
     end
     ctrl.mode = newPrimaryMode
+    if runtime.bossReset then runtime.bossReset() end
     if MODES.SUBMODES[ctrl.mode] then
         ctrl.submode = MODES.SUBMODES[ctrl.mode][1]
     else
@@ -14855,7 +14944,7 @@ end
 
 -- The modes that anchor to ctrl.camp_loc.
 function UI.modeUsesCamp()
-    if ctrl.mode == 'Manual' then return true end
+    if ctrl.mode == 'Manual' or ctrl.mode == 'Boss' then return true end
     return (ctrl.mode == 'Puller' or ctrl.mode == 'Assist') and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
 end
 
@@ -14914,6 +15003,13 @@ function UI.miniActivity()
     end
     if ctrl.mode == 'Assist' then return 'Waiting on the Main Assist', MUTED end
     if ctrl.mode == 'Puller' then return 'Looking for a pull', MUTED end
+    if ctrl.mode == 'Boss' then
+        local bs = runtime.bossState
+        if bs and bs.why == 'wait' then
+            return string.format('Waiting - boss at %d%%', tonumber(bs.bossHp) or 100), WARN
+        end
+        return 'Waiting for the fight to start', MUTED
+    end
     return 'Idle - waiting for a target', MUTED
 end
 
@@ -20229,7 +20325,7 @@ function runtime.moveToward(id, dist, followOnly)
     -- Movement Stage 2: MQ2Stick / MoveUtils
     if stickLoaded() and ctrl.nav_fallback_stick then
         if pursuit.lastNavTargetId ~= id or pursuit.lastStickDist ~= targetDist then
-            local behindMod = (ctrl.mode == 'Assist' and ctrl.assist_behind ~= false and not runtime.playerHasAggro(id)) and ' behind' or ''
+            local behindMod = runtime.wantsBehind(id) and ' behind' or ''
             mq.cmdf('/stick id %d %d%s', id, targetDist, behindMod)
             pursuit.lastNavTargetId = id
             pursuit.lastStickDist = targetDist
@@ -20296,7 +20392,7 @@ local function repositionCloser()
     end
 
     if stickLoaded() then
-        local behindMod = (ctrl.mode == 'Assist' and ctrl.assist_behind ~= false and not runtime.playerHasAggro(tid)) and ' behind' or ''
+        local behindMod = runtime.wantsBehind(tid) and ' behind' or ''
         mq.cmdf('/stick id %d %d%s', tid, targetDist, behindMod)
     else
         mq.cmd('/keypress forward hold')
@@ -20386,7 +20482,7 @@ local function handleCantHitFromHere()
     end
 
     if stickLoaded() then
-        local behindMod = (ctrl.mode == 'Assist' and ctrl.assist_behind ~= false and not runtime.playerHasAggro(tid)) and ' behind' or ''
+        local behindMod = runtime.wantsBehind(tid) and ' behind' or ''
         mq.cmdf('/stick id %d %d%s', tid, targetDist, behindMod)
     else
         mq.cmd('/keypress forward hold')
@@ -21889,6 +21985,349 @@ function runtime.idleReturn()
     else
         runtime.chaseMA()
     end
+end
+
+-- ============================================================================
+-- Boss mode
+-- Fights only mobs that are already engaged and inside the fight area (a
+-- circle of ctrl.boss_radius around the camp spot, or around where Boss mode
+-- started when no camp is set), so a second boss across the room is left
+-- alone. Adds die before the boss. DPS waits for the boss to reach
+-- ctrl.boss_engage_at and fights from behind; Tank grabs loose mobs first,
+-- faces its target and backs up so nothing hits it from behind.
+-- ============================================================================
+
+-- "Lord Vyemm, Aten Ha Ra" -> { 'lord vyemm', 'aten ha ra' }
+function runtime.bossNameList(text)
+    local out = {}
+    for part in tostring(text or ''):gmatch('[^,;]+') do
+        local nm = part:gsub('^%s+', ''):gsub('%s+$', ''):lower()
+        if nm ~= '' then out[#out + 1] = nm end
+    end
+    return out
+end
+
+-- Marks each candidate's .boss. With names set, a mob is a boss when its name
+-- contains one of them; with none set, any named mob is. Everything else in
+-- the area is an add.
+function runtime.bossClassify(cands, names)
+    local hasNames = names and #names > 0
+    for _, c in ipairs(cands or {}) do
+        local b = false
+        if hasNames then
+            local lname = tostring(c.name or ''):lower()
+            for _, n in ipairs(names) do
+                if lname:find(n, 1, true) then b = true; break end
+            end
+        else
+            b = c.named == true
+        end
+        c.boss = b
+    end
+    return cands
+end
+
+-- Picks what to fight from classified candidates { id, hp, dist, onMe, boss }.
+-- Returns id, why ('loose' | 'add' | 'boss' | 'wait' | 'idle'), bossId.
+--   Tank: a mob not on the tank (adds before bosses) comes first and is kept
+--         until the tank holds it.
+--   Adds: the lowest HP one, so every box converges on the same add; the
+--         current add is kept unless another is `sticky` points lower.
+--   Boss: once no adds are left. DPS waits until it is at opts.engageAt.
+function runtime.bossChoose(cands, curId, opts)
+    opts = opts or {}
+    local sticky = opts.sticky or 10
+    local adds, bosses = {}, {}
+    for _, c in ipairs(cands or {}) do
+        if c.boss then bosses[#bosses + 1] = c else adds[#adds + 1] = c end
+    end
+    local function find(list, id)
+        for _, c in ipairs(list) do if c.id == id then return c end end
+    end
+    local function lowest(list)
+        local best
+        for _, c in ipairs(list) do
+            if not best or c.hp < best.hp or (c.hp == best.hp and c.id < best.id) then best = c end
+        end
+        return best
+    end
+    local function loosest(list)
+        local cur = find(list, curId)
+        if cur and not cur.onMe then return cur end
+        local best
+        for _, c in ipairs(list) do
+            if not c.onMe then
+                local d, bd = c.dist or 0, best and (best.dist or 0) or 0
+                if not best or d < bd or (d == bd and c.id < best.id) then best = c end
+            end
+        end
+        return best
+    end
+    local boss = find(bosses, curId) or lowest(bosses)
+    local bossId = boss and boss.id or nil
+    if opts.tank then
+        local l = loosest(adds) or loosest(bosses)
+        if l then return l.id, 'loose', bossId end
+    end
+    if #adds > 0 then
+        local best = lowest(adds)
+        local cur = find(adds, curId)
+        if cur and cur.hp <= best.hp + sticky then best = cur end
+        return best.id, 'add', bossId
+    end
+    if boss then
+        if opts.tank or boss.hp <= (opts.engageAt or 100) then return boss.id, 'boss', bossId end
+        return nil, 'wait', bossId
+    end
+    return nil, 'idle', nil
+end
+
+-- Tank back-step. From (mx, my) facing the target at (tx, ty), how far off
+-- the facing line is the worst mob in `mobs` ({x, y})? Tries eight spots
+-- `step` away (allowFn may veto one, e.g. outside the fight area) and returns
+-- the best spot's x, y when it improves the worst angle by 15 degrees or
+-- more, plus the best and current worst angles.
+function runtime.bossBackStep(mx, my, tx, ty, mobs, step, allowFn)
+    local function worstAngle(px, py)
+        local fx, fy = tx - px, ty - py
+        local fl = math.sqrt(fx * fx + fy * fy)
+        if fl < 0.001 then return 180 end
+        local worst = 0
+        for _, m in ipairs(mobs or {}) do
+            local vx, vy = m.x - px, m.y - py
+            local vl = math.sqrt(vx * vx + vy * vy)
+            if vl > 0.001 then
+                local c = (fx * vx + fy * vy) / (fl * vl)
+                if c > 1 then c = 1 elseif c < -1 then c = -1 end
+                local a = math.deg(math.acos(c))
+                if a > worst then worst = a end
+            end
+        end
+        return worst
+    end
+    local here = worstAngle(mx, my)
+    local bestX, bestY, best = nil, nil, here
+    for i = 0, 7 do
+        local r = math.rad(i * 45)
+        local px, py = mx + step * math.sin(r), my + step * math.cos(r)
+        if not allowFn or allowFn(px, py) then
+            local a = worstAngle(px, py)
+            if a < best then bestX, bestY, best = px, py, a end
+        end
+    end
+    if bestX and best <= here - 15 then return bestX, bestY, best, here end
+    return nil, nil, best, here
+end
+
+-- Appends the current target's name to ctrl.boss_names (UI button and
+-- /ac bossname target).
+function runtime.bossAddTargetName()
+    local nm = nil
+    pcall(function()
+        local t = mq.TLO.Target
+        if t() and (t.Type() == 'NPC' or t.Type() == 'Pet') then nm = t.CleanName() end
+    end)
+    if not nm or nm == '' then
+        print('\ay[MoriAC]\ax Boss names: target the boss first.')
+        return false
+    end
+    for _, n in ipairs(runtime.bossNameList(ctrl.boss_names)) do
+        if n == nm:lower() then return false end
+    end
+    local cur = tostring(ctrl.boss_names or '')
+    ctrl.boss_names = (cur:match('%S') and (cur:gsub('[,%s]+$', '') .. ', ') or '') .. nm
+    runtime.saveLoadout(true)
+    print(string.format('\ag[MoriAC]\ax Boss names: %s', ctrl.boss_names))
+    return true
+end
+
+-- Clears the per-fight state (the automatic area centre, timers) so a fresh
+-- start or mode switch re-centres the area where the character stands.
+function runtime.bossReset()
+    runtime.bossAutoAnchor = nil
+    runtime.bossSweep = nil
+    runtime.bossState = nil
+    runtime.bossMoveUntil = 0
+    runtime.bossIdleSince = nil
+    runtime.bossLastPick = nil
+end
+
+-- Centre of the fight area: the camp spot, else where Boss mode started.
+function runtime.bossAnchor()
+    if ctrl.camp_loc and ctrl.camp_loc.x then return ctrl.camp_loc end
+    local zid = 0
+    pcall(function() zid = mq.TLO.Zone.ID() or 0 end)
+    local a = runtime.bossAutoAnchor
+    if not a or a.zone ~= zid then
+        local mx, my, mz
+        pcall(function() mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z() end)
+        if not mx or not my then return nil end
+        a = { x = mx, y = my, z = mz or 0, zone = zid }
+        runtime.bossAutoAnchor = a
+    end
+    return a
+end
+
+-- True while a Boss-mode reposition (tank back-step, caster moving behind)
+-- owns movement; the mode tick does not re-close on the target meanwhile.
+function runtime.bossRepositioning()
+    return os.clock() < (runtime.bossMoveUntil or 0)
+end
+
+-- Engaged hostiles inside the fight area: XTarget haters, mobs the raid is
+-- fighting that are not on our XTarget (a 1 s spawn sweep), and for a tank
+-- whatever the player targeted, so it can open on the boss.
+function runtime.bossCandidates()
+    local out = {}
+    local anchor = runtime.bossAnchor()
+    if not anchor then return out end
+    local radius = tonumber(ctrl.boss_radius) or 100
+    local curId = 0
+    pcall(function() curId = mq.TLO.Target.ID() or 0 end)
+    local seen = {}
+    local function add(id, onMe)
+        if not id or id <= 0 or seen[id] then return end
+        seen[id] = true
+        if not isHostileTarget(id) or isSpawnPetOrPlayer(id) or isUnreachable(id) or runtime.isXtIgnoredId(id) then return end
+        local c
+        pcall(function()
+            local s = mq.TLO.Spawn(id)
+            if not s() or s.Dead() or s.Type() == 'Corpse' then return end
+            local name = s.CleanName() or ''
+            if isIgnored(name) then return end
+            local dx, dy = (s.X() or 0) - anchor.x, (s.Y() or 0) - anchor.y
+            local ad = math.sqrt(dx * dx + dy * dy)
+            -- The mob being fought may be dragged a little past the edge.
+            if ad > radius + ((id == curId) and 15 or 0) then return end
+            if math.abs((s.Z() or 0) - (anchor.z or 0)) > 60 then return end
+            c = { id = id, name = name, hp = s.PctHPs() or 100, dist = s.Distance() or 0,
+                named = s.Named() == true, onMe = onMe and true or false }
+        end)
+        if c then out[#out + 1] = c end
+    end
+    for _, row in ipairs(runtime.xtSnapshot().rows) do
+        if row.hostile and not row.ignored and not row.unreachable then
+            local onMe = false
+            pcall(function() onMe = (mq.TLO.Me.XTarget(row.slot).PctAggro() or 0) >= 100 end)
+            add(row.id, onMe)
+        end
+    end
+    local now = os.clock()
+    local sw = runtime.bossSweep
+    if not sw or (now - sw.at) >= 1.0 then
+        local ids = {}
+        pcall(function()
+            local filt = string.format('npc radius %d', math.floor(radius * 2 + 0.5))
+            local n = math.min(mq.TLO.SpawnCount(filt)() or 0, 30)
+            for i = 1, n do
+                local s = mq.TLO.NearestSpawn(i, filt)
+                local sid = s() and (s.ID() or 0) or 0
+                if sid > 0 and not seen[sid] and runtime.targetIsEngaged(sid) then ids[#ids + 1] = sid end
+            end
+        end)
+        sw = { at = now, ids = ids }
+        runtime.bossSweep = sw
+    end
+    for _, sid in ipairs(sw.ids) do add(sid, runtime.playerHasAggro(sid)) end
+    if ctrl.submode == 'Tank' and curId > 0 then add(curId, runtime.playerHasAggro(curId)) end
+    return out
+end
+
+-- One Boss-mode decision per pass: the spawn id to fight, or nil. Keeps
+-- runtime.bossState for the UI and says in chat when the focus changes.
+function runtime.bossTick()
+    local cands = runtime.bossClassify(runtime.bossCandidates(), runtime.bossNameList(ctrl.boss_names))
+    local curId = 0
+    pcall(function() curId = mq.TLO.Target.ID() or 0 end)
+    local id, why, bossId = runtime.bossChoose(cands, curId, {
+        tank = (ctrl.submode == 'Tank'), engageAt = tonumber(ctrl.boss_engage_at) or 98, sticky = 10,
+    })
+    local st = { why = why, pick = id, bossId = bossId, adds = 0 }
+    for _, c in ipairs(cands) do
+        if c.boss then
+            if c.id == bossId then st.bossName, st.bossHp = c.name, c.hp end
+        else
+            st.adds = st.adds + 1
+        end
+        if c.id == id then st.pickName = c.name end
+    end
+    runtime.bossState = st
+    if id and id ~= runtime.bossLastPick then
+        local what = (why == 'loose') and 'grabbing loose mob' or (why == 'add') and 'killing add' or 'on the boss'
+        print(string.format('\ag[MoriAC]\ax Boss: %s %s (#%d).', what, tostring(st.pickName or '?'), id))
+    end
+    runtime.bossLastPick = id
+    return id
+end
+
+-- Nothing to fight: after 3 s idle (so a gap between adds does not send
+-- everyone walking), go back to the area centre.
+function runtime.bossIdle()
+    local now = os.clock()
+    runtime.bossIdleSince = runtime.bossIdleSince or now
+    if (now - runtime.bossIdleSince) < 3.0 or runtime.bossRepositioning() then return end
+    local a = runtime.bossAnchor()
+    if a then runtime.moveTowardLoc(a.x, a.y, a.z, 15) end
+end
+
+-- Melee and stick "behind": Assist with "fight from behind", or Boss DPS
+-- with it, while this character does not have the mob's aggro.
+function runtime.wantsBehind(id)
+    local on = (ctrl.mode == 'Assist' and ctrl.assist_behind ~= false)
+        or (ctrl.mode == 'Boss' and ctrl.submode ~= 'Tank' and ctrl.boss_behind ~= false)
+    return on and not runtime.playerHasAggro(id)
+end
+
+-- Boss (Tank): when a mob on the tank is outside its front arc, step to the
+-- spot (inside the fight area) that puts every mob on it in front.
+function runtime.bossTankKeepFront(tid)
+    if ctrl.boss_tank_front == false then return end
+    local now = os.clock()
+    if now < (runtime.bossFrontNextAt or 0) or runtime.isCasting() then return end
+    runtime.bossFrontNextAt = now + 1.0
+    local mobs, mx, my, mz, tx, ty = {}, nil, nil, nil, nil, nil
+    pcall(function()
+        mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
+        local t = mq.TLO.Spawn(tid)
+        if t() then tx, ty = t.X(), t.Y() end
+        for _, row in ipairs(runtime.xtSnapshot().rows) do
+            if row.hostile and not row.ignored and (mq.TLO.Me.XTarget(row.slot).PctAggro() or 0) >= 100 then
+                local s = mq.TLO.Spawn(row.id)
+                if s() and (s.Distance() or 999) <= 30 then mobs[#mobs + 1] = { x = s.X() or 0, y = s.Y() or 0 } end
+            end
+        end
+    end)
+    if not mx or not my or not tx or not ty or #mobs == 0 then return end
+    local anchor = runtime.bossAnchor()
+    local radius = tonumber(ctrl.boss_radius) or 100
+    local bx, by, _, here = runtime.bossBackStep(mx, my, tx, ty, mobs, 12, function(px, py)
+        if not anchor then return true end
+        local dx, dy = px - anchor.x, py - anchor.y
+        return (dx * dx + dy * dy) <= radius * radius
+    end)
+    if here <= 90 or not bx then return end
+    stopMoving()
+    runtime.bossMoveUntil = now + 2.5
+    runtime.bossFrontNextAt = now + 4.0
+    if (now - (runtime.bossFrontSaidAt or -60)) > 20 then
+        runtime.bossFrontSaidAt = now
+        print('\ag[MoriAC]\ax Boss (Tank): a mob is behind me -- stepping so they are all in front.')
+    end
+    runtime.moveTowardLoc(bx, by, mz, 2)
+end
+
+-- Boss (DPS) with a bow or spells: walk round to the target's back, at a
+-- little under the ranged distance, between casts.
+function runtime.bossRangedBehind(tid)
+    if ctrl.boss_behind == false or runtime.playerHasAggro(tid) then return end
+    local now = os.clock()
+    if now < (runtime.bossBehindNextAt or 0) or runtime.isCasting() or isMoveActive() then return end
+    runtime.bossBehindNextAt = now + 3.0
+    if runtime.isBehindTarget(tid) then return end
+    local bx, by, bz = runtime.getBehindLoc(tid, math.max(10, (tonumber(ctrl.ranged_dist) or 40) * 0.8))
+    if not bx then return end
+    runtime.bossMoveUntil = now + 4.0
+    runtime.moveTowardLoc(bx, by, bz, 4)
 end
 
 -- Hunt-submode combat anchor: the circle the puller is not allowed to leave.
@@ -24012,6 +24451,30 @@ local function combatTick()
                 if ctrl.submode == 'Camp' then idleReturn() else chaseMA() end
             end
         end
+    elseif ctrl.mode == 'Boss' then
+        -- A forced XTarget outranks the boss / add pick.
+        local id = forceId or runtime.bossTick()
+        if id then
+            runtime.bossIdleSince = nil
+            if mq.TLO.Target.ID() ~= id then setTarget(id) end
+            haveNPC = true
+            -- Already in reach: leave positioning to the behind / keep-front
+            -- logic below (moveToward would stop the stick every pass), and
+            -- let a reposition in flight finish.
+            local inReach = distToId(id) <= (desiredRange(id) + 4) and hasLoS(id)
+            if inReach or runtime.bossRepositioning() then
+                engage = true
+            elseif moveToward(id, desiredRange(id)) then
+                engage = true
+            end
+        else
+            haveNPC = false
+            if runtime.combatHold() then
+                stopMoving()
+                return
+            end
+            runtime.bossIdle()
+        end
     end
 
     -- Target pursuit / approach timeout check:
@@ -24148,6 +24611,7 @@ local function combatTick()
                 end
                 -- Spell style: no auto-attack at all -- the gem loadout does the work.
                 local isAssistBehind = (style == 'Melee' and ctrl.mode == 'Assist' and ctrl.assist_behind ~= false)
+                    or (style == 'Melee' and ctrl.mode == 'Boss' and ctrl.submode ~= 'Tank' and ctrl.boss_behind ~= false)
                 if isAssistBehind then
                     if runtime.playerHasAggro(tid) then
                         -- Assistant currently has aggro: suspend behind positioning to prevent circular spinning while tanking
@@ -24168,12 +24632,23 @@ local function combatTick()
                         runtime.positionBehindTarget(tid, desiredRange(tid))
                     end
                 else
-                    if (os.clock() - (pursuit.lastCombatFaceAt or 0)) > 0.4 then
+                    -- Boss mode: the tank keeps every mob on it in front; a
+                    -- bow / caster DPS walks round to the target's back.
+                    if ctrl.mode == 'Boss' then
+                        if ctrl.submode == 'Tank' then
+                            runtime.bossTankKeepFront(tid)
+                        elseif style ~= 'Melee' then
+                            runtime.bossRangedBehind(tid)
+                        end
+                    end
+                    if not (ctrl.mode == 'Boss' and runtime.bossRepositioning())
+                        and (os.clock() - (pursuit.lastCombatFaceAt or 0)) > 0.4 then
                         pursuit.lastCombatFaceAt = os.clock()
                         mq.cmd('/face fast')
                     end
                 end
-            elseif not isMoveActive() and curDist > maxReach and tid > 0 and not runtime.lureHolding(tid) then
+            elseif not isMoveActive() and curDist > maxReach and tid > 0 and not runtime.lureHolding(tid)
+                and not (ctrl.mode == 'Boss' and runtime.bossRepositioning()) then
                 -- Mob moved, was pushed, or is out of striking/ranged reach: re-close distance.
                 -- Ranged/Spell wait for the current cast to finish first -- starting a
                 -- nav mid-cast just interrupts it for a few units of drift.
@@ -24284,7 +24759,7 @@ local function combatTick()
             local tgtHp = pctHP(tid) or 100
             -- Self-directed modes: character is leading combat directly, skip external MA aggro gate.
             -- Assist modes: require player/tank has started hitting AND HP threshold met.
-            local selfDirected = (ctrl.mode == 'Manual' or ctrl.mode == 'Puller')
+            local selfDirected = (ctrl.mode == 'Manual' or ctrl.mode == 'Puller' or ctrl.mode == 'Boss')
             local engageOk = selfDirected or (playerHasAggro(tid) and playerIsEngagingTarget(tid))
             if tgtHp <= assistThreshold then
                 if engageOk then
@@ -24700,6 +25175,15 @@ local function setTriuneMode(arg1, arg2)
     elseif k1 == 'backline' or k1 == 'ranged' then
         newMode = 'Assist'
         newSubmode = 'Backline'
+    elseif k1 == 'boss' or k1 == 'raid' then
+        newMode = 'Boss'
+        if k2 == 'tank' or k2 == 'mt' then
+            newSubmode = 'Tank'
+        elseif k2 == 'dps' then
+            newSubmode = 'DPS'
+        else
+            newSubmode = (ctrl.mode == 'Boss' and ctrl.submode) or 'DPS'
+        end
     else
         return false
     end
@@ -24720,6 +25204,7 @@ local function setTriuneMode(arg1, arg2)
         pursuit.id = 0; pursuit.lastNavTargetId = 0; pursuit.lastNavLoc = nil; pursuit.wanderLoc = nil
         pursuit.approachTargetId = 0; pursuit.approachStartedAt = 0
         runtime.clearBreadcrumbs()
+        if runtime.bossReset then runtime.bossReset() end
         if runtime.pullHpRest then runtime.pullHpRest = false end
         if runtime.medBreakActive then runtime.medBreakActive = false end
     end
@@ -25093,6 +25578,22 @@ local function triuneCommand(...)
             print(string.format('\ag[MoriAC]\ax Assist Mode Position Behind NPC: %s.',
                 ctrl.assist_behind and '\agENABLED\ax' or '\arDISABLED\ax'))
         end
+    elseif cmd == 'bossname' or cmd == 'bossnames' then
+        local sub = args[2] and string.lower(args[2]) or ''
+        if sub == 'target' or sub == 'add' then
+            runtime.bossAddTargetName()
+        elseif sub == 'clear' or sub == 'none' then
+            ctrl.boss_names = ''
+            runtime.saveLoadout(true)
+            print('\ag[MoriAC]\ax Boss names cleared: any named mob in the area is the boss.')
+        elseif sub ~= '' then
+            ctrl.boss_names = table.concat(args, ' ', 2)
+            runtime.saveLoadout(true)
+            print(string.format('\ag[MoriAC]\ax Boss names: %s', ctrl.boss_names))
+        else
+            print(string.format('\ag[MoriAC]\ax Boss names: %s',
+                (ctrl.boss_names and ctrl.boss_names ~= '') and ctrl.boss_names or '(none: any named mob in the area)'))
+        end
     elseif cmd == 'pausezone' or cmd == 'zonepause' or cmd == 'pauseonzone' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or sub == 'true' then
@@ -25399,7 +25900,7 @@ local function triuneCommand(...)
         return
     else
         print(
-            '\ay[MoriAC]\ax usage: /ac [run|pause|burn|memall|importbar|compact|ghost|scale|status|spellbook|cursorui|dps|map|inv|buffbot|net|btn|update|clearcursor|style|range|zplane|huntz|pullhp|preset|help|pullcon|wp|manual|puller [hunt|camp]|assist [chase|camp|backline]]')
+            '\ay[MoriAC]\ax usage: /ac [run|pause|burn|memall|importbar|compact|ghost|scale|status|spellbook|cursorui|dps|map|inv|buffbot|net|btn|update|clearcursor|style|range|zplane|huntz|pullhp|preset|help|pullcon|wp|manual|puller [hunt|camp]|assist [chase|camp|backline]|boss [dps|tank]]')
     end
 end
 
