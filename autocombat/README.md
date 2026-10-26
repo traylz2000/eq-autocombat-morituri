@@ -19,7 +19,7 @@ Step-by-step instructions with a check after each step are on the [main project 
 
 MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac` (or the short form `/lua run mac`). Only one copy runs at a time: starting the other name while one is running just prints a note.
 
-**Updating.** You only do the copy in step 3 once. After that MoriAC checks GitHub when it starts and tells you when an update is out. Type `/ac update install` (or click **Update Now** in the popup), then `/ac restart` on each character. It downloads only the files that changed, checks each one, and keeps the old copy as `.bak`. Your settings and `config/ingame.cfg` are never touched.
+**Updating.** You only do the copy in step 3 once. After that MoriAC checks GitHub when it starts and tells you when an update is out. Type `/ac update install` (or click **Update Now** in the popup), then `/ac restart` on each character. To check yourself, open **Setup -> Update** and click **Check and Install**, or type `/ac update get`. It downloads only the files that changed, checks each one, and keeps the old copy as `.bak`. Your settings and `config/ingame.cfg` are never touched.
 
 **Coming from Triune or the earlier Morituri port?** Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
 
@@ -46,7 +46,7 @@ MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run
   - **Overview**
   - **Combat:** Mode & Pulling, Pets
   - **Actions:** Spells, Abilities, AAs, Disciplines, Clickies, each with a count of active lines
-  - **Setup:** Settings (with a *Find a setting* box), Window Layout, Plugins, Help
+  - **Setup:** Settings (with a *Find a setting* box), Window Layout, Plugins, Update, Help
   - plus any plugin windows you pinned
 - **Action pages:** a table of lines plus an edit panel for the selected one. Lines are tried top to bottom; untick **Auto** / **On** to stop one firing without deleting it.
 
@@ -139,7 +139,7 @@ Type `/ac help` in game for the full list.
 | `/ac scale 1.25` | Make every MoriAC window bigger (or smaller) |
 | `/ac status` | Print what the bot is doing |
 | `/ac restart` | Reload the whole script |
-| `/ac update` / `/ac update install` | Check for an update / install it (then `/ac restart`) |
+| `/ac update` / `/ac update install` / `/ac update get` | Check for an update / install it / check and install in one go (then `/ac restart`) |
 | `/ac alerts` / `/ac alerts mute` | List the alert triggers / silence their sounds |
 | `/ac timers [now\|on\|off <n>]` / `/ac kratos` | List the timed commands, run or toggle one / say kratos now |
 | `/moriacrun` | Start/pause - bind this to a key (`/triunerun` still works) |

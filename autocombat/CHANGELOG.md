@@ -4,6 +4,8 @@
 
 ## 2026-10-26
 
+- **New Setup -> Update page with a one-click Check and Install (`lua/tac/update_check.lua` 2.1.0).** **Check and Install** checks GitHub and, if any MoriAC files changed, downloads and installs them straight away. Then click **Restart MoriAC** (or `/ac restart`) to load them. **Check Now** still only checks. The same buttons sit at the top of the Updater's settings under Setup -> Plugins. In chat, `/ac update get` does the same as the button.
+
 - **Line editor fields stay usable in a narrow window.** On the Spells, Abilities, AAs, Disciplines and Clickies pages, the editor puts two fields side by side (Target | Condition, HP at or below, Min mobs (XT) | Casts per mob). Each label is fixed at 104 px, so shrinking the window squeezed the sliders and dropdowns down to a few pixels. Below 540 px wide the form now shows one field per row, at full width. The UI smoke test draws one pass narrow to cover this layout.
 
 - **Auto AA purchases work again (`lua/tac/auto_aa.lua` 1.3.0).** Every purchase showed "Initiating AA Window train sequence..." and then nothing. That covered automatic spending, **Spend Now** and the window's **Train** button.

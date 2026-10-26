@@ -1,10 +1,10 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.26.2246
+version=2026.10.26.2345
 date=2026-10-26
-commit=1187334
+commit=26974b1
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1193786 a2a0419d
+file=lua/moriac.lua 1194646 74626b59
 file=lua/tac/alerts.lua 19594 ad59b94b
 file=lua/tac/auto_aa.lua 141589 fa7e7ccd
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -31,8 +31,10 @@ file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
 file=lua/tac/triune_log.lua 15583 576465e8
-file=lua/tac/update_check.lua 46664 3aad6894
+file=lua/tac/update_check.lua 48299 e66c53be
 note=## 2026-10-26
+note=
+note=- **New Setup -> Update page with a one-click Check and Install (`lua/tac/update_check.lua` 2.1.0).** **Check and Install** checks GitHub and, if any MoriAC files changed, downloads and installs them straight away. Then click **Restart MoriAC** (or `/ac restart`) to load them. **Check Now** still only checks. The same buttons sit at the top of the Updater's settings under Setup -> Plugins. In chat, `/ac update get` does the same as the button.
 note=
 note=- **Line editor fields stay usable in a narrow window.** On the Spells, Abilities, AAs, Disciplines and Clickies pages, the editor puts two fields side by side (Target | Condition, HP at or below, Min mobs (XT) | Casts per mob). Each label is fixed at 104 px, so shrinking the window squeezed the sliders and dropdowns down to a few pixels. Below 540 px wide the form now shows one field per row, at full width. The UI smoke test draws one pass narrow to cover this layout.
 note=

@@ -49,7 +49,7 @@
 local plugin = {
     id                 = 'update_check',
     name               = 'Updater',
-    version            = '2.0.0',
+    version            = '2.1.0',
     author             = 'MoriAC',
     description        = 'Checks the MoriAC GitHub repo for changed files and installs them in place (non-blocking, no external process).',
     defaultEnabled     = true,
@@ -729,6 +729,15 @@ local function startInstall()
     startDownload(1)
 end
 
+-- One click: check GitHub, then install straight away if anything changed
+-- (onTick picks it up when the check finishes). A skipped version is still
+-- installed, because the player asked for it.
+local function checkAndInstall()
+    if busy() then chat('An update check or install is already running.'); return end
+    st.unavailable = nil
+    if startCheck(true) then st.installAfterCheck = true end
+end
+
 local function finishInstall()
     local r = st.result
     local items = {}
@@ -944,8 +953,20 @@ function plugin.onTick()
     if st.phase then
         local status, a, b = httpPoll()
         if status == 'done' then
-            if st.phase == 'manifest' then finishManifest(a, b) else onDownloaded(a, b) end
+            if st.phase == 'manifest' then
+                finishManifest(a, b)
+                if st.installAfterCheck then
+                    st.installAfterCheck = nil
+                    if not st.lastError and st.result and #st.result.changed > 0 then
+                        st.noticeOpen = false
+                        startInstall()
+                    end
+                end
+            else
+                onDownloaded(a, b)
+            end
         elseif status == 'error' then
+            st.installAfterCheck = nil
             failPhase(a)
         end
         return
@@ -1000,47 +1021,11 @@ local function fmtAgo(t)
     return os.date('%Y-%m-%d %H:%M', t)
 end
 
-function plugin.onDrawSettings()
-    if not core then return end
+-- Last check time, errors and what the last check found.
+local function drawStatus()
     local colors = core.colors or {}
-    local GOLD  = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
     local GOOD  = colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
     local ERR   = colors.ERR or { 0.95, 0.40, 0.40, 1.0 }
-    core.accent(GOLD, 'Updater')
-    ImGui.TextDisabled('Source: github.com/' .. REPO .. '  (lua/ and config/; config/ingame.cfg is left alone)')
-    ImGui.Dummy(0, core.px(4))
-
-    local autoVal = ImGui.Checkbox('Check for updates automatically##updAuto', cfg.autoCheck)
-    if autoVal ~= cfg.autoCheck then cfg.autoCheck = autoVal; saveSettings() end
-    if ImGui.IsItemHovered() then
-        core.setTooltip(string.format('Runs one check %d s after MoriAC loads (per character), with the frequency below. Installing is always your call.', STARTUP_DELAY_S))
-    end
-
-    local curIdx = 1
-    for i, f in ipairs(FREQUENCIES) do if f == cfg.frequency then curIdx = i end end
-    local labels = {}
-    for i, f in ipairs(FREQUENCIES) do labels[i] = FREQUENCY_LABEL[f] end
-    ImGui.SetNextItemWidth(core.px(200))
-    local newIdx = ImGui.Combo('Frequency##updFreq', curIdx, labels)
-    if newIdx ~= curIdx and FREQUENCIES[newIdx] then cfg.frequency = FREQUENCIES[newIdx]; saveSettings() end
-
-    local popVal = ImGui.Checkbox('Open a popup when an update is found##updPopup', cfg.popup)
-    if popVal ~= cfg.popup then cfg.popup = popVal; saveSettings() end
-    if ImGui.IsItemHovered() then core.setTooltip('Off: only the chat notice.') end
-
-    ImGui.Dummy(0, core.px(4))
-    if not busy() then
-        if ImGui.Button('Check Now##updNow', core.px(120), core.px(24)) then
-            st.unavailable = nil
-            startCheck(true)
-        end
-        ImGui.SameLine()
-        if st.result and ImGui.Button('Show Notice##updShow', core.px(120), core.px(24)) then
-            st.noticeOpen = true
-        end
-    end
-    drawActions('s')
-
     ImGui.Dummy(0, core.px(4))
     ImGui.TextDisabled('Last check: ' .. fmtAgo(st.lastCheckedAt or cfg.lastCheckAt))
     if st.lastDurationMs then
@@ -1066,6 +1051,56 @@ function plugin.onDrawSettings()
     elseif cfg.lastVersion then
         ImGui.TextDisabled('Latest version seen: ' .. cfg.lastVersion)
     end
+end
+
+function plugin.onDrawSettings()
+    if not core then return end
+    local colors = core.colors or {}
+    local GOLD  = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
+    core.accent(GOLD, 'Updater')
+    ImGui.TextDisabled('Source: github.com/' .. REPO .. '  (lua/ and config/; config/ingame.cfg is left alone)')
+    ImGui.Dummy(0, core.px(4))
+
+    if not busy() then
+        if ImGui.Button('Check and Install##updGet', core.px(150), core.px(28)) then checkAndInstall() end
+        if ImGui.IsItemHovered() then
+            core.setTooltip('Checks GitHub and, if any MoriAC files changed, downloads and installs them right away.\nRestart MoriAC afterwards to load them. Same as /ac update get.')
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Check Now##updNow', core.px(120), core.px(28)) then
+            st.unavailable = nil
+            startCheck(true)
+        end
+        if ImGui.IsItemHovered() then core.setTooltip('Only checks; installing stays your call.') end
+        ImGui.SameLine()
+        if st.result and ImGui.Button('Show Notice##updShow', core.px(120), core.px(28)) then
+            st.noticeOpen = true
+        end
+    end
+    drawActions('s')
+    drawStatus()
+
+    ImGui.Dummy(0, core.px(6))
+    ImGui.Separator()
+    ImGui.Dummy(0, core.px(2))
+    local autoVal = ImGui.Checkbox('Check for updates automatically##updAuto', cfg.autoCheck)
+    if autoVal ~= cfg.autoCheck then cfg.autoCheck = autoVal; saveSettings() end
+    if ImGui.IsItemHovered() then
+        core.setTooltip(string.format('Runs one check %d s after MoriAC loads (per character), with the frequency below. Installing is always your call.', STARTUP_DELAY_S))
+    end
+
+    local curIdx = 1
+    for i, f in ipairs(FREQUENCIES) do if f == cfg.frequency then curIdx = i end end
+    local labels = {}
+    for i, f in ipairs(FREQUENCIES) do labels[i] = FREQUENCY_LABEL[f] end
+    ImGui.SetNextItemWidth(core.px(200))
+    local newIdx = ImGui.Combo('Frequency##updFreq', curIdx, labels)
+    if newIdx ~= curIdx and FREQUENCIES[newIdx] then cfg.frequency = FREQUENCIES[newIdx]; saveSettings() end
+
+    local popVal = ImGui.Checkbox('Open a popup when an update is found##updPopup', cfg.popup)
+    if popVal ~= cfg.popup then cfg.popup = popVal; saveSettings() end
+    if ImGui.IsItemHovered() then core.setTooltip('Off: only the chat notice.') end
+
     if cfg.skipVersion then
         ImGui.TextDisabled('Skipping: ' .. cfg.skipVersion)
         ImGui.SameLine()
@@ -1076,13 +1111,15 @@ function plugin.onDrawSettings()
     end
 end
 
--- /ac update [now|install|show|skip|unskip|auto on|off]
+-- /ac update [now|get|install|show|skip|unskip|auto on|off]
 function plugin.onCommand(cmd, args)
     if cmd ~= 'update' and cmd ~= 'checkupdate' and cmd ~= 'updater' then return false end
     local sub = args and args[2] and tostring(args[2]):lower() or 'now'
     if sub == 'now' or sub == 'check' then
         st.unavailable = nil
         startCheck(true)
+    elseif sub == 'get' or sub == 'all' then
+        checkAndInstall()
     elseif sub == 'install' or sub == 'apply' then
         startInstall()
     elseif sub == 'show' then
@@ -1111,13 +1148,13 @@ function plugin.onCommand(cmd, args)
     elseif sub == 'link' then
         chat('MoriAC on GitHub: %s', REPO_URL)
     else
-        chat('usage: /ac update [now|install|show|skip|unskip|auto on|off]')
+        chat('usage: /ac update [now|get|install|show|skip|unskip|auto on|off]')
     end
     return true
 end
 
 plugin.help = {
-    '  \ag/ac update [now|install|show|skip|unskip|auto on|off]\ax - Check GitHub for changed MoriAC files, and install them (non-blocking)',
+    '  \ag/ac update [now|get|install|show|skip|unskip|auto on|off]\ax - Check GitHub for changed MoriAC files, and install them (non-blocking); get = check and install in one go',
 }
 
 -- Exposed for tests
@@ -1131,5 +1168,6 @@ plugin.applyFiles      = applyFiles
 plugin.summarizeNotes  = summarizeNotes
 plugin._cfg            = cfg
 plugin._state          = st
+plugin.checkAndInstall = checkAndInstall
 
 return plugin

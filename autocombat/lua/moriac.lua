@@ -8550,6 +8550,22 @@ function runtime.initPluginManager()
     pm.discover()
 end
 
+-- Setup -> Update: the Updater plugin's panel on its own page, so checking
+-- and installing is one click away instead of under Plugins -> Config.
+function UI.drawUpdateTab()
+    if not runtime.pluginManager then
+        runtime.initPluginManager()
+    end
+    local pm = runtime.pluginManager
+    if not pm then return end
+    ImGui.PushTextWrapPos(0)
+    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4],
+        'Check and Install looks for newer MoriAC files on GitHub and installs them if there are any. Restart MoriAC afterwards to load them; your settings and loadouts are kept.')
+    ImGui.PopTextWrapPos()
+    ImGui.Spacing()
+    pm.drawPluginSettings('update_check')
+end
+
 function UI.drawPluginsTab()
     if not runtime.pluginManager then
         runtime.initPluginManager()
@@ -15509,6 +15525,9 @@ UI.PAGES = {
     { id = 'plugins', group = 'Setup', label = 'Plugins',
       tip = 'Turn plugins on or off, pin their windows to the sidebar, plugin settings.',
       draw = function() UI.drawPluginsTab() end },
+    { id = 'update', group = 'Setup', label = 'Update',
+      tip = 'Check GitHub for a newer MoriAC and install it.',
+      draw = function() UI.drawUpdateTab() end },
     { id = 'help', group = 'Setup', label = 'Help',
       tip = 'Slash commands, combat modes and target filters.',
       draw = function() UI.drawHelpTab() end },
