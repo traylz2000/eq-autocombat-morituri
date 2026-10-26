@@ -9547,17 +9547,30 @@ function UI.formCell(label, tip)
     ImGui.SetNextItemWidth(-1)
 end
 
+-- An empty label + control pair (keeps the two-up layout aligned). The
+-- one-up layout has nothing to align, so it skips nothing.
 function UI.formSkip()
+    if UI.formCols == 2 then return end
     ImGui.TableNextColumn(); ImGui.TableNextColumn()
 end
 
+-- Two label + control pairs per row while there is room for both; one per
+-- row once the window is narrower than UI.FORM_TWO_UP_MIN (two 104 px labels
+-- plus two usable controls), where the stretch columns used to shrink the
+-- sliders and dropdowns to a few pixels.
+UI.FORM_TWO_UP_MIN = 540
 function UI.beginForm(id)
     local flags = (ImGuiTableFlags and ImGuiTableFlags.SizingStretchProp) or 0
-    if not ImGui.BeginTable(id, 4, flags) then return false end
+    local availW = UI.availSize()
+    local cols = (availW >= UI.px(UI.FORM_TWO_UP_MIN)) and 4 or 2
+    if not ImGui.BeginTable(id, cols, flags) then return false end
+    UI.formCols = cols
     ImGui.TableSetupColumn('##l1', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
     ImGui.TableSetupColumn('##c1', ImGuiTableColumnFlags.WidthStretch)
-    ImGui.TableSetupColumn('##l2', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
-    ImGui.TableSetupColumn('##c2', ImGuiTableColumnFlags.WidthStretch)
+    if cols == 4 then
+        ImGui.TableSetupColumn('##l2', ImGuiTableColumnFlags.WidthFixed, UI.px(104))
+        ImGui.TableSetupColumn('##c2', ImGuiTableColumnFlags.WidthStretch)
+    end
     return true
 end
 

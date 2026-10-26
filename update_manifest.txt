@@ -1,10 +1,10 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.26.2243
+version=2026.10.26.2246
 date=2026-10-26
-commit=f144f27
+commit=1187334
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1193155 d96f4578
+file=lua/moriac.lua 1193786 a2a0419d
 file=lua/tac/alerts.lua 19594 ad59b94b
 file=lua/tac/auto_aa.lua 141589 fa7e7ccd
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -33,6 +33,8 @@ file=lua/tac/timers.lua 13890 b6f7ca1a
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 46664 3aad6894
 note=## 2026-10-26
+note=
+note=- **Line editor fields stay usable in a narrow window.** On the Spells, Abilities, AAs, Disciplines and Clickies pages, the editor puts two fields side by side (Target | Condition, HP at or below, Min mobs (XT) | Casts per mob). Each label is fixed at 104 px, so shrinking the window squeezed the sliders and dropdowns down to a few pixels. Below 540 px wide the form now shows one field per row, at full width. The UI smoke test draws one pass narrow to cover this layout.
 note=
 note=- **Auto AA purchases work again (`lua/tac/auto_aa.lua` 1.3.0).** Every purchase showed "Initiating AA Window train sequence..." and then nothing. That covered automatic spending, **Spend Now** and the window's **Train** button.
 note=  - Purchases now use the client's own `/alt buy <index>` first: the next rank's index, the same command the MQ2AASpend plugin uses on RoF2. It counts as bought once your unspent AA drops: "Bought "X" (N AA left)". Only if no points are spent does it fall back to clicking through the AA window as before.

@@ -4,6 +4,8 @@
 
 ## 2026-10-26
 
+- **Line editor fields stay usable in a narrow window.** On the Spells, Abilities, AAs, Disciplines and Clickies pages, the editor puts two fields side by side (Target | Condition, HP at or below, Min mobs (XT) | Casts per mob). Each label is fixed at 104 px, so shrinking the window squeezed the sliders and dropdowns down to a few pixels. Below 540 px wide the form now shows one field per row, at full width. The UI smoke test draws one pass narrow to cover this layout.
+
 - **Auto AA purchases work again (`lua/tac/auto_aa.lua` 1.3.0).** Every purchase showed "Initiating AA Window train sequence..." and then nothing. That covered automatic spending, **Spend Now** and the window's **Train** button.
   - Purchases now use the client's own `/alt buy <index>` first: the next rank's index, the same command the MQ2AASpend plugin uses on RoF2. It counts as bought once your unspent AA drops: "Bought "X" (N AA left)". Only if no points are spent does it fall back to clicking through the AA window as before.
   - `/alt buy` is instant and opens nothing, so the moving, casting and combat checks (which protect the multi-second window steps) no longer apply to it. One of those checks was cancelling every purchase silently.
