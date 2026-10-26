@@ -111,9 +111,14 @@ The **Help** page in the MoriAC window lists every command.
 
 ## Updating to a newer version
 
-1. In game, type `/lua stop moriac`.
-2. Redo **Step 4** only. Your settings are kept, because they are saved in separate files that the download never replaces.
-3. In game, type `/lua run moriac`.
+MoriAC updates itself. About 20 seconds after it starts, it checks this page for changed files and tells you in chat (and with a popup) when there is an update.
+
+1. Type `/ac update install`, or click **Update Now** in the popup. Only the changed files are downloaded, each one is checked, and the old copies are kept as `.bak` files.
+2. Type `/ac restart` on each of your characters to load the new version.
+
+`/ac update` checks right away. Your settings are never touched.
+
+**Installed before 2026-10-26?** Your copy has the old update checker, which only says "404". Update by hand once: type `/lua stop moriac`, redo **Step 4**, then type `/lua run moriac`. After that, updates work as above. Updating by hand this way also always works if the in-game updater ever can't reach GitHub.
 
 ## Already using Triune or the old Morituri script?
 

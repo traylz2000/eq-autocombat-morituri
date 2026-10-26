@@ -8058,6 +8058,8 @@ function runtime.initPluginManager()
             'nmsloot.lua',
             'nms_looter_handoff.lua',
             'gm_commands.lua',
+            'update_check.lua',
+            'alerts.lua',
         }
         for _, f in ipairs(known) do
             if not fileSet[f:lower()] then
@@ -15568,9 +15570,24 @@ function UI.drawSidebar()
         runtime.sidebarWindowsCache = sw
     end
     if #sw.entries == 0 and #sw.scripts == 0 then return end
+    -- The header folds the list away (remembered, starts folded); folded, it
+    -- says how many of the pinned windows are open.
+    if type(ctrl.ui_sections) ~= 'table' then ctrl.ui_sections = {} end
+    local unfolded = ctrl.ui_sections.sidebar_windows == true
+    local header = (unfolded and '- ' or '+ ') .. 'WINDOWS'
+    if not unfolded then
+        local nOpen = 0
+        for _, e in ipairs(sw.entries) do if pm.isWindowOpen(e.id) then nOpen = nOpen + 1 end end
+        if nOpen > 0 then header = string.format('%s (%d open)', header, nOpen) end
+    end
     ImGui.Spacing()
-    accent(MUTED, 'WINDOWS')
-    if ImGui.IsItemHovered() then UI.setTooltip('Pinned plugin windows. Choose which are pinned on Setup -> Plugins.') end
+    accent(MUTED, header)
+    if ImGui.IsItemClicked() then
+        ctrl.ui_sections.sidebar_windows = not unfolded
+        runtime.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then UI.setTooltip('Click to show or hide the pinned plugin windows. Choose which are pinned on Setup -> Plugins.') end
+    if not unfolded then return end
     for _, e in ipairs(sw.entries) do
         local isOpen = pm.isWindowOpen(e.id)
         local v = ImGui.Checkbox(tostring(e.window.label or e.id) .. '##tacNavWin_' .. e.id, isOpen)

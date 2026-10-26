@@ -1,40 +1,57 @@
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
--- TAC/lua/tac/update_check.lua — Triune Update Checker Plugin
+-- lua/tac/update_check.lua — MoriAC Updater Plugin
 -- ============================================================================
--- Asks GitHub for the latest published Triune release and tells you when it is
--- newer than the copy you are running. Check only: nothing is downloaded or
--- written; the release page link is put on the clipboard on request.
+-- Keeps the MoriAC files (lua/ and config/) in step with the public repo.
+--
+-- What it compares
+--   dev/publish.sh writes update_manifest.txt at the root of the public repo:
+--   a version stamp, the newest CHANGELOG section, and one line per shipped
+--   file with its size and CRC-32. A check downloads that manifest and
+--   compares it with the files on disk, so it never depends on GitHub
+--   releases (there are none) and finds every changed file, not just a
+--   version number.
+--
+-- Installing
+--   "Update now" downloads only the files that differ, from the same commit
+--   of the public repo (raw.githubusercontent.com). Every download must match
+--   the manifest's size and CRC-32, or nothing is installed. Then each file is
+--   written next to the original as <file>.new, and only once all of them are
+--   written is each swapped in, keeping the old copy as <file>.bak. A lock file
+--   keeps two boxed characters from installing at once. The running script
+--   keeps its loaded copy until /ac restart.
+--   config/ingame.cfg is never touched (it is yours to edit).
 --
 -- How it talks to the internet without hitching the game
---   Triune must never spawn a process (curl / PowerShell block eqgame.exe)
+--   MoriAC must never spawn a process (curl / PowerShell block eqgame.exe)
 --   and has no luarocks socket module. Instead the plugin uses LuaJIT's ffi
 --   to drive the WinHttp.WinHttpRequest.5.1 COM object that ships with
 --   Windows (and Wine) in *async* mode: Send() returns immediately, the DNS /
 --   TLS / transfer runs on WinHTTP's own worker thread, and onTick polls for
---   completion with calls that cannot wait. Verified in-game and under Wine
---   (see triune_update_check.lua, the standalone prototype of this code).
+--   completion with calls that cannot wait.
 --
 -- Polling: two stages, neither of which can block the game thread.
 --   1. get_Status fails (INCORRECT_HANDLE_STATE) until the response headers
 --      are in. It never waits or pumps window messages.
 --   2. WaitForResponse(0) then confirms the body is complete, and only after
---      that is ResponseText read once. Wine's worker thread reallocs the body
+--      that is ResponseBody read once. Wine's worker thread reallocs the body
 --      buffer without holding the lock, so reading earlier would race. Wine
 --      also leaves WaitForResponse's out-param untouched once the response is
 --      already complete, so it is pre-set to TRUE before every call.
+--   ResponseBody (raw bytes) is used rather than ResponseText, which would
+--   re-encode the file and break the CRC.
 --
--- Everything that can fail (no ffi, COM refused, offline, TLS, rate limit)
--- degrades to a one-line "update check unavailable" reason on the settings
--- page; the auto-check then stays quiet for the rest of the session.
+-- Everything that can fail (no ffi, COM refused, offline, TLS) degrades to a
+-- one-line "update check unavailable" reason on the settings page; the
+-- auto-check then stays quiet for the rest of the session.
 -- ============================================================================
 
 local plugin = {
     id                 = 'update_check',
-    name               = 'Update Checker',
-    version            = '1.0.0',
+    name               = 'Updater',
+    version            = '2.0.0',
     author             = 'MoriAC',
-    description        = 'Checks GitHub for a newer MoriAC release (non-blocking, no external process) and notifies you in chat and with a popup.',
+    description        = 'Checks the MoriAC GitHub repo for changed files and installs them in place (non-blocking, no external process).',
     defaultEnabled     = true,
     tickInterval       = 0.25,
     runOutOfCombatOnly = false,
@@ -42,15 +59,20 @@ local plugin = {
 }
 
 local REPO            = 'traylz2000/eq-autocombat-morituri'
-local API_URL         = 'https://api.github.com/repos/' .. REPO .. '/releases/latest'
-local RELEASES_URL    = 'https://github.com/' .. REPO .. '/releases'
-local USER_AGENT      = 'TriuneAutoCombat-UpdateCheck'
+local RAW_BASE        = 'https://raw.githubusercontent.com/' .. REPO .. '/main/'
+local MANIFEST_URL    = RAW_BASE .. 'update_manifest.txt'
+local FILE_BASE       = RAW_BASE .. 'autocombat/'
+local REPO_URL        = 'https://github.com/' .. REPO
+local USER_AGENT      = 'MoriAC-Updater'
 local STARTUP_DELAY_S = 20        -- first automatic check this long after load
-local REQUEST_TIMEOUT_S = 20      -- Abort a request that has not completed by then
+local REQUEST_TIMEOUT_S = 30      -- Abort a request that has not completed by then
 local RETRY_AFTER_S   = 15 * 60   -- automatic retry spacing after a failed check
+local LOCK_STALE_S    = 120       -- an install lock older than this is ignored
 local FREQUENCIES     = { 'session', 'daily', 'weekly', 'off' }
 local FREQUENCY_LABEL = { session = 'Every session', daily = 'Once a day', weekly = 'Once a week', off = 'Never (manual only)' }
 local FREQUENCY_SEC   = { daily = 86400, weekly = 7 * 86400 }
+-- Shipped files the updater leaves alone: players edit them.
+local KEEP_LOCAL      = { ['config/ingame.cfg'] = true }
 
 local core  = nil
 local mq    = nil
@@ -60,10 +82,10 @@ local ImGui = nil
 local cfg = {
     autoCheck   = true,
     frequency   = 'session',
-    popup       = true,       -- open the notice window when a newer release is found
-    skipTag     = nil,        -- "Skip this version": no more notices for this tag
+    popup       = true,       -- open the notice window when an update is found
+    skipVersion = nil,        -- "Skip this version": no more notices for this version
     lastCheckAt = nil,        -- os.time() of the last completed check
-    lastTag     = nil,        -- tag_name the last successful check returned
+    lastVersion = nil,        -- manifest version the last successful check returned
 }
 
 -- Session state (never persisted)
@@ -72,16 +94,17 @@ local st = {
     nextAutoAt     = nil,      -- os.time() the next automatic check may run
     autoDone       = false,    -- this session's automatic check has run
     unavailable    = nil,      -- reason string when the transport cannot work this session
-    checking       = false,
+    phase          = nil,      -- nil | 'manifest' | 'download'
     manual         = false,    -- current check was requested by the user (always report)
     lastError      = nil,
     lastCheckedAt  = nil,      -- os.time() of the last completed check this session
     lastDurationMs = nil,
-    result         = nil,      -- { tag, name, url, published, notes, newer }
+    result         = nil,      -- { version, date, notes, files, changed }
+    dlIndex        = 0,        -- install: index into result.changed being downloaded
+    dlBodies       = nil,      -- install: rel path -> downloaded bytes
+    installed      = nil,      -- { version, count } after a successful install
     noticeOpen     = false,
-    noticeTag      = nil,
     remindLater    = false,    -- popup dismissed for this session
-    copied         = nil,      -- os.clock() when the link was last copied (button feedback)
 }
 
 local function chat(fmt, ...)
@@ -98,10 +121,10 @@ local function nowMs()
 end
 
 -- ----------------------------------------------------------------------------
--- Version / JSON helpers (pure Lua; exposed on the plugin for the test suite)
+-- Pure helpers (exposed on the plugin for the test suite)
 -- ----------------------------------------------------------------------------
 
--- 'V2.14' / 'v2.15-beta' / '2.0.3' -> { 2, 14 } / { 2, 15 } / { 2, 0, 3 }
+-- '2026.10.26.1405' / 'v2.15' -> { 2026, 10, 26, 1405 } / { 2, 15 }
 local function parseVersion(s)
     s = tostring(s or ''):gsub('^[vV]', '')
     local parts = {}
@@ -119,64 +142,128 @@ local function compareVersions(a, b)
     return 0
 end
 
--- True when `s` is one complete JSON object: braces balance outside of
--- strings and the final non-blank char closes the top level.
-local function jsonComplete(s)
-    if type(s) ~= 'string' then return false end
-    local depth, inStr, esc = 0, false, false
-    local lastClose = nil
-    for i = 1, #s do
-        local c = s:sub(i, i)
-        if inStr then
-            if esc then esc = false
-            elseif c == '\\' then esc = true
-            elseif c == '"' then inStr = false end
-        elseif c == '"' then inStr = true
-        elseif c == '{' or c == '[' then depth = depth + 1
-        elseif c == '}' or c == ']' then
-            depth = depth - 1
-            if depth == 0 then lastClose = i end
+-- CRC-32 (IEEE, the zlib / PNG one) in plain Lua over LuaJIT's bit library.
+-- In game the native ntdll RtlComputeCrc32 is used instead when it passes
+-- its self-test; this is the fallback and the reference for the tests.
+local CRC_TABLE = nil
+local function crc32Lua(s)
+    local b = bit
+    if not CRC_TABLE then
+        CRC_TABLE = {}
+        for i = 0, 255 do
+            local c = i
+            for _ = 1, 8 do
+                if b.band(c, 1) == 1 then c = b.bxor(b.rshift(c, 1), 0xEDB88320) else c = b.rshift(c, 1) end
+            end
+            CRC_TABLE[i] = c
         end
     end
-    if depth ~= 0 or not lastClose then return false end
-    return s:sub(lastClose + 1):match('^%s*$') ~= nil
-end
-
-local function jsonUnescape(s)
-    s = s:gsub('\\u(%x%x%x%x)', function(h)
-        local cp = tonumber(h, 16)
-        if cp < 0x80 then return string.char(cp) end
-        if cp < 0x800 then return string.char(0xC0 + math.floor(cp / 0x40), 0x80 + cp % 0x40) end
-        return string.char(0xE0 + math.floor(cp / 0x1000), 0x80 + math.floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
-    end)
-    s = s:gsub('\\(.)', { n = '\n', t = '\t', r = '\r', ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '', f = '' })
-    return s
-end
-
--- First occurrence of "key": "value" (values may contain escaped quotes)
-local function jsonString(body, key)
-    local _, q = body:find('"' .. key .. '"%s*:%s*"')
-    if not q then return nil end
-    local j, esc = q + 1, false
-    while j <= #body do
-        local c = body:sub(j, j)
-        if esc then esc = false
-        elseif c == '\\' then esc = true
-        elseif c == '"' then break end
-        j = j + 1
+    local crc = b.bnot(0)
+    for i = 1, #s do
+        crc = b.bxor(b.rshift(crc, 8), CRC_TABLE[b.band(b.bxor(crc, s:byte(i)), 0xFF)])
     end
-    if j > #body then return nil end
-    return jsonUnescape(body:sub(q + 1, j - 1))
+    return b.bnot(crc) % 4294967296
 end
 
--- Release notes are CHANGELOG markdown; keep the first few lines readable
--- in an ImGui text block (strip heading / emphasis markers, cap the length).
+-- Only plain relative paths under lua/ or config/ are installable.
+local function relPathOk(rel)
+    if type(rel) ~= 'string' or rel == '' then return false end
+    if rel:find('..', 1, true) or rel:find('\\', 1, true) or rel:find(':', 1, true) or rel:sub(1, 1) == '/' then return false end
+    if KEEP_LOCAL[rel] then return false end
+    return rel:match('^lua/[%w_%-%./]+$') ~= nil or rel:match('^config/[%w_%-%./]+$') ~= nil
+end
+
+-- update_manifest.txt (see dev/publish.sh):
+--   version=2026.10.26.1405
+--   date=2026-10-26
+--   commit=a7db88a
+--   file=lua/moriac.lua 1052311 0a1b2c3d
+--   note=## 2026-10-26
+-- Returns { version, date, commit, files = { {path, size, crc} }, notes } or nil, reason.
+local function parseManifest(text)
+    if type(text) ~= 'string' or text == '' then return nil, 'empty manifest' end
+    local m = { files = {}, noteLines = {} }
+    for line in (text .. '\n'):gmatch('([^\n]*)\n') do
+        line = line:gsub('\r$', '')
+        local k, v = line:match('^(%a+)=(.*)$')
+        if k == 'version' then m.version = v
+        elseif k == 'date' then m.date = v
+        elseif k == 'commit' then m.commit = v
+        elseif k == 'note' then m.noteLines[#m.noteLines + 1] = v
+        elseif k == 'file' then
+            local p, size, crc = v:match('^(%S+)%s+(%d+)%s+(%x%x%x%x%x%x%x%x)$')
+            if not p then return nil, 'bad file line: ' .. v end
+            m.files[#m.files + 1] = { path = p, size = tonumber(size), crc = tonumber(crc, 16) }
+        end
+    end
+    if not m.version or m.version == '' then return nil, 'manifest has no version' end
+    if #m.files == 0 then return nil, 'manifest lists no files' end
+    m.notes = table.concat(m.noteLines, '\n')
+    m.noteLines = nil
+    return m
+end
+
+-- Files whose local copy is missing or differs from the manifest.
+-- localPathFn(rel) -> path or nil; readFn(path) -> bytes or nil; crcFn(bytes) -> number
+local function planChanges(manifest, localPathFn, readFn, crcFn)
+    local changed = {}
+    for _, f in ipairs(manifest.files) do
+        if relPathOk(f.path) then
+            local dest = localPathFn(f.path)
+            if dest then
+                local body = readFn(dest)
+                local why = nil
+                if not body then why = 'new'
+                elseif #body ~= f.size or crcFn(body) ~= f.crc then why = 'changed' end
+                if why then changed[#changed + 1] = { path = f.path, dest = dest, size = f.size, crc = f.crc, why = why } end
+            end
+        end
+    end
+    return changed
+end
+
+-- Write every <dest>.new, then swap each in (old copy -> <dest>.bak).
+-- items: { {dest, body, path} }. Returns true, count or false, reason.
+local function applyFiles(items)
+    for i, it in ipairs(items) do
+        local h = io.open(it.dest .. '.new', 'wb')
+        local ok = h and h:write(it.body)
+        if h then h:close() end
+        if not ok then
+            for j = 1, i do os.remove(items[j].dest .. '.new') end
+            return false, 'could not write ' .. it.dest .. '.new (nothing was changed)'
+        end
+    end
+    for i, it in ipairs(items) do
+        local cur = io.open(it.dest, 'rb')
+        local existed = cur ~= nil
+        if cur then cur:close() end
+        if existed then
+            os.remove(it.dest .. '.bak')
+            local okB, errB = os.rename(it.dest, it.dest .. '.bak')
+            if not okB then
+                for j = i, #items do os.remove(items[j].dest .. '.new') end
+                return false, string.format('could not move %s aside (%s); %d of %d files were updated', it.path or it.dest, tostring(errB), i - 1, #items)
+            end
+        end
+        local okN, errN = os.rename(it.dest .. '.new', it.dest)
+        if not okN then
+            if existed then os.rename(it.dest .. '.bak', it.dest) end
+            for j = i, #items do os.remove(items[j].dest .. '.new') end
+            return false, string.format('could not install %s (%s); %d of %d files were updated', it.path or it.dest, tostring(errN), i - 1, #items)
+        end
+    end
+    return true, #items
+end
+
+-- Changelog markdown -> a few readable lines for an ImGui text block (strip
+-- heading / emphasis markers, cap the length).
 local function summarizeNotes(notes, maxLines, maxChars)
     if type(notes) ~= 'string' or notes == '' then return nil end
     local out, n, total = {}, 0, 0
     for line in (notes .. '\n'):gmatch('([^\n]*)\n') do
         line = line:gsub('\r', ''):gsub('^#+%s*', ''):gsub('%*%*', ''):gsub('`', '')
-        if line:match('^%s*%-%-%-%s*$') then break end   -- release.yml appends install notes after ---
+        if line:match('^%s*%-%-%-%s*$') then break end
         if line:match('%S') then
             n = n + 1
             total = total + #line
@@ -191,6 +278,22 @@ local function summarizeNotes(notes, maxLines, maxChars)
     return table.concat(out, '\n')
 end
 
+local function readFile(path)
+    local h = io.open(path, 'rb')
+    if not h then return nil end
+    local s = h:read('*a')
+    h:close()
+    return s
+end
+
+local function localPath(rel)
+    local sub = rel:match('^lua/(.+)$')
+    if sub then return (mq and mq.luaDir or 'lua') .. '/' .. sub end
+    sub = rel:match('^config/(.+)$')
+    if sub then return (mq and mq.configDir or 'config') .. '/' .. sub end
+    return nil
+end
+
 -- ----------------------------------------------------------------------------
 -- Transport: LuaJIT ffi -> WinHttp.WinHttpRequest.5.1 (async)
 -- ----------------------------------------------------------------------------
@@ -199,9 +302,11 @@ local http = {
     ole32    = nil,
     oleaut32 = nil,
     kernel32 = nil,
+    ntdll    = nil,
     iid      = nil,
     ready    = false,
     err      = nil,
+    nativeCrc = false,   -- RtlComputeCrc32 passed its self-test
     -- live request
     req      = nil,      -- IWinHttpRequest*
     bstrs    = nil,      -- BSTRs allocated for the live request
@@ -282,7 +387,21 @@ int     __stdcall WideCharToMultiByte(UINT cp, DWORD flags, const wchar_t* src, 
                                       char* dst, int dstLen, const char* defChar, int* usedDef);
 ]]
 
+-- Added with the updater (2.0): raw response bytes and the native CRC. A
+-- separate block with its own marker type, so a reload over a state where
+-- only the first block was declared still gets these.
+local CDEF_V2 = [[
+typedef struct { int unused; } MORIAC_UPDATER_V2;
+HRESULT __stdcall SafeArrayAccessData(void* psa, void** data);
+HRESULT __stdcall SafeArrayUnaccessData(void* psa);
+HRESULT __stdcall SafeArrayGetLBound(void* psa, UINT dim, LONG* bound);
+HRESULT __stdcall SafeArrayGetUBound(void* psa, UINT dim, LONG* bound);
+HRESULT __stdcall VariantClear(VARIANT* v);
+DWORD   __stdcall RtlComputeCrc32(DWORD initial, const char* data, int len);
+]]
+
 local VT_EMPTY, VT_I4, VT_BOOL          = 0, 3, 11
+local VT_ARRAY_UI1                      = 0x2011
 local CLSCTX_INPROC_SERVER              = 0x1
 local COINIT_APARTMENTTHREADED          = 0x2
 local CP_UTF8                           = 65001
@@ -294,7 +413,7 @@ local SECURE_TLS12_13                   = 0x0800 + 0x2000
 local function hex(hr) return string.format('0x%08X', (tonumber(hr) or 0) % 4294967296) end
 local function failed(hr) return (tonumber(hr) or -1) < 0 end
 
--- One-time ffi setup. Returns true, or false + reason. The cdef is guarded so
+-- One-time ffi setup. Returns true, or false + reason. The cdefs are guarded so
 -- a plugin reload in the same Lua state does not trip "attempt to redefine".
 local function httpSetup()
     if http.ready then return true end
@@ -304,6 +423,7 @@ local function httpSetup()
         if not okFfi then error('LuaJIT ffi is not available in this MacroQuest build') end
         if ffi.os ~= 'Windows' then error('needs the Windows COM runtime (ffi.os = ' .. tostring(ffi.os) .. ')') end
         if not pcall(ffi.typeof, 'IWinHttpRequest') then ffi.cdef(CDEF) end
+        if not pcall(ffi.typeof, 'MORIAC_UPDATER_V2') then ffi.cdef(CDEF_V2) end
         if ffi.sizeof('VARIANT') ~= 16 or ffi.sizeof('GUID') ~= 16 then error('unexpected VARIANT/GUID layout') end
         http.ffi      = ffi
         http.ole32    = ffi.load('ole32')
@@ -321,8 +441,21 @@ local function httpSetup()
         http.err = tostring(res):gsub('^.-:%d+: ', '')
         return false, http.err
     end
+    -- Native CRC-32 when it agrees with the standard check value.
+    pcall(function()
+        http.ntdll = http.ffi.load('ntdll')
+        local s = '123456789'
+        http.nativeCrc = (tonumber(http.ntdll.RtlComputeCrc32(0, s, #s)) % 4294967296) == 0xCBF43926
+    end)
     http.ready = true
     return true
+end
+
+local function crc32(s)
+    if http.nativeCrc then
+        return tonumber(http.ntdll.RtlComputeCrc32(0, s, #s)) % 4294967296
+    end
+    return crc32Lua(s)
 end
 
 local function wide(s)
@@ -339,22 +472,34 @@ local function bstr(s)
     return b
 end
 
-local function bstrToLua(b)
-    if b == nil then return nil end
-    local wlen = http.oleaut32.SysStringLen(b)
-    if wlen == 0 then return '' end
-    local n = http.kernel32.WideCharToMultiByte(CP_UTF8, 0, b, wlen, nil, 0, nil, nil)
-    if n <= 0 then return nil end
-    local buf = http.ffi.new('char[?]', n)
-    http.kernel32.WideCharToMultiByte(CP_UTF8, 0, b, wlen, buf, n, nil, nil)
-    return http.ffi.string(buf, n)
-end
-
 local function variant(vt, field, val)
     local v = http.ffi.new('VARIANT')
     v.vt = vt
     if field then v[field] = val end
     return v
+end
+
+-- The response as raw bytes (a VT_ARRAY | VT_UI1 SAFEARRAY).
+local function responseBytes(req, vt)
+    local ffi, oa = http.ffi, http.oleaut32
+    local v = ffi.new('VARIANT[1]')
+    local hr = vt.get_ResponseBody(req, v)
+    if failed(hr) then error('ResponseBody failed (' .. hex(hr) .. ')') end
+    local body = ''
+    if v[0].vt == VT_ARRAY_UI1 and v[0].byref ~= nil then
+        local psa = v[0].byref
+        local lb, ub = ffi.new('LONG[1]'), ffi.new('LONG[1]')
+        if not failed(oa.SafeArrayGetLBound(psa, 1, lb)) and not failed(oa.SafeArrayGetUBound(psa, 1, ub)) then
+            local n = tonumber(ub[0]) - tonumber(lb[0]) + 1
+            local p = ffi.new('void*[1]')
+            if n > 0 and not failed(oa.SafeArrayAccessData(psa, p)) then
+                body = ffi.string(p[0], n)
+                oa.SafeArrayUnaccessData(psa)
+            end
+        end
+    end
+    oa.VariantClear(v)
+    return body
 end
 
 -- Drop the live request: Abort if still in flight, Release, free BSTRs.
@@ -390,14 +535,13 @@ local function httpBegin(url)
         http.req = ffi.cast('IWinHttpRequest*', out[0])
         local req, vt = http.req, http.req.lpVtbl
         -- resolve / connect / send / receive (ms): bounds the worker, not us
-        hr = vt.SetTimeouts(req, 5000, 5000, 5000, 10000)
+        hr = vt.SetTimeouts(req, 5000, 5000, 5000, 20000)
         if failed(hr) then error('SetTimeouts failed (' .. hex(hr) .. ')') end
         hr = vt.Open(req, bstr('GET'), bstr(url), variant(VT_BOOL, 'boolVal', -1))
         if failed(hr) then error('Open failed (' .. hex(hr) .. ')') end
-        -- GitHub's API refuses requests without a User-Agent.
         hr = vt.SetRequestHeader(req, bstr('User-Agent'), bstr(USER_AGENT))
         if failed(hr) then error('SetRequestHeader failed (' .. hex(hr) .. ')') end
-        vt.SetRequestHeader(req, bstr('Accept'), bstr('application/vnd.github+json'))
+        vt.SetRequestHeader(req, bstr('Cache-Control'), bstr('no-cache'))
         -- TLS 1.2/1.3 explicitly (older Windows defaults exclude 1.2; GitHub
         -- requires it). Wine does not implement the option: ignore the result.
         vt.put_Option(req, WinHttpRequestOption_SecureProtocols, variant(VT_I4, 'lVal', SECURE_TLS12_13))
@@ -436,11 +580,7 @@ local function httpPoll()
             succeeded[0] = -1
             local hr = vt.WaitForResponse(req, variant(VT_I4, 'lVal', 0), succeeded)
             if not failed(hr) and succeeded[0] ~= 0 then
-                local pb = ffi.new('BSTR[1]')
-                hr = vt.get_ResponseText(req, pb)
-                if failed(hr) then error('ResponseText failed (' .. hex(hr) .. ')') end
-                body = bstrToLua(pb[0]) or ''
-                http.oleaut32.SysFreeString(pb[0])
+                body = responseBytes(req, vt)
                 status = 'done'
             end
         end
@@ -465,20 +605,17 @@ local function httpPoll()
 end
 
 -- ----------------------------------------------------------------------------
--- The check
+-- The check and the install
 -- ----------------------------------------------------------------------------
-local function releaseUrl(tag)
-    if tag and tag ~= '' then return RELEASES_URL .. '/tag/' .. tag end
-    return RELEASES_URL
-end
+local function busy() return st.phase ~= nil end
 
 local function startCheck(manual)
-    if st.checking then
-        if manual then chat('A check is already running.') end
+    if busy() then
+        if manual then chat('An update check or install is already running.') end
         return false
     end
     if st.unavailable and not manual then return false end
-    local ok, why = httpBegin(API_URL)
+    local ok, why = httpBegin(MANIFEST_URL)
     if not ok then
         st.unavailable = why
         st.lastError = why
@@ -487,86 +624,153 @@ local function startCheck(manual)
         if core and core.log then core.log.warn('update_check', 'transport unavailable: %s', tostring(why)) end
         return false
     end
-    st.checking = true
+    st.phase = 'manifest'
     st.manual = manual == true
     st.lastError = nil
-    if manual then chat('Checking %s for a newer release...', REPO) end
+    if manual then chat('Checking %s for changed files...', REPO) end
     return true
 end
 
-local function finishError(why)
-    st.checking = false
+local function failPhase(why)
+    local wasInstall = st.phase == 'download'
+    st.phase = nil
+    st.dlBodies = nil
     st.lastError = why
     st.lastCheckedAt = os.time()
-    st.nextAutoAt = os.time() + RETRY_AFTER_S
-    if st.manual then chat('\arUpdate check failed\ax: %s', why) end
-    if core and core.log then core.log.warn('update_check', 'check failed: %s', tostring(why)) end
+    if not wasInstall then st.nextAutoAt = os.time() + RETRY_AFTER_S end
+    if st.manual or wasInstall then chat('\ar%s failed\ax: %s', wasInstall and 'Update' or 'Update check', why) end
+    if core and core.log then core.log.warn('update_check', '%s failed: %s', wasInstall and 'install' or 'check', tostring(why)) end
 end
 
-local function finishResponse(code, body)
-    st.checking = false
+local function finishManifest(code, body)
+    st.phase = nil
     st.lastCheckedAt = os.time()
     st.lastDurationMs = nowMs() - http.t0
     if code ~= 200 then
-        local msg = body and jsonString(body, 'message') or nil
-        if code == 403 and msg and msg:lower():find('rate limit', 1, true) then msg = 'GitHub API rate limit reached, try again later' end
         st.nextAutoAt = os.time() + RETRY_AFTER_S
-        st.lastError = string.format('GitHub answered HTTP %s%s', tostring(code), msg and (': ' .. msg) or '')
+        st.lastError = string.format('GitHub answered HTTP %s for the update manifest', tostring(code))
         if st.manual then chat('\ar%s\ax', st.lastError) end
         return
     end
-    if not jsonComplete(body) then
+    local m, why = parseManifest(body)
+    if not m then
         st.nextAutoAt = os.time() + RETRY_AFTER_S
-        st.lastError = 'incomplete response from GitHub'
+        st.lastError = 'unreadable update manifest: ' .. tostring(why)
         if st.manual then chat('\ar%s\ax', st.lastError) end
         return
     end
-    local tag = jsonString(body, 'tag_name')
-    if not tag or tag == '' then
-        st.nextAutoAt = os.time() + RETRY_AFTER_S
-        st.lastError = 'no release tag in the GitHub response'
+    local okPlan, changed = pcall(planChanges, m, localPath, readFile, crc32)
+    if not okPlan then
+        st.lastError = 'could not compare local files: ' .. tostring(changed)
         if st.manual then chat('\ar%s\ax', st.lastError) end
         return
     end
-    local cur = core and core.VERSION or '?'
-    local cmp = compareVersions(tag, cur)
     st.result = {
-        tag       = tag,
-        name      = jsonString(body, 'name'),
-        url       = jsonString(body, 'html_url') or releaseUrl(tag),
-        published = (jsonString(body, 'published_at') or ''):sub(1, 10),
-        notes     = summarizeNotes(jsonString(body, 'body')),
-        newer     = cmp > 0,
-        cmp       = cmp,
+        version = m.version,
+        date    = m.date or '',
+        commit  = m.commit,
+        notes   = summarizeNotes(m.notes, 40, 5000),
+        files   = #m.files,
+        changed = changed,
     }
     st.lastError = nil
     st.autoDone = true
     cfg.lastCheckAt = os.time()
-    cfg.lastTag = tag
+    cfg.lastVersion = m.version
     saveSettings()
 
     local r = st.result
-    if r.newer then
-        local skipped = (cfg.skipTag == tag)
+    if #changed > 0 then
+        local skipped = (cfg.skipVersion == r.version)
         if st.manual or not skipped then
-            chat('\agA newer MoriAC release is available\ax: %s -> \ag%s\ax%s', cur, tag,
-                r.published ~= '' and ('  (' .. r.published .. ')') or '')
-            chat('  %s', r.url)
-            if skipped and st.manual then chat('  (you chose to skip %s; /ac update unskip to be reminded again)', tag) end
+            chat('\agA MoriAC update is available\ax: %s (%s), %d file%s changed. \ay/ac update install\ax to install it.',
+                r.version, r.date, #changed, #changed == 1 and '' or 's')
+            if skipped and st.manual then chat('  (you chose to skip %s; /ac update unskip to be reminded again)', r.version) end
         end
-        if cfg.popup and not skipped and not st.remindLater then
-            st.noticeOpen = true
-            st.noticeTag = tag
-        elseif st.manual then
-            st.noticeOpen = true
-            st.noticeTag = tag
-        end
+        if st.manual or (cfg.popup and not skipped and not st.remindLater) then st.noticeOpen = true end
     elseif st.manual then
-        if cmp == 0 then
-            chat('You are on the latest release (%s).', cur)
-        else
-            chat('Installed %s is ahead of the latest published release %s.', cur, tag)
-        end
+        chat('Your MoriAC files match the latest version (%s).', r.version)
+    end
+end
+
+-- Install lock in config/: two boxed characters share one MacroQuest folder.
+local function lockPath() return (mq and mq.configDir or 'config') .. '/moriac_update.lock' end
+
+local function takeLock()
+    local held = readFile(lockPath())
+    local at = held and tonumber(held:match('%d+'))
+    if at and (os.time() - at) < LOCK_STALE_S then return false end
+    local h = io.open(lockPath(), 'wb')
+    if not h then return false end
+    h:write(tostring(os.time()))
+    h:close()
+    return true
+end
+
+local function dropLock() os.remove(lockPath()) end
+
+local function startDownload(i)
+    local f = st.result.changed[i]
+    local ok, why = httpBegin(FILE_BASE .. f.path)
+    if not ok then failPhase(why); return end
+    st.dlIndex = i
+end
+
+local function startInstall()
+    if busy() then chat('An update check or install is already running.'); return end
+    local r = st.result
+    if not r then chat('No update check yet. /ac update to check first.'); return end
+    if #r.changed == 0 then chat('Nothing to install: your files match %s.', r.version); return end
+    st.phase = 'download'
+    st.manual = true
+    st.lastError = nil
+    st.dlBodies = {}
+    chat('Downloading %d file%s for %s...', #r.changed, #r.changed == 1 and '' or 's', r.version)
+    startDownload(1)
+end
+
+local function finishInstall()
+    local r = st.result
+    local items = {}
+    for _, f in ipairs(r.changed) do
+        items[#items + 1] = { path = f.path, dest = f.dest, body = st.dlBodies[f.path] }
+    end
+    st.dlBodies = nil
+    if not takeLock() then
+        failPhase('another character is installing an update right now. Check again in a minute.')
+        return
+    end
+    local ok, res = applyFiles(items)
+    dropLock()
+    st.phase = nil
+    if not ok then
+        st.lastError = res
+        chat('\arUpdate failed\ax: %s', res)
+        if core and core.log then core.log.warn('update_check', 'install failed: %s', tostring(res)) end
+        return
+    end
+    st.installed = { version = r.version, count = res }
+    r.changed = {}
+    chat('\agInstalled %s\ax: %d file%s updated (old copies kept as .bak). \ay/ac restart\ax to load it; other characters need /ac restart too.',
+        r.version, res, res == 1 and '' or 's')
+    if core and core.log then core.log.info('update_check', 'installed %s (%d files)', tostring(r.version), res) end
+end
+
+local function onDownloaded(code, body)
+    local f = st.result.changed[st.dlIndex]
+    if code ~= 200 then
+        failPhase(string.format('GitHub answered HTTP %s for %s', tostring(code), f.path))
+        return
+    end
+    if #body ~= f.size or crc32(body) ~= f.crc then
+        failPhase(string.format('%s did not match the manifest. GitHub may still be updating its copy; try again in a few minutes.', f.path))
+        return
+    end
+    st.dlBodies[f.path] = body
+    if st.dlIndex < #st.result.changed then
+        startDownload(st.dlIndex + 1)
+    else
+        finishInstall()
     end
 end
 
@@ -577,17 +781,65 @@ local function frequencyDue()
     return true
 end
 
+local function requestRestart()
+    if core and core.runtime and core.runtime.restartScript then
+        core.runtime.restartScript()
+    elseif mq then
+        mq.cmd('/ac restart')
+    end
+end
+
 -- ----------------------------------------------------------------------------
 -- UI
 -- ----------------------------------------------------------------------------
-local function copyLink(url)
-    local ok = pcall(ImGui.SetClipboardText, url)
-    if ok then
-        st.copied = os.clock()
-        chat('Release link copied to the clipboard: %s', url)
-    else
-        chat('Release page: %s', url)
+local function progressText()
+    if st.phase == 'manifest' then
+        return string.format('Checking... (%.1f s)', (nowMs() - http.t0) / 1000)
+    elseif st.phase == 'download' and st.result then
+        local f = st.result.changed[st.dlIndex]
+        return string.format('Downloading %d of %d: %s', st.dlIndex, #st.result.changed, f and f.path or '?')
     end
+    return nil
+end
+
+-- Install / restart / skip buttons, shared by the notice and the settings page.
+local function drawActions(sfx)
+    local r = st.result
+    local busyText = progressText()
+    if busyText then
+        local colors = core.colors or {}
+        local WARN = colors.WARN or { 0.95, 0.75, 0.30, 1.0 }
+        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], busyText)
+        return
+    end
+    if r and #r.changed > 0 then
+        if ImGui.Button('Update Now##updInstall' .. sfx, core.px(120), core.px(24)) then startInstall() end
+        if ImGui.IsItemHovered() then
+            core.setTooltip('Downloads the changed files, checks each one against the manifest, then swaps them in.\nThe old copies are kept as .bak. Restart MoriAC afterwards to load them.')
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Skip This Version##updSkip' .. sfx, core.px(140), core.px(24)) then
+            cfg.skipVersion = r.version
+            st.noticeOpen = false
+            saveSettings()
+            chat('Skipping %s. /ac update unskip to be reminded again.', r.version)
+        end
+        if ImGui.IsItemHovered() then core.setTooltip('No more popups or chat notices for %s. Newer versions still notify.', r.version) end
+    elseif st.installed then
+        if ImGui.Button('Restart MoriAC##updRestart' .. sfx, core.px(130), core.px(24)) then requestRestart() end
+        if ImGui.IsItemHovered() then core.setTooltip('Same as /ac restart: saves, stops and starts MoriAC so the new files load.') end
+    end
+end
+
+local function drawChangedList(r)
+    if #r.changed == 0 then return end
+    ImGui.TextDisabled(string.format('%d of %d files changed', #r.changed, r.files or 0))
+    if ImGui.BeginChild('##updFiles', 0, core.px(math.min(#r.changed, 5) * 18 + 8), true) then
+        for _, f in ipairs(r.changed) do
+            ImGui.TextUnformatted(f.path .. (f.why == 'new' and '  (new)' or ''))
+        end
+    end
+    ImGui.EndChild()
 end
 
 local function drawNotice()
@@ -595,16 +847,14 @@ local function drawNotice()
     if not st.noticeOpen or not r then return end
     local colors = core.colors or {}
     local GOOD  = colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
-    local MUTED = colors.MUTED or { 0.55, 0.60, 0.65, 1.0 }
     local ARC   = colors.ARC or { 0.30, 0.80, 1.00, 1.0 }
-    local GOLD  = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
 
     core.pushTheme()
-    ImGui.SetNextWindowSize(core.px(460), core.px(300), ImGuiCond.FirstUseEver)
+    ImGui.SetNextWindowSize(core.px(480), core.px(380), ImGuiCond.FirstUseEver)
     local flags = 0
     if ImGuiWindowFlags then flags = bit.bor(ImGuiWindowFlags.AlwaysUseWindowPadding) end ---@diagnostic disable-line: deprecated
     core.preBeginWindow('update_check')
-    local open, draw = ImGui.Begin('MoriAC Update Available###TriuneUpdateNotice', true,
+    local open, draw = ImGui.Begin('MoriAC Update###TriuneUpdateNotice', true,
         core.windowFlags and core.windowFlags('update_check', flags) or flags)
     if not open then
         st.noticeOpen = false
@@ -622,28 +872,25 @@ local function drawNotice()
     end
     core.postBeginWindow('update_check')
 
-    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], 'TRIUNE AUTOCOMBAT UPDATE')
+    ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], 'MORITURI AUTO COMBAT UPDATE')
     ImGui.Separator()
     ImGui.Dummy(0, core.px(4))
-    if r.newer then
-        ImGui.Text('A newer release is available:')
+    if st.installed then
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Installed %s (%d files).', st.installed.version, st.installed.count))
+        ImGui.TextWrapped('Restart MoriAC to load it. Other characters need /ac restart too.')
+    elseif #r.changed > 0 then
+        ImGui.Text('A new version is available:')
         ImGui.SameLine()
-        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], r.tag)
-        ImGui.SameLine()
-        ImGui.TextDisabled(string.format('(you are on %s)', tostring(core.VERSION)))
-    elseif r.cmp == 0 then
-        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('You are on the latest release (%s).', tostring(core.VERSION)))
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], r.version)
+        if r.date ~= '' then ImGui.TextDisabled('Published ' .. r.date) end
     else
-        ImGui.Text(string.format('Installed %s is ahead of the latest published release %s.', tostring(core.VERSION), r.tag))
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Your files match the latest version (%s).', r.version))
     end
-    if r.name and r.name ~= '' and r.name ~= r.tag then
-        ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], r.name)
-    end
-    if r.published ~= '' then ImGui.TextDisabled('Published ' .. r.published) end
     ImGui.Dummy(0, core.px(4))
+    drawChangedList(r)
 
     if r.notes then
-        ImGui.TextDisabled('Release notes')
+        ImGui.TextDisabled('What changed')
         if ImGui.BeginChild('##updNotes', 0, core.px(130), true) then
             ImGui.PushTextWrapPos(0)
             ImGui.TextUnformatted(r.notes)
@@ -653,33 +900,15 @@ local function drawNotice()
         ImGui.Dummy(0, core.px(4))
     end
 
-    local copiedRecently = st.copied and (os.clock() - st.copied) < 2.0
-    if ImGui.Button((copiedRecently and 'Copied!' or 'Copy Release Link') .. '##updCopy', core.px(150), core.px(24)) then
-        copyLink(r.url)
-    end
-    if ImGui.IsItemHovered() then core.setTooltip('%s', r.url) end
-    ImGui.SameLine()
-    if r.newer then
-        if ImGui.Button('Skip This Version##updSkip', core.px(140), core.px(24)) then
-            cfg.skipTag = r.tag
-            st.noticeOpen = false
-            saveSettings()
-            chat('Skipping %s. /ac update unskip to be reminded again.', r.tag)
-        end
-        if ImGui.IsItemHovered() then core.setTooltip('No more popups or chat notices for %s. Newer releases still notify.', r.tag) end
+    drawActions('n')
+    if not busy() then
         ImGui.SameLine()
-        if ImGui.Button('Remind Me Later##updLater', core.px(130), core.px(24)) then
+        if ImGui.Button('Close##updClose', core.px(90), core.px(24)) then
             st.noticeOpen = false
             st.remindLater = true
         end
-        if ImGui.IsItemHovered() then core.setTooltip('Closes this notice for the rest of this session.') end
-    else
-        if ImGui.Button('Close##updClose', core.px(100), core.px(24)) then
-            st.noticeOpen = false
-        end
+        if ImGui.IsItemHovered() then core.setTooltip('Closes this notice for the rest of this session. /ac update show opens it again.') end
     end
-    ImGui.Dummy(0, core.px(2))
-    ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], 'Download TriuneAutocombat-Update.zip from the release page and extract it into your MacroQuest folder.')
 
     if core.preEndWindow then core.preEndWindow('update_check', false) end
     ImGui.End()
@@ -702,7 +931,8 @@ end
 
 function plugin.onDestroy()
     httpClose(true)
-    st.checking = false
+    st.phase = nil
+    st.dlBodies = nil
     st.noticeOpen = false
     core = nil
     mq = nil
@@ -711,12 +941,12 @@ end
 
 function plugin.onTick()
     if not core then return end
-    if st.checking then
+    if st.phase then
         local status, a, b = httpPoll()
         if status == 'done' then
-            finishResponse(a, b)
+            if st.phase == 'manifest' then finishManifest(a, b) else onDownloaded(a, b) end
         elseif status == 'error' then
-            finishError(a)
+            failPhase(a)
         end
         return
     end
@@ -727,7 +957,7 @@ function plugin.onTick()
             return
         end
         -- One automatic check per session: autoDone is set only when a check
-        -- succeeds (finishResponse); a failure leaves it false so the
+        -- succeeds (finishManifest); a failure leaves it false so the
         -- RETRY_AFTER_S schedule set by the error path triggers another try.
         startCheck(false)
     end
@@ -743,20 +973,22 @@ function plugin.onSaveSettings()
         autoCheck   = cfg.autoCheck == true,
         frequency   = cfg.frequency,
         popup       = cfg.popup == true,
-        skipTag     = cfg.skipTag,
+        skipVersion = cfg.skipVersion,
         lastCheckAt = cfg.lastCheckAt,
-        lastTag     = cfg.lastTag,
+        lastVersion = cfg.lastVersion,
     }
 end
 
+-- skipTag / lastTag were the release-based checker's keys: GitHub release
+-- tags, which this version never sees, so they are dropped.
 function plugin.onLoadSettings(s)
     if type(s) ~= 'table' then return end
     if s.autoCheck ~= nil then cfg.autoCheck = (s.autoCheck == true) end
     if FREQUENCY_LABEL[s.frequency] then cfg.frequency = s.frequency end
     if s.popup ~= nil then cfg.popup = (s.popup == true) end
-    cfg.skipTag = (type(s.skipTag) == 'string' and s.skipTag ~= '') and s.skipTag or nil
+    cfg.skipVersion = (type(s.skipVersion) == 'string' and s.skipVersion ~= '') and s.skipVersion or nil
     cfg.lastCheckAt = tonumber(s.lastCheckAt)
-    cfg.lastTag = (type(s.lastTag) == 'string' and s.lastTag ~= '') and s.lastTag or nil
+    cfg.lastVersion = (type(s.lastVersion) == 'string' and s.lastVersion ~= '') and s.lastVersion or nil
 end
 
 local function fmtAgo(t)
@@ -773,16 +1005,15 @@ function plugin.onDrawSettings()
     local colors = core.colors or {}
     local GOLD  = colors.GOLD or { 1.0, 0.70, 0.54, 1 }
     local GOOD  = colors.GOOD or { 0.40, 0.85, 0.50, 1.0 }
-    local WARN  = colors.WARN or { 0.95, 0.75, 0.30, 1.0 }
     local ERR   = colors.ERR or { 0.95, 0.40, 0.40, 1.0 }
-    core.accent(GOLD, 'Update Checker')
-    ImGui.TextDisabled(string.format('Installed: %s   |   Source: github.com/%s/releases', tostring(core.VERSION), REPO))
+    core.accent(GOLD, 'Updater')
+    ImGui.TextDisabled('Source: github.com/' .. REPO .. '  (lua/ and config/; config/ingame.cfg is left alone)')
     ImGui.Dummy(0, core.px(4))
 
-    local autoVal = ImGui.Checkbox('Check for new releases automatically##updAuto', cfg.autoCheck)
+    local autoVal = ImGui.Checkbox('Check for updates automatically##updAuto', cfg.autoCheck)
     if autoVal ~= cfg.autoCheck then cfg.autoCheck = autoVal; saveSettings() end
     if ImGui.IsItemHovered() then
-        core.setTooltip(string.format('Runs one check %d s after MoriAC loads (per character), with the frequency below.', STARTUP_DELAY_S))
+        core.setTooltip(string.format('Runs one check %d s after MoriAC loads (per character), with the frequency below. Installing is always your call.', STARTUP_DELAY_S))
     end
 
     local curIdx = 1
@@ -793,14 +1024,12 @@ function plugin.onDrawSettings()
     local newIdx = ImGui.Combo('Frequency##updFreq', curIdx, labels)
     if newIdx ~= curIdx and FREQUENCIES[newIdx] then cfg.frequency = FREQUENCIES[newIdx]; saveSettings() end
 
-    local popVal = ImGui.Checkbox('Open a popup when a newer release is found##updPopup', cfg.popup)
+    local popVal = ImGui.Checkbox('Open a popup when an update is found##updPopup', cfg.popup)
     if popVal ~= cfg.popup then cfg.popup = popVal; saveSettings() end
     if ImGui.IsItemHovered() then core.setTooltip('Off: only the chat notice.') end
 
     ImGui.Dummy(0, core.px(4))
-    if st.checking then
-        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], string.format('Checking... (%.1f s)', (nowMs() - http.t0) / 1000))
-    else
+    if not busy() then
         if ImGui.Button('Check Now##updNow', core.px(120), core.px(24)) then
             st.unavailable = nil
             startCheck(true)
@@ -810,61 +1039,66 @@ function plugin.onDrawSettings()
             st.noticeOpen = true
         end
     end
+    drawActions('s')
 
     ImGui.Dummy(0, core.px(4))
     ImGui.TextDisabled('Last check: ' .. fmtAgo(st.lastCheckedAt or cfg.lastCheckAt))
     if st.lastDurationMs then
         ImGui.SameLine()
-        ImGui.TextDisabled(string.format('(%.0f ms, %d polls)', st.lastDurationMs, http.polls))
+        ImGui.TextDisabled(string.format('(%.0f ms)', st.lastDurationMs))
     end
     if st.unavailable then
         ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], 'Update check unavailable: ' .. st.unavailable)
     elseif st.lastError then
+        ImGui.PushTextWrapPos(0)
         ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], 'Last error: ' .. st.lastError)
+        ImGui.PopTextWrapPos()
     end
     local r = st.result
-    if r then
-        if r.newer then
-            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Newer release available: %s%s', r.tag, r.published ~= '' and ('  (' .. r.published .. ')') or ''))
-        elseif r.cmp == 0 then
-            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'You are on the latest release.')
+    if st.installed then
+        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Installed %s. Restart MoriAC to load it.', st.installed.version))
+    elseif r then
+        if #r.changed > 0 then
+            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Update available: %s (%d files changed)', r.version, #r.changed))
         else
-            ImGui.TextDisabled(string.format('Latest published release is %s (you are ahead).', r.tag))
+            ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('Your files match the latest version (%s).', r.version))
         end
-    elseif cfg.lastTag then
-        ImGui.TextDisabled('Latest release seen: ' .. cfg.lastTag)
+    elseif cfg.lastVersion then
+        ImGui.TextDisabled('Latest version seen: ' .. cfg.lastVersion)
     end
-    if cfg.skipTag then
-        ImGui.TextDisabled('Skipping: ' .. cfg.skipTag)
+    if cfg.skipVersion then
+        ImGui.TextDisabled('Skipping: ' .. cfg.skipVersion)
         ImGui.SameLine()
         if ImGui.SmallButton('Unskip##updUnskip') then
-            cfg.skipTag = nil
+            cfg.skipVersion = nil
             saveSettings()
         end
     end
 end
 
--- /ac update [now|show|skip|unskip|auto on|off|link]
+-- /ac update [now|install|show|skip|unskip|auto on|off]
 function plugin.onCommand(cmd, args)
     if cmd ~= 'update' and cmd ~= 'checkupdate' and cmd ~= 'updater' then return false end
     local sub = args and args[2] and tostring(args[2]):lower() or 'now'
     if sub == 'now' or sub == 'check' then
         st.unavailable = nil
         startCheck(true)
+    elseif sub == 'install' or sub == 'apply' then
+        startInstall()
     elseif sub == 'show' then
         if st.result then st.noticeOpen = true else chat('No check result yet. /ac update to check now.') end
     elseif sub == 'skip' then
-        local tag = (st.result and st.result.tag) or cfg.lastTag
-        if tag then
-            cfg.skipTag = tag
+        local v = (st.result and st.result.version) or cfg.lastVersion
+        if v then
+            cfg.skipVersion = v
             st.noticeOpen = false
             saveSettings()
-            chat('Skipping %s. /ac update unskip to be reminded again.', tag)
+            chat('Skipping %s. /ac update unskip to be reminded again.', v)
         else
-            chat('No release known yet to skip.')
+            chat('No version known yet to skip.')
         end
     elseif sub == 'unskip' then
-        cfg.skipTag = nil
+        cfg.skipVersion = nil
         saveSettings()
         chat('Version skip cleared.')
     elseif sub == 'auto' then
@@ -875,22 +1109,25 @@ function plugin.onCommand(cmd, args)
         end
         chat('Automatic update check is %s (%s).', cfg.autoCheck and 'ON' or 'OFF', FREQUENCY_LABEL[cfg.frequency] or cfg.frequency)
     elseif sub == 'link' then
-        copyLink((st.result and st.result.url) or releaseUrl(cfg.lastTag))
+        chat('MoriAC on GitHub: %s', REPO_URL)
     else
-        chat('usage: /ac update [now|show|skip|unskip|auto on|off|link]')
+        chat('usage: /ac update [now|install|show|skip|unskip|auto on|off]')
     end
     return true
 end
 
 plugin.help = {
-    '  \ag/ac update [now|show|skip|unskip|auto on|off|link]\ax - Check GitHub for a newer MoriAC release (non-blocking)',
+    '  \ag/ac update [now|install|show|skip|unskip|auto on|off]\ax - Check GitHub for changed MoriAC files, and install them (non-blocking)',
 }
 
 -- Exposed for tests
 plugin.parseVersion    = parseVersion
 plugin.compareVersions = compareVersions
-plugin.jsonComplete    = jsonComplete
-plugin.jsonString      = jsonString
+plugin.crc32Lua        = crc32Lua
+plugin.relPathOk       = relPathOk
+plugin.parseManifest   = parseManifest
+plugin.planChanges     = planChanges
+plugin.applyFiles      = applyFiles
 plugin.summarizeNotes  = summarizeNotes
 plugin._cfg            = cfg
 plugin._state          = st

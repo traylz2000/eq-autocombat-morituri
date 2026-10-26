@@ -19,6 +19,8 @@ Step-by-step instructions with a check after each step are on the [main project 
 
 MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac` (or the short form `/lua run mac`). Only one copy runs at a time: starting the other name while one is running just prints a note.
 
+**Updating.** You only do the copy in step 3 once. After that MoriAC checks GitHub when it starts and tells you when an update is out. Type `/ac update install` (or click **Update Now** in the popup), then `/ac restart` on each character. It downloads only the files that changed, checks each one, and keeps the old copy as `.bak`. Your settings and `config/ingame.cfg` are never touched.
+
 **Coming from Triune or the earlier Morituri port?** Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
 
 > Windows users: add your MacroQuest folder as an antivirus exception before running it.
@@ -74,7 +76,7 @@ Set the Main Assist with `/ac ma <name>` or on the **Mode & Pulling** page.
 
 ## Windows and tools
 
-Everything below is built in. Open them from the **Windows** menu at the top of the main window, from the sidebar (pin your favourites under Setup -> Plugins), or with the command shown.
+Everything below is built in. Open them from the **Windows** menu at the top of the main window, from the sidebar (pin your favourites under Setup -> Plugins; click **+ WINDOWS** to unfold the list), or with the command shown.
 
 | Window | Command | What it is |
 |---|---|---|
@@ -102,7 +104,8 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
 | GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
 | Floating damage | Setup -> Plugins | Big animated numbers for crits. |
-| Update Checker | `/ac update` | Tells you when a newer MoriAC release is out. Nothing is downloaded. |
+| Updater | `/ac update` | Checks GitHub for changed MoriAC files when it starts. `/ac update install` downloads and installs them (old copies kept as `.bak`); then `/ac restart`. |
+| Alerts | `/ac alerts` | A sound and a big on-screen line when a mob enrages or rampages, you get summoned, your HP drops low, or any chat line you choose shows up. Works while MoriAC is paused. Set the triggers under Setup -> Plugins -> Alerts. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
 Each of these is a plugin in `lua/tac/`. Turn them on or off under **Setup -> Plugins**. Its **Config** button has the plugin's settings and a **Show** box for each of its windows. HUD-style windows also close from their right-click menu.
@@ -130,6 +133,8 @@ Type `/ac help` in game for the full list.
 | `/ac scale 1.25` | Make every MoriAC window bigger (or smaller) |
 | `/ac status` | Print what the bot is doing |
 | `/ac restart` | Reload the whole script |
+| `/ac update` / `/ac update install` | Check for an update / install it (then `/ac restart`) |
+| `/ac alerts` / `/ac alerts mute` | List the alert triggers / silence their sounds |
 | `/moriacrun` | Start/pause - bind this to a key (`/triunerun` still works) |
 
 ---

@@ -2,6 +2,42 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-26
+
+- **The updater now installs updates (`lua/tac/update_check.lua`).** The old checker asked GitHub for the latest *release*, and MoriAC has never published one, so it always said "404 not found". It now reads a file list that every publish writes, compares it with your files, and can install what changed.
+  - About 20 seconds after MoriAC starts it checks, then tells you in chat and in a popup how many files changed, and shows the newest changelog section.
+  - `/ac update install` (or **Update Now**) downloads only the changed files from GitHub. It checks each one's size and CRC-32 against the list. If any file doesn't match, nothing is installed. Then it swaps them in and keeps each old copy as `<file>.bak`. Then `/ac restart` on each character loads the new version.
+  - Only `lua/` and `config/` files are updated. Your settings files and `config/ingame.cfg` are never touched. A lock file stops two boxed characters from installing at the same moment.
+  - Like the old checker, it never starts a process and never makes the game wait: downloads run on Windows' own HTTP worker and are polled.
+  - `/ac update [now|install|show|skip|unskip|auto on|off]`.
+  - Tests: Suite 107 is rewritten for the updater: manifest parsing, CRC-32, which files count as changed, the `.new` / `.bak` swap on a real folder, and refusing paths outside `lua/` and `config/`.
+  - Check in game:
+    - `/ac update` finds an update after the next publish.
+    - **Update Now** installs it.
+    - `/ac restart` loads it.
+    - The `.bak` files sit next to the replaced ones.
+
+- **New plugin: Alerts (`lua/tac/alerts.lua`).** It plays a sound, flashes a big line at the top of the screen and echoes to chat when a trigger fires. It works while MoriAC is paused too.
+  - Default triggers:
+    - On: **Enrage** (`#1# has become ENRAGED.`), **Rampage**, **Summoned**.
+    - Off: **Tell** and **Low HP** (below 35%).
+  - Add your own under Setup -> Plugins -> Alerts:
+    - Any chat line, as an MQ event pattern. `#*#` matches anything, and `#1#` matches anything and shows it in the alert.
+    - Or my HP / mana below a percentage. These fire once and re-arm 5% above.
+  - Each trigger has:
+    - Sound: blank plays `/beep`; a `.wav` file name plays that file through `/beep <file>`.
+    - When: always, in combat only, or only while MoriAC is running.
+    - A cooldown, and a flash on/off.
+    - A **Test** button.
+  - `/ac alerts [list|mute|unmute|test <n>]`.
+  - Tests: Suite M9.
+  - Check in game:
+    - **Test** beeps and flashes.
+    - A real enrage fires the alert.
+    - A `.wav` path plays the file. Not yet verified that MQ's `/beep` takes a file on this build; if it doesn't, leave Sound blank for the plain beep.
+
+- **The sidebar's WINDOWS list folds away.** Click **+ WINDOWS** to show the pinned-window checkboxes and **- WINDOWS** to hide them. It starts folded and remembers your choice. While folded, the header says how many of those windows are open.
+
 ## 2026-10-25
 
 - **New Puller submode: Lure** (`/ac puller lure`, or pick *Lure* under Mode). It pulls like Camp: it goes out to the *Engage from* distance, tags the mob with the bow, Throw Stone, a spell or the pet, and walks back to camp. Then, instead of running out to meet the mob, it waits at camp, facing the mob, until the mob is in fighting reach. Pets wait too. While it waits the status line says *Waiting at camp for ...*.
