@@ -6,11 +6,12 @@
 
 - **Auto AA buys checked priorities again, in your order (`lua/tac/auto_aa.lua` 1.4.0).**
   - Why it did nothing: priorities waited for the **Bank** threshold, and saved loadouts default that to 100 unspent AA. A checked Healing Gift sat there until you had 100 points. Priorities now buy as soon as you can afford them. **Wait for the bank** (in the Priorities panel) brings the old behaviour back. The fireworks cap spender still waits for the bank.
-  - New **Priorities** panel above the AA list. It shows the checked AAs in buy order, with up / down / remove buttons, an **Up to** rank for each (stop at rank 3 instead of max) and the status of each one. Choose **Buy in list order** or **Buy cheapest first**. **Save up for the top one** stops cheaper AAs lower in the list from spending the points the top AA is waiting for.
+  - New **Priority** column next to each AA's name: type 1-9. Priority 1 is bought first, and ties go alphabetical. Leave it blank and the AA is never bought automatically. This replaces the old checkbox. Checked AAs from before start at 1.
+  - New **Priorities** panel above the AA list. It shows the numbered AAs in buy order, each with its Priority box, an **Up to** rank (stop at rank 3 instead of max), its status and a remove button. The panel is at least five rows tall. **Save up for the top one** stops lower priorities from spending the points the top AA is waiting for.
   - A status line says what auto-spend is doing: buying X, waiting for points, in combat, moving, saving up, or nothing left to buy.
   - The old 5-point floor is gone, so a 2-point AA can be bought with 2 points.
   - New filters under the search box: **class** (your four classes; archetype AAs count for every class that can use them; "class unknown" lists Class-tab AAs not yet matched), **AA tab** (General / Archetype / Class / Special), **kind** (Activated, Passive, Pet, Healing, Damage, Defense, Mana / endurance), **progress** (Can buy now, Not started, In progress, Maxed) and **Search descriptions**. Class matching is partial until the server's AA export arrives. A `DATA.aa_classes` table in `moriac_data.lua` will feed it then.
-  - `/ac aastatus` lists the priorities in buy order, with their Up to rank.
+  - `/ac aastatus` lists the priorities in buy order, with their Up to rank. `/ac aaprio <name> <1-9>` sets a priority from chat.
 
 ## 2026-10-26
 

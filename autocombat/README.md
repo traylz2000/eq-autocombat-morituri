@@ -102,7 +102,7 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | NMS Loot | `/ac nms` | The server's `#nms` loot system as a window, shared across your boxes. |
 | DPS Parser | `/dps` | Per-fight damage for you and your pets, plus a group meter over the Box Network. |
 | Auto-Accept | `/ac autoaccept` | Auto-accepts group, trade and DZ invites by your rules. |
-| Auto AA | `/ac aawin` | Spends AA points on the checked priorities, in the order you set in the **Priorities** panel (or cheapest first). Each priority can stop at a chosen rank. Priorities buy as soon as you can afford them unless **Wait for the bank** is on. The fireworks cap spender runs once every priority is done (or none is checked). Filter the list by class, AA tab, kind (activated, passive, pet, healing...) and progress. `/ac aastatus` shows why each priority is or is not next. |
+| Auto AA | `/ac aawin` | Spends AA points on the AAs you give a **Priority** number (1-9; 1 is bought first, ties alphabetical, blank is never bought). Each priority can stop at a chosen rank. Priorities buy as soon as you can afford them unless **Wait for the bank** is on. The fireworks cap spender runs once every priority is done (or none is checked). Filter the list by class, AA tab, kind (activated, passive, pet, healing...) and progress. `/ac aastatus` shows why each priority is or is not next. |
 | Buffbot | `/ac buffbot on` | A buff station: players `/tell` you for buffs, it casts them. Off unless you turn it on. |
 | Cursor Manager | `/ac cursorui` | Clears whatever is stuck on your cursor. |
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |

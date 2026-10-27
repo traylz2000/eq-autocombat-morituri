@@ -332,7 +332,8 @@ local function sanitizeModeConfig(c)
     if c.auto_aa_buy_order ~= 'cost' and c.auto_aa_buy_order ~= 'list' then
         c.auto_aa_buy_order = 'cost'
     end
-    if type(c.auto_aa_prio_order) ~= 'table' then c.auto_aa_prio_order = {} end
+    if type(c.auto_aa_prio_num) ~= 'table' then c.auto_aa_prio_num = {} end
+    c.auto_aa_prio_order = nil   -- replaced by the 1-9 priority numbers
     if type(c.auto_aa_prio_rank) ~= 'table' then c.auto_aa_prio_rank = {} end
     if c.auto_aa_prio_use_bank == nil then c.auto_aa_prio_use_bank = false end
     if c.auto_aa_save_for_top == nil then c.auto_aa_save_for_top = false end
@@ -597,7 +598,7 @@ local function defaultCtrl()
         auto_aa_hide_maxed       = false,
         auto_aa_only_prioritized = false,
         auto_aa_buy_order        = 'cost',
-        auto_aa_prio_order       = {},    -- checked priorities in the player's buy order
+        auto_aa_prio_num         = {},    -- name -> priority 1..9 (1 bought first, ties alphabetical)
         auto_aa_prio_rank        = {},    -- name -> stop at this rank (none = max)
         auto_aa_prio_use_bank    = false, -- priorities wait for the bank threshold
         auto_aa_save_for_top     = false, -- list order: save up for the top unfinished priority

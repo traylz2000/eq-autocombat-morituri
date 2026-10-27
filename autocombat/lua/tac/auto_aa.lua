@@ -893,8 +893,8 @@ function AA.printPriorityStatus()
         print('\ay[MoriAC]\ax   No prioritized AAs; only the cap spender runs.')
         return
     end
-    print(string.format('\ag[MoriAC]\ax   Buy order: %s%s%s', AA.buyOrder() == 'cost' and 'cheapest first' or 'list order',
-        (AA.buyOrder() == 'list' and ctrl.auto_aa_save_for_top) and ', saving up for the top one' or '',
+    print(string.format('\ag[MoriAC]\ax   Buy order: priority 1 first, ties alphabetical%s%s',
+        ctrl.auto_aa_save_for_top and ', saving up for the top one' or '',
         ctrl.auto_aa_prio_use_bank and ', after the bank threshold' or ''))
     local now = os.clock()
     for i, nm in ipairs(names) do
@@ -906,8 +906,8 @@ function AA.printPriorityStatus()
         else
             verdict = '\ay' .. (AA.BLOCKER_TEXT[why] or why) .. '\ax'
         end
-        print(string.format('\ag[MoriAC]\ax   %d. "%s"  Rank %d/%d%s  Cost %d  CanTrain %s  -> %s',
-            i, nm, info.rank, info.maxRank, AA.targetRank(nm) and (' (up to ' .. AA.targetRank(nm) .. ')') or '', info.cost,
+        print(string.format('\ag[MoriAC]\ax   [%d] "%s"  Rank %d/%d%s  Cost %d  CanTrain %s  -> %s',
+            AA.prioNum(nm) or i, nm, info.rank, info.maxRank, AA.targetRank(nm) and (' (up to ' .. AA.targetRank(nm) .. ')') or '', info.cost,
             info.canTrain == nil and 'n/a' or tostring(info.canTrain), verdict))
     end
 end
@@ -941,64 +941,69 @@ AA.BLOCKER_TEXT = {
 }
 
 -- ----------------------------------------------------------------------------
--- Priority list. ctrl.auto_aa_priorities (name -> true) says which AAs are
--- bought; ctrl.auto_aa_prio_order (array) is the player's order for them and
--- ctrl.auto_aa_prio_rank (name -> rank) an optional "stop at this rank".
--- Older loadouts have no order yet: their checked AAs start alphabetical,
--- which is what the old 'list' buy order did.
+-- Priorities. ctrl.auto_aa_prio_num (name -> 1..9) is the number typed in the
+-- Priority column: 1 is bought first, ties go alphabetical, no number = not
+-- bought. ctrl.auto_aa_priorities (name -> true) mirrors "has a number" for
+-- the code that only asks whether an AA is prioritized. Checked AAs from
+-- older loadouts (no number yet) start at 1. ctrl.auto_aa_prio_rank (name ->
+-- rank) is an optional "stop at this rank".
 -- ----------------------------------------------------------------------------
-local function ciLess(a, b) return a:lower() < b:lower() end
+AA.PRIO_MIN, AA.PRIO_MAX = 1, 9
 
+function AA.prioNum(name)
+    local nums = type(ctrl.auto_aa_prio_num) == 'table' and ctrl.auto_aa_prio_num or nil
+    local n = nums and tonumber(nums[name])
+    if n and n >= AA.PRIO_MIN and n <= AA.PRIO_MAX then return math.floor(n) end
+    return nil
+end
+
+-- Typed text -> 1..9 or nil (blank, 0 or anything else clears it).
+function AA.parsePrioNum(text)
+    local n = tonumber((tostring(text or ''):match('^%s*(%d+)%s*$')))
+    if n and n >= AA.PRIO_MIN and n <= AA.PRIO_MAX then return n end
+    return nil
+end
+
+-- The prioritized AAs in buy order: number, then name.
 function AA.prioList()
-    local map = ctrl.auto_aa_priorities or {}
-    local order = type(ctrl.auto_aa_prio_order) == 'table' and ctrl.auto_aa_prio_order or {}
-    local seen, out, changed = {}, {}, false
-    for _, nm in ipairs(order) do
-        if type(nm) == 'string' and map[nm] and not seen[nm] then
-            seen[nm] = true
-            out[#out + 1] = nm
-        else
-            changed = true
-        end
-    end
-    local extra = {}
-    for nm, on in pairs(map) do
-        if on and not seen[nm] then extra[#extra + 1] = nm end
-    end
-    if #extra > 0 then
-        table.sort(extra, ciLess)
-        for _, nm in ipairs(extra) do out[#out + 1] = nm end
-        changed = true
-    end
-    if changed or ctrl.auto_aa_prio_order ~= order then ctrl.auto_aa_prio_order = out; return out end
-    return order
-end
-
-function AA.setPrio(name, on)
-    if not name or name == '' then return end
+    if type(ctrl.auto_aa_prio_num) ~= 'table' then ctrl.auto_aa_prio_num = {} end
     if type(ctrl.auto_aa_priorities) ~= 'table' then ctrl.auto_aa_priorities = {} end
-    local order = AA.prioList()
-    ctrl.auto_aa_priorities[name] = on and true or nil
-    for i = #order, 1, -1 do
-        if order[i] == name then table.remove(order, i) end
+    local nums, map = ctrl.auto_aa_prio_num, ctrl.auto_aa_priorities
+    for nm, on in pairs(map) do
+        if on and not AA.prioNum(nm) then nums[nm] = 1 end
     end
-    if on then order[#order + 1] = name end
-    if not on and type(ctrl.auto_aa_prio_rank) == 'table' then ctrl.auto_aa_prio_rank[name] = nil end
-    AA.aaFilterDirty = true
-end
-
--- Moves a priority up (delta < 0) or down; returns true when it moved.
-function AA.movePrio(name, delta)
-    local order = AA.prioList()
-    for i, nm in ipairs(order) do
-        if nm == name then
-            local j = i + delta
-            if j < 1 or j > #order then return false end
-            order[i], order[j] = order[j], order[i]
-            return true
+    local out = {}
+    for nm in pairs(nums) do
+        if AA.prioNum(nm) then
+            out[#out + 1] = nm
+            map[nm] = true
+        else
+            nums[nm] = nil
+            map[nm] = nil
         end
     end
-    return false
+    table.sort(out, function(a, b)
+        local na, nb = AA.prioNum(a), AA.prioNum(b)
+        if na ~= nb then return na < nb end
+        return a:lower() < b:lower()
+    end)
+    return out
+end
+
+-- Sets (1..9) or clears (nil) the priority number of an AA.
+function AA.setPrioNum(name, n)
+    if not name or name == '' then return end
+    AA.prioList()
+    n = tonumber(n)
+    if n and n >= AA.PRIO_MIN and n <= AA.PRIO_MAX then
+        ctrl.auto_aa_prio_num[name] = math.floor(n)
+        ctrl.auto_aa_priorities[name] = true
+    else
+        ctrl.auto_aa_prio_num[name] = nil
+        ctrl.auto_aa_priorities[name] = nil
+        if type(ctrl.auto_aa_prio_rank) == 'table' then ctrl.auto_aa_prio_rank[name] = nil end
+    end
+    AA.aaFilterDirty = true
 end
 
 -- The rank a priority stops at (nil = its max rank).
@@ -1014,26 +1019,11 @@ function AA.setTargetRank(name, rank)
     ctrl.auto_aa_prio_rank[name] = (rank and rank > 0) and math.floor(rank) or nil
 end
 
--- 'list' = the player's order, 'cost' = cheapest first.
-function AA.buyOrder()
-    return (ctrl.auto_aa_buy_order == 'cost') and 'cost' or 'list'
-end
-
--- Which priority to buy. entries are { info, why } in list order, as
+-- Which priority to buy. entries are { info, why } in buy order, as
 -- priorityBlocker classified them. Returns the info to buy (or nil) and,
--- when "save up for the top priority" holds the purchase back, the info of
--- the priority being saved for.
-function AA.pickPriority(entries, mode, saveForTop)
-    if mode == 'cost' then
-        local best
-        for _, e in ipairs(entries) do
-            if e.why == nil then
-                local a = e.info
-                if not best or a.cost < best.cost or (a.cost == best.cost and a.name:lower() < best.name:lower()) then best = a end
-            end
-        end
-        return best
-    end
+-- when "save up for the top one" holds the purchase back, the info of the
+-- priority being saved for.
+function AA.pickPriority(entries, saveForTop)
     for _, e in ipairs(entries) do
         if e.why == nil then return e.info end
         if saveForTop and e.why == 'points' then return nil, e.info end
@@ -2444,7 +2434,7 @@ function AA.checkAutoSpendAA(allowStop)
             end
         end
 
-        local target, savingFor = AA.pickPriority(entries, AA.buyOrder(), ctrl.auto_aa_save_for_top)
+        local target, savingFor = AA.pickPriority(entries, ctrl.auto_aa_save_for_top)
         if savingFor then
             AA.setStatus(string.format('Saving up for "%s": %d of %d AA.', savingFor.name, unspent, savingFor.cost))
             return false
@@ -2516,7 +2506,7 @@ function AA.checkAutoSpendAA(allowStop)
     AA.capHoldLogged = nil
     if capInfo.fullyTrained or (not capInfo.isSpecial and capInfo.invalid) or cost > unspent then
         if #prios > 0 then AA.setStatus('Every priority is bought. Nothing else to spend on.', 'done')
-        else AA.setStatus('No priorities checked. Tick the box next to an AA to buy it.', 'done') end
+        else AA.setStatus('No priorities set. Type 1-9 in the Priority column of an AA to buy it.', 'done') end
         return false
     end
     if unspent < effectiveThreshold then
@@ -2588,7 +2578,7 @@ function AA.manualSpendAA(targetName)
             entries[#entries + 1] = { info = info, why = AA.priorityBlocker(info, unspent, myLevel, os.clock()) }
         end
         -- Spend Now never saves up: it buys the best priority it can afford.
-        topPrioritized = AA.pickPriority(entries, AA.buyOrder(), false)
+        topPrioritized = AA.pickPriority(entries, false)
     end
 
     if topPrioritized then
@@ -2834,26 +2824,39 @@ function AA.rankLabels(maxRank)
     return l
 end
 
--- Priorities: the checked AAs in buy order, with Up / Down / Remove, an
--- "up to rank" per AA, the buy-order options and what auto-spend is doing.
+-- The Priority box: blank or 1-9. Returns true when the number changed.
+function AA.prioInput(name, id)
+    local cur = AA.prioNum(name)
+    ImGui.SetNextItemWidth(-1)
+    local flags = (ImGuiInputTextFlags and ImGuiInputTextFlags.CharsDecimal) or 0
+    local txt = ImGui.InputText(id, cur and tostring(cur) or '', flags)
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('%s', 'Priority 1-9: 1 is bought first, ties go alphabetical.\nLeave it blank and this AA is never bought automatically.')
+    end
+    if type(txt) ~= 'string' then return false end
+    local n = AA.parsePrioNum(txt)
+    if n == cur then return false end
+    -- an unfinished edit like "1" -> "" -> "3" passes through blank; only a
+    -- blank box clears, anything else that is not 1-9 is ignored
+    if n == nil and txt:match('%S') then return false end
+    AA.setPrioNum(name, n)
+    return true
+end
+
+-- Priorities: the numbered AAs in buy order, with their Priority box, an
+-- "up to rank" per AA, Remove, the options and what auto-spend is doing.
 function AA.drawPriorityPanel(unspentAA)
     local prios = AA.prioList()
     local flags = ImGuiTreeNodeFlags and ImGuiTreeNodeFlags.DefaultOpen or 0
     if not ImGui.CollapsingHeader(string.format('Priorities (%d)###aaPrioHeader', #prios), flags) then return end
 
     local changed = false
-    local order, ch = AA.keyCombo('##aaBuyOrder', AA.buyOrder(), { { 'list', 'Buy in list order' }, { 'cost', 'Buy cheapest first' } }, 150)
-    if ch then ctrl.auto_aa_buy_order = order; changed = true end
+    ImGui.TextDisabled('Bought by priority: 1 first, ties alphabetical.')
+    ImGui.SameLine()
+    local sv = ImGui.Checkbox('Save up for the top one##aaSaveTop', ctrl.auto_aa_save_for_top == true)
+    if sv ~= (ctrl.auto_aa_save_for_top == true) then ctrl.auto_aa_save_for_top = sv; changed = true end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'List order: the top AA you can afford is bought first; use the arrows to reorder.\nCheapest first: whatever costs least, ignoring the order.')
-    end
-    if AA.buyOrder() == 'list' then
-        ImGui.SameLine()
-        local sv = ImGui.Checkbox('Save up for the top one##aaSaveTop', ctrl.auto_aa_save_for_top == true)
-        if sv ~= (ctrl.auto_aa_save_for_top == true) then ctrl.auto_aa_save_for_top = sv; changed = true end
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('%s', 'On: nothing lower in the list is bought while the top unfinished AA is only waiting for points.\nOff: buys the highest AA you can afford right now.')
-        end
+        ImGui.SetTooltip('%s', 'On: nothing further down is bought while the top unfinished AA is only waiting for points.\nOff: buys the highest-priority AA you can afford right now.')
     end
     ImGui.SameLine()
     local ub = ImGui.Checkbox('Wait for the bank##aaPrioBank', ctrl.auto_aa_prio_use_bank == true)
@@ -2865,28 +2868,32 @@ function AA.drawPriorityPanel(unspentAA)
     local st = AA.spendStatus
     if st then
         local col = (AA.spendStatusKind == 'buy' or AA.spendStatusKind == 'done') and GOOD or (AA.spendStatusKind == 'off' and ERR or WARN)
+        ImGui.PushTextWrapPos(0)
         ImGui.TextColored(col[1], col[2], col[3], col[4], st)
+        ImGui.PopTextWrapPos()
     end
 
     if #prios == 0 then
-        ImGui.TextDisabled('Nothing checked. Tick the box at the left of an AA below to add it here.')
+        ImGui.TextDisabled('No priorities yet. Type a number 1-9 in the Priority column of an AA below.')
         if changed then core.saveLoadout(true) end
         return
     end
 
-    local rowH = core.px(24)
-    local h = math.min(#prios, 6) * rowH + core.px(30)
+    -- At least 5 rows tall (up to 8 before it scrolls); a row is one frame
+    -- (the Priority box / Up to combo) plus the table's cell padding.
+    local rowH = ((ImGui.GetFrameHeightWithSpacing and ImGui.GetFrameHeightWithSpacing()) or core.px(24)) + core.px(2)
+    local h = (math.max(5, math.min(#prios, 8)) + 1) * rowH + core.px(8)
     if ImGui.BeginChild('##aaPrioList', 0, h, true) then
         local tflags = bit.bor(ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingStretchProp)
         if ImGui.BeginTable('##aaPrioTable', 6, tflags) then
-            ImGui.TableSetupColumn('#', ImGuiTableColumnFlags.WidthFixed, core.px(22))
+            ImGui.TableSetupColumn('Priority', ImGuiTableColumnFlags.WidthFixed, core.px(52))
             ImGui.TableSetupColumn('Ability', ImGuiTableColumnFlags.WidthStretch, 3)
             ImGui.TableSetupColumn('Rank', ImGuiTableColumnFlags.WidthFixed, core.px(50))
             ImGui.TableSetupColumn('Up to', ImGuiTableColumnFlags.WidthFixed, core.px(62))
             ImGui.TableSetupColumn('Status', ImGuiTableColumnFlags.WidthStretch, 2)
-            ImGui.TableSetupColumn('##move', ImGuiTableColumnFlags.WidthFixed, core.px(70))
+            ImGui.TableSetupColumn('##rm', ImGuiTableColumnFlags.WidthFixed, core.px(24))
             ImGui.TableHeadersRow()
-            local moveFrom, moveBy, removeName
+            local removeName
             for i, nm in ipairs(prios) do
                 ImGui.PushID('prio' .. i)
                 ImGui.TableNextRow()
@@ -2894,7 +2901,7 @@ function AA.drawPriorityPanel(unspentAA)
                 local rank = sc and tonumber(sc.rank) or 0
                 local maxRank = sc and tonumber(sc.maxRank) or 0
                 ImGui.TableNextColumn()
-                ImGui.TextDisabled(tostring(i))
+                if AA.prioInput(nm, '##pnum') then changed = true end
                 ImGui.TableNextColumn()
                 ImGui.Text(nm)
                 if sc and ImGui.IsItemHovered() then rt.showAATooltip(sc) end
@@ -2929,19 +2936,12 @@ function AA.drawPriorityPanel(unspentAA)
                     ImGui.TextDisabled(sc and sc.cost and sc.cost > 0 and string.format('%d AA next', sc.cost) or '')
                 end
                 ImGui.TableNextColumn()
-                if ImGui.SmallButton('^##up') and i > 1 then moveFrom, moveBy = nm, -1 end
-                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Move up') end
-                ImGui.SameLine()
-                if ImGui.SmallButton('v##dn') and i < #prios then moveFrom, moveBy = nm, 1 end
-                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Move down') end
-                ImGui.SameLine()
                 if ImGui.SmallButton('x##rm') then removeName = nm end
                 if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Remove from the priorities') end
                 ImGui.PopID()
             end
             ImGui.EndTable()
-            if moveFrom and AA.movePrio(moveFrom, moveBy) then changed = true end
-            if removeName then AA.setPrio(removeName, false); changed = true end
+            if removeName then AA.setPrioNum(removeName, nil); changed = true end
         end
     end
     ImGui.EndChild()
@@ -3063,13 +3063,13 @@ function AA.drawWindow()
     ImGui.SameLine()
     if ImGui.Button('Clear Prios##autoAaClearPrioBtn') then
         ctrl.auto_aa_priorities = {}
-        ctrl.auto_aa_prio_order = {}
+        ctrl.auto_aa_prio_num = {}
         ctrl.auto_aa_prio_rank = {}
         AA.aaFilterDirty = true
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Unchecks all prioritized abilities.')
+        ImGui.SetTooltip('%s', 'Clears every priority number.')
     end
 
     ImGui.Separator()
@@ -3152,7 +3152,7 @@ function AA.drawWindow()
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Show only AAs that are checked for priority auto-purchase.')
+        ImGui.SetTooltip('%s', 'Show only AAs that have a priority number.')
     end
 
     ImGui.SameLine()
@@ -3174,8 +3174,8 @@ function AA.drawWindow()
             ImGuiTableFlags.SizingStretchProp
         )
         if ImGui.BeginTable('##AutoAABrowserTable', 6, tableFlags) then
-            ImGui.TableSetupColumn('Prio', ImGuiTableColumnFlags.WidthFixed, core.px(32))
             ImGui.TableSetupColumn('Ability Name', ImGuiTableColumnFlags.WidthStretch, 200)
+            ImGui.TableSetupColumn('Priority', ImGuiTableColumnFlags.WidthFixed, core.px(52))
             ImGui.TableSetupColumn('Rank', ImGuiTableColumnFlags.WidthFixed, core.px(55))
             ImGui.TableSetupColumn('Cost', ImGuiTableColumnFlags.WidthFixed, core.px(55))
             ImGui.TableSetupColumn('Status', ImGuiTableColumnFlags.WidthFixed, core.px(95))
@@ -3192,25 +3192,12 @@ function AA.drawWindow()
                     ui = {
                         rank = (itm.maxRank and itm.maxRank > 0) and string.format('%d/%d', itm.rank, itm.maxRank) or string.format('%d/?', itm.rank),
                         cost = (itm.cost and itm.cost > 0) and string.format('%d AA', itm.cost) or '-',
-                        prioTip = string.format('Prioritize "%s" for automatic training when points are available.', itm.name),
                         trainTip = string.format('Click to train next rank of "%s" (%d AA).', itm.name, itm.cost or 0),
                     }
                     itm.ui = ui
                 end
 
-                -- Col 1: Priority Checkbox
-                ImGui.TableNextColumn()
-                local isPrio = not not (ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[itm.name])
-                local newPrio = ImGui.Checkbox('##prioCheck', isPrio)
-                if newPrio ~= isPrio then
-                    AA.setPrio(itm.name, newPrio)
-                    core.saveLoadout(true)
-                end
-                if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('%s', ui.prioTip)
-                end
-
-                -- Col 2: Ability Name
+                -- Col 1: Ability Name
                 ImGui.TableNextColumn()
                 if itm.fullyTrained then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], itm.name)
@@ -3220,6 +3207,10 @@ function AA.drawWindow()
                 if ImGui.IsItemHovered() then
                     rt.showAATooltip(itm)
                 end
+
+                -- Col 2: Priority (blank or 1-9)
+                ImGui.TableNextColumn()
+                if AA.prioInput(itm.name, '##prioNum') then core.saveLoadout(true) end
 
                 -- Col 3: Rank
                 ImGui.TableNextColumn()
@@ -3527,13 +3518,21 @@ function AA.onCommand(cmd, args)
     elseif cmd == 'aaprio' or cmd == 'prioritizeaa' then
         local aaName = table.concat(args, ' ', 2)
         if aaName and aaName ~= '' then
-            AA.setPrio(aaName, not (ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[aaName]))
-            AA.aaFilterDirty = true
+            -- "/ac aaprio Healing Gift 3" sets 3; without a number it toggles 1 / off
+            local num = AA.parsePrioNum(args[#args])
+            if num and #args > 2 then
+                aaName = table.concat(args, ' ', 2, #args - 1)
+            elseif AA.prioNum(aaName) then
+                num = nil
+            else
+                num = 1
+            end
+            AA.setPrioNum(aaName, num)
             core.saveLoadout(true)
             print(string.format('\ag[MoriAC]\ax AA priority for "%s" set to %s.',
-                aaName, ctrl.auto_aa_priorities[aaName] and '\agENABLED\ax' or '\arDISABLED\ax'))
+                aaName, num and ('\ag' .. num .. '\ax') or '\arnone\ax (not bought)'))
         else
-            print('\ag[MoriAC]\ax usage: /ac aaprio <Ability Name>')
+            print('\ag[MoriAC]\ax usage: /ac aaprio <Ability Name> [1-9]')
         end
     else
         return false
@@ -3649,7 +3648,7 @@ plugin.help = {
     '  \ag/ac aaid [id]\ax - Set AA ability ID to purchase/activate (default 17788)',
     '  \ag/ac aaname [name]\ax - Set the cap-spender AA ability name',
     '  \ag/ac aascan\ax - Force a rescan of purchasable AAs',
-    '  \ag/ac aaprio [name]\ax - Toggle an AA on the priority list',
+    '  \ag/ac aaprio <name> [1-9]\ax - Set an AA\'s priority (1 is bought first); no number toggles 1 / off',
     '  \ag/ac aastatus | aawhy\ax - Show why each prioritized AA is or is not being bought',
 }
 
