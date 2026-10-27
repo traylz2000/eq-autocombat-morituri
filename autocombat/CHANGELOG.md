@@ -4,6 +4,8 @@
 
 ## 2026-10-27
 
+- **Enrage alerts are loud now (`lua/tac/alerts.lua` 1.1.0).** Enrage, Rampage and Summoned play a built-in alarm, three loud rising whoops, instead of the quiet `/beep` ding. Each trigger's **Sound** is now a picker: **Alarm (loud, built in)**, **Beep (quiet)** or **Sound file (.wav)**. The alarm is `config/moriac_alarm.wav` and plays through Windows' own sound player, so it doesn't hold up the game. If a sound can't be played, the alert beeps instead. Saved alerts switch over on their own: the default Enrage, Rampage and Summoned triggers move to the alarm, and any sound you picked yourself stays. Try it with `/ac alerts test 1`.
+
 - **One download to install: `MoriAC-full.zip`.** New players no longer need the Triune AutoCombat full zip. Each [MoriAC release](https://github.com/traylz2000/eq-autocombat-morituri/releases/latest) has one zip that holds MoriAC (`lua/`, `config/`) plus the zone navmeshes and game database (`resources/`). Extract it into the MacroQuest folder and you're done. Upstream Triune was archived on 2026-10-11, and the `resources/` files come unchanged from its final V3.2 release, used with gennro's permission. The install guide is now four steps. Anyone who already has `resources/` can still use the small download (`lua` and `config` only). The in-game updater is unchanged.
 
 - **Auto AA buys checked priorities again, in your order (`lua/tac/auto_aa.lua` 1.4.0).**

@@ -5,7 +5,8 @@
 -- Audio / on-screen alerts. Each trigger watches either a chat line (an
 -- mq.event pattern, e.g. "#1# has become ENRAGED.") or your own HP / mana
 -- dropping below a threshold, and when it fires it:
---   * plays a sound: /beep, or /beep <file.wav> when the trigger names one,
+--   * plays a sound: the built-in alarm (config/moriac_alarm.wav, made by
+--     dev/make_alarm_wav.py), a .wav file the trigger names, or /beep,
 --   * flashes the alert text at the top of the screen for a few seconds,
 --   * echoes it to chat.
 --
@@ -21,7 +22,7 @@
 local plugin = {
     id                 = 'alerts',
     name               = 'Alerts',
-    version            = '1.0.0',
+    version            = '1.1.0',
     author             = 'MoriAC',
     description        = 'Sound and on-screen alerts for chat lines (enrage, rampage, summon, your own text) and for low HP or mana.',
     defaultEnabled     = true,
@@ -37,15 +38,25 @@ local WHEN_LABEL  = { always = 'Always', combat = 'In combat only', running = 'O
 local REARM_PCT   = 5      -- HP / mana triggers fire again once back this far above the threshold
 local MAX_TRIGGERS = 40
 
+-- Trigger sounds: '' = /beep, ALARM = the built-in alarm, anything else is a
+-- .wav file (full path, or relative to the MacroQuest folder).
+local ALARM        = 'alarm'
+local ALARM_FILE   = 'moriac_alarm.wav'   -- in config/, so the updater ships it
+local SOUND_MODES  = { 'alarm', 'beep', 'file' }
+local SOUND_LABEL  = { alarm = 'Alarm (loud, built in)', beep = 'Beep (quiet)', file = 'Sound file (.wav)' }
+-- Saved settings older than this get the built-in alarm on their default
+-- Enrage / Rampage / Summoned triggers (they used to beep).
+local SOUND_VERSION = 2
+
 local core  = nil
 local mq    = nil
 local ImGui = nil
 
 local function defaultTriggers()
     return {
-        { name = 'Enrage',   kind = 'chat', pattern = '#1# has become ENRAGED.#*#', enabled = true,  sound = '', when = 'always', cooldown = 5,  flash = true },
-        { name = 'Rampage',  kind = 'chat', pattern = '#1# goes on a RAMPAGE!#*#',  enabled = true,  sound = '', when = 'always', cooldown = 10, flash = true },
-        { name = 'Summoned', kind = 'chat', pattern = 'You have been summoned!#*#', enabled = true,  sound = '', when = 'always', cooldown = 5,  flash = true },
+        { name = 'Enrage',   kind = 'chat', pattern = '#1# has become ENRAGED.#*#', enabled = true,  sound = ALARM, when = 'always', cooldown = 5,  flash = true },
+        { name = 'Rampage',  kind = 'chat', pattern = '#1# goes on a RAMPAGE!#*#',  enabled = true,  sound = ALARM, when = 'always', cooldown = 10, flash = true },
+        { name = 'Summoned', kind = 'chat', pattern = 'You have been summoned!#*#', enabled = true,  sound = ALARM, when = 'always', cooldown = 5,  flash = true },
         { name = 'Tell',     kind = 'chat', pattern = '#1# tells you, #*#',         enabled = false, sound = '', when = 'always', cooldown = 10, flash = false },
         { name = 'Low HP',   kind = 'hp',   threshold = 35,                         enabled = false, sound = '', when = 'always', cooldown = 15, flash = true },
     }
@@ -57,6 +68,7 @@ local cfg = {
     muted     = false,     -- no sounds (flash and chat still happen)
     chatEcho  = true,
     flashSec  = 3,
+    soundVersion = SOUND_VERSION,
 }
 
 -- Session state (never persisted)
@@ -67,6 +79,8 @@ local st = {
     armed      = {},       -- trigger table -> false while an HP / mana alert is held
     flash      = nil,      -- { text, untilAt }
     selected   = 1,        -- trigger open in the settings editor
+    fileMode   = {},       -- trigger table -> true while "Sound file" is picked but no file typed yet
+    player     = nil,      -- false: no PlaySound here (not Windows); else { winmm = lib }
 }
 
 local function saveSettings()
@@ -121,11 +135,78 @@ local function alertText(trig, arg1)
     return trig.name
 end
 
--- /beep, or /beep <file> for a sound file
-local function soundCommand(sound)
-    sound = tostring(sound or ''):gsub('^%s+', ''):gsub('%s+$', '')
-    if sound == '' then return '/beep' end
-    return '/beep ' .. sound
+-- Which entry of the Sound picker a trigger's sound is.
+local function soundMode(sound)
+    sound = tostring(sound or '')
+    if sound == ALARM then return 'alarm' end
+    if sound == '' then return 'beep' end
+    return 'file'
+end
+
+-- The .wav file to play for a sound, or nil for /beep.
+-- configDir: MacroQuest's config folder; mqRoot: the MacroQuest folder.
+local function soundFilePath(sound, configDir, mqRoot)
+    sound = tostring(sound or ''):gsub('^%s+', ''):gsub('%s+$', ''):gsub('^"(.*)"$', '%1')
+    local path
+    if sound == '' then return nil end
+    if sound == ALARM then
+        if type(configDir) ~= 'string' or configDir == '' then return nil end
+        path = configDir .. '/' .. ALARM_FILE
+    elseif sound:match('^%a:[/\\]') or sound:match('^[/\\][/\\]') then
+        path = sound                                  -- C:\... or \\server\...
+    else
+        if type(mqRoot) ~= 'string' or mqRoot == '' then return nil end
+        path = mqRoot .. '/' .. sound
+    end
+    return path
+end
+
+-- Windows' PlaySound (winmm) through LuaJIT's ffi: async, so it never holds
+-- up the game, and louder and longer than /beep. Loaded on first use; false
+-- when there is no such thing here (not Windows, no ffi).
+local SND_ASYNC, SND_NODEFAULT, SND_FILENAME = 0x0001, 0x0002, 0x00020000
+local function loadPlayer()
+    if st.player ~= nil then return st.player end
+    st.player = false
+    pcall(function()
+        local ffi = require('ffi')
+        if ffi.os ~= 'Windows' then return end
+        if not pcall(ffi.typeof, 'MORIAC_ALERTS_PLAYSOUND') then
+            ffi.cdef([[
+                typedef int MORIAC_ALERTS_PLAYSOUND;
+                int __stdcall PlaySoundA(const char* pszSound, void* hmod, unsigned int fdwSound);
+            ]])
+        end
+        st.player = { winmm = ffi.load('winmm') }
+    end)
+    return st.player
+end
+
+-- Plays a trigger's sound: its .wav through PlaySound, else /beep (also the
+-- fallback when the file is missing or PlaySound isn't available).
+local function playSound(sound)
+    local path = nil
+    pcall(function()
+        local root = nil
+        pcall(function() root = mq.TLO.MacroQuest.Path() end)
+        path = soundFilePath(sound, core and core.configDir or (mq and mq.configDir), root)
+    end)
+    if path then
+        local f = io.open(path, 'rb')
+        if f then f:close() else path = nil end
+    end
+    if path then
+        local p = loadPlayer()
+        if p then
+            st.playing = path:gsub('/', '\\')   -- kept referenced while it plays
+            local ok, played = pcall(function()
+                return p.winmm.PlaySoundA(st.playing, nil, SND_ASYNC + SND_NODEFAULT + SND_FILENAME) ~= 0
+            end)
+            if ok and played then return 'played' end
+        end
+    end
+    if mq then pcall(mq.cmd, '/beep') end
+    return 'beep'
 end
 
 -- ----------------------------------------------------------------------------
@@ -155,7 +236,7 @@ local function fire(trig, arg1, force)
     end
     st.lastFire[trig] = os.clock()
     local text = alertText(trig, arg1)
-    if not cfg.muted and mq then pcall(mq.cmd, soundCommand(trig.sound)) end
+    if not cfg.muted then playSound(trig.sound) end
     if trig.flash then st.flash = { text = text, untilAt = os.clock() + (cfg.flashSec or 3) } end
     if cfg.chatEcho then chat('\ar%s\ax', text) end
     if core and core.log then pcall(core.log.info, 'alerts', 'fired: %s', text) end
@@ -276,6 +357,7 @@ function plugin.onSaveSettings()
         muted    = cfg.muted == true,
         chatEcho = cfg.chatEcho == true,
         flashSec = cfg.flashSec,
+        soundVersion = SOUND_VERSION,
     }
 end
 
@@ -288,6 +370,17 @@ function plugin.onLoadSettings(s)
             if clean and #list < MAX_TRIGGERS then list[#list + 1] = clean end
         end
         cfg.triggers = list
+        -- Before 1.1.0 every default trigger beeped: move the loud defaults
+        -- to the built-in alarm unless the player picked a sound of their own.
+        if (tonumber(s.soundVersion) or 1) < SOUND_VERSION then
+            local loud = {}
+            for _, d in ipairs(defaultTriggers()) do
+                if d.sound == ALARM then loud[d.pattern] = true end
+            end
+            for _, t in ipairs(list) do
+                if t.sound == '' and t.kind == 'chat' and loud[t.pattern] then t.sound = ALARM end
+            end
+        end
     end
     if s.muted ~= nil then cfg.muted = (s.muted == true) end
     if s.chatEcho ~= nil then cfg.chatEcho = (s.chatEcho == true) end
@@ -336,11 +429,31 @@ local function drawEditor(trig, i)
     end
 
     core.formLabel('Sound')
-    ImGui.SetNextItemWidth(core.px(340))
-    local snd = ImGui.InputTextWithHint('##alrSound', 'blank = beep, or a .wav file', trig.sound)
-    if type(snd) == 'string' and snd ~= trig.sound then trig.sound = snd; saveSettings() end
+    ImGui.SetNextItemWidth(w)
+    local mode = st.fileMode[trig] and 'file' or soundMode(trig.sound)
+    local sl = {}
+    for k, sm in ipairs(SOUND_MODES) do sl[k] = SOUND_LABEL[sm] end
+    local si = ImGui.Combo('##alrSoundMode', idxOf(SOUND_MODES, mode), sl)
+    local picked = SOUND_MODES[si]
+    if picked and picked ~= mode then
+        st.fileMode[trig] = (picked == 'file') or nil
+        if picked == 'alarm' then trig.sound = ALARM
+        elseif picked == 'beep' or trig.sound == ALARM then trig.sound = '' end
+        saveSettings()
+        mode = picked
+    end
     if ImGui.IsItemHovered() then
-        core.setTooltip('Blank plays /beep. A .wav file name plays that file (/beep <file>):\na full path, or a path from your MacroQuest folder. Avoid spaces in it.')
+        core.setTooltip('Alarm: three loud rising whoops (config/moriac_alarm.wav).\nBeep: the quiet /beep.\nSound file: any .wav you pick.')
+    end
+    if mode == 'file' then
+        core.formLabel('File')
+        ImGui.SetNextItemWidth(core.px(340))
+        local cur = (trig.sound == ALARM) and '' or trig.sound
+        local snd = ImGui.InputTextWithHint('##alrSound', 'e.g. C:\\Sounds\\horn.wav', cur)
+        if type(snd) == 'string' and snd ~= cur then trig.sound = snd; saveSettings() end
+        if ImGui.IsItemHovered() then
+            core.setTooltip('A .wav file: a full path, or a path from your MacroQuest folder.\nIf it can\'t be played, the alert beeps instead.')
+        end
     end
 
     core.formLabel('When')
@@ -400,7 +513,7 @@ function plugin.onDrawSettings()
         if pressed then st.selected = i end
     end
     if #cfg.triggers < MAX_TRIGGERS and ImGui.Button('Add Trigger##alrAdd', core.px(110), core.px(22)) then
-        cfg.triggers[#cfg.triggers + 1] = sanitizeTrigger({ name = 'New alert', kind = 'chat', pattern = '', sound = '' })
+        cfg.triggers[#cfg.triggers + 1] = sanitizeTrigger({ name = 'New alert', kind = 'chat', pattern = '', sound = ALARM })
         st.selected = #cfg.triggers
         markDirty()
     end
@@ -454,7 +567,9 @@ plugin.sanitizeTrigger = sanitizeTrigger
 plugin.whenAllows      = whenAllows
 plugin.crossedBelow    = crossedBelow
 plugin.alertText       = alertText
-plugin.soundCommand    = soundCommand
+plugin.soundMode       = soundMode
+plugin.soundFilePath   = soundFilePath
+plugin.playSound       = playSound
 plugin.defaultTriggers = defaultTriggers
 plugin.fire            = fire
 plugin._cfg            = cfg

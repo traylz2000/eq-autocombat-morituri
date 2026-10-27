@@ -108,7 +108,7 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
 | Floating damage | Setup -> Plugins | Big animated numbers for crits. |
 | Updater | `/ac update` | Checks GitHub for changed MoriAC files when it starts. `/ac update install` downloads and installs them (old copies kept as `.bak`); then `/ac restart`. |
-| Alerts | `/ac alerts` | A sound and a big on-screen line when a mob enrages or rampages, you get summoned, your HP drops low, or any chat line you choose shows up. Works while MoriAC is paused. Set the triggers under Setup -> Plugins -> Alerts. |
+| Alerts | `/ac alerts` | A loud alarm and a big on-screen line when a mob enrages or rampages, you get summoned, your HP drops low, or any chat line you choose shows up. Works while MoriAC is paused. Set the triggers under Setup -> Plugins -> Alerts. |
 | Timed Commands | `/ac timers` | Runs a command every few minutes. Ships with `/say kratos` every 10 minutes (the Morituri buff), first run a few seconds after MoriAC loads. Works while MoriAC is paused, and never while you are dead, zoning or casting. Add your own under Setup -> Plugins -> Timed Commands. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
@@ -166,6 +166,7 @@ All paths are inside your MacroQuest folder.
 | `Logs/moriac_*.log` | Diagnostic logs (when Log To File is on). |
 | `lua/moriac.lua` | The bot itself. |
 | `config/moriac_data.lua` | Spell, discipline and AA data for Project Morituri. |
+| `config/moriac_alarm.wav` | The Alerts plugin's built-in alarm sound. |
 | `lua/tac/*.lua` | The plugins listed above. Drop your own `.lua` plugin here and it loads. |
 | `resources/gamedb/` | The offline game database (in `MoriAC-full.zip`). |
 | `resources/MQ2Nav/` | Zone navmeshes (in `MoriAC-full.zip`). |
