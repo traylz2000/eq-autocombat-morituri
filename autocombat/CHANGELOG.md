@@ -2,7 +2,19 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-27
+
+- **Auto AA buys checked priorities again, in your order (`lua/tac/auto_aa.lua` 1.4.0).**
+  - Why it did nothing: priorities waited for the **Bank** threshold, and saved loadouts default that to 100 unspent AA. A checked Healing Gift sat there until you had 100 points. Priorities now buy as soon as you can afford them. **Wait for the bank** (in the Priorities panel) brings the old behaviour back. The fireworks cap spender still waits for the bank.
+  - New **Priorities** panel above the AA list. It shows the checked AAs in buy order, with up / down / remove buttons, an **Up to** rank for each (stop at rank 3 instead of max) and the status of each one. Choose **Buy in list order** or **Buy cheapest first**. **Save up for the top one** stops cheaper AAs lower in the list from spending the points the top AA is waiting for.
+  - A status line says what auto-spend is doing: buying X, waiting for points, in combat, moving, saving up, or nothing left to buy.
+  - The old 5-point floor is gone, so a 2-point AA can be bought with 2 points.
+  - New filters under the search box: **class** (your four classes; archetype AAs count for every class that can use them; "class unknown" lists Class-tab AAs not yet matched), **AA tab** (General / Archetype / Class / Special), **kind** (Activated, Passive, Pet, Healing, Damage, Defense, Mana / endurance), **progress** (Can buy now, Not started, In progress, Maxed) and **Search descriptions**. Class matching is partial until the server's AA export arrives. A `DATA.aa_classes` table in `moriac_data.lua` will feed it then.
+  - `/ac aastatus` lists the priorities in buy order, with their Up to rank.
+
 ## 2026-10-26
+
+- **Enraged mobs: melee stops and pets back off.** When "<mob> has become ENRAGED." shows up for your target, MoriAC turns melee auto-attack off and sends `/pet back off` (plus `#petcmd hold all` for every pet). Both resume on "<mob> is no longer enraged." or when the mob dies. Chat shows one line each way. Spells, bow auto-fire and other actions keep going. The setting is **Stop attacking while the target is enraged** under Setup -> Settings, next to the line-of-sight option, and it is on by default.
 
 - **New Setup -> Update page with a one-click Check and Install (`lua/tac/update_check.lua` 2.1.0).** **Check and Install** checks GitHub and, if any MoriAC files changed, downloads and installs them straight away. Then click **Restart MoriAC** (or `/ac restart`) to load them. **Check Now** still only checks. The same buttons sit at the top of the Updater's settings under Setup -> Plugins. In chat, `/ac update get` does the same as the button.
 

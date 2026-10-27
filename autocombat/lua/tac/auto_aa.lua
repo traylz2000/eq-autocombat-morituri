@@ -25,7 +25,7 @@
 local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
-    version            = '1.3.0',
+    version            = '1.4.0',
     author             = 'MoriAC',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
@@ -888,27 +888,26 @@ function AA.printPriorityStatus()
     if AA.pendingAATrain then
         print(string.format('\ag[MoriAC]\ax   Window purchase in progress: "%s" (step %s)', AA.pendingAATrain.name, tostring(AA.pendingAATrain.step)))
     end
-    local names = {}
-    for nm, enabled in pairs(ctrl.auto_aa_priorities or {}) do
-        if enabled then names[#names + 1] = nm end
-    end
+    local names = AA.prioList()
     if #names == 0 then
         print('\ay[MoriAC]\ax   No prioritized AAs; only the cap spender runs.')
         return
     end
-    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    print(string.format('\ag[MoriAC]\ax   Buy order: %s%s%s', AA.buyOrder() == 'cost' and 'cheapest first' or 'list order',
+        (AA.buyOrder() == 'list' and ctrl.auto_aa_save_for_top) and ', saving up for the top one' or '',
+        ctrl.auto_aa_prio_use_bank and ', after the bank threshold' or ''))
     local now = os.clock()
-    for _, nm in ipairs(names) do
+    for i, nm in ipairs(names) do
         local info = AA.purchaseInfo(nm)
         local why = AA.priorityBlocker(info, unspent, myLevel, now)
         local verdict
         if why == nil then
-            verdict = (unspent >= AA.threshold()) and '\agbuy next\ax' or string.format('\agready\ax, waiting for the %d AA bank threshold', AA.threshold())
+            verdict = (not ctrl.auto_aa_prio_use_bank or unspent >= AA.threshold()) and '\agcan buy\ax' or string.format('\agready\ax, waiting for the %d AA bank threshold', AA.threshold())
         else
             verdict = '\ay' .. (AA.BLOCKER_TEXT[why] or why) .. '\ax'
         end
-        print(string.format('\ag[MoriAC]\ax   "%s"  Rank %d/%d  Cost %d  CanTrain %s  -> %s',
-            nm, info.rank, info.maxRank, info.cost,
+        print(string.format('\ag[MoriAC]\ax   %d. "%s"  Rank %d/%d%s  Cost %d  CanTrain %s  -> %s',
+            i, nm, info.rank, info.maxRank, AA.targetRank(nm) and (' (up to ' .. AA.targetRank(nm) .. ')') or '', info.cost,
             info.canTrain == nil and 'n/a' or tostring(info.canTrain), verdict))
     end
 end
@@ -919,6 +918,8 @@ end
 function AA.priorityBlocker(info, unspent, myLevel, now)
     if info.fullyTrained then return 'trained' end
     if info.invalid then return 'stub' end
+    local tr = AA.targetRank(info.name)
+    if tr and info.rank >= tr then return 'target' end
     if myLevel > 0 and info.minLevel > 0 and myLevel < info.minLevel then return 'level' end
     if now < ((AA.trainBackoff and AA.trainBackoff[info.name]) or 0) then return 'backoff' end
     if unspent < info.cost then return 'points' end
@@ -936,7 +937,115 @@ AA.BLOCKER_TEXT = {
     points   = 'waiting for points',
     cantrain = 'client reports it cannot be trained (prerequisite / class / expansion)',
     spacing  = 'attempted recently; retry pending',
+    target   = 'reached its planned rank',
 }
+
+-- ----------------------------------------------------------------------------
+-- Priority list. ctrl.auto_aa_priorities (name -> true) says which AAs are
+-- bought; ctrl.auto_aa_prio_order (array) is the player's order for them and
+-- ctrl.auto_aa_prio_rank (name -> rank) an optional "stop at this rank".
+-- Older loadouts have no order yet: their checked AAs start alphabetical,
+-- which is what the old 'list' buy order did.
+-- ----------------------------------------------------------------------------
+local function ciLess(a, b) return a:lower() < b:lower() end
+
+function AA.prioList()
+    local map = ctrl.auto_aa_priorities or {}
+    local order = type(ctrl.auto_aa_prio_order) == 'table' and ctrl.auto_aa_prio_order or {}
+    local seen, out, changed = {}, {}, false
+    for _, nm in ipairs(order) do
+        if type(nm) == 'string' and map[nm] and not seen[nm] then
+            seen[nm] = true
+            out[#out + 1] = nm
+        else
+            changed = true
+        end
+    end
+    local extra = {}
+    for nm, on in pairs(map) do
+        if on and not seen[nm] then extra[#extra + 1] = nm end
+    end
+    if #extra > 0 then
+        table.sort(extra, ciLess)
+        for _, nm in ipairs(extra) do out[#out + 1] = nm end
+        changed = true
+    end
+    if changed or ctrl.auto_aa_prio_order ~= order then ctrl.auto_aa_prio_order = out; return out end
+    return order
+end
+
+function AA.setPrio(name, on)
+    if not name or name == '' then return end
+    if type(ctrl.auto_aa_priorities) ~= 'table' then ctrl.auto_aa_priorities = {} end
+    local order = AA.prioList()
+    ctrl.auto_aa_priorities[name] = on and true or nil
+    for i = #order, 1, -1 do
+        if order[i] == name then table.remove(order, i) end
+    end
+    if on then order[#order + 1] = name end
+    if not on and type(ctrl.auto_aa_prio_rank) == 'table' then ctrl.auto_aa_prio_rank[name] = nil end
+    AA.aaFilterDirty = true
+end
+
+-- Moves a priority up (delta < 0) or down; returns true when it moved.
+function AA.movePrio(name, delta)
+    local order = AA.prioList()
+    for i, nm in ipairs(order) do
+        if nm == name then
+            local j = i + delta
+            if j < 1 or j > #order then return false end
+            order[i], order[j] = order[j], order[i]
+            return true
+        end
+    end
+    return false
+end
+
+-- The rank a priority stops at (nil = its max rank).
+function AA.targetRank(name)
+    local t = type(ctrl.auto_aa_prio_rank) == 'table' and tonumber(ctrl.auto_aa_prio_rank[name]) or nil
+    if t and t > 0 then return math.floor(t) end
+    return nil
+end
+
+function AA.setTargetRank(name, rank)
+    if type(ctrl.auto_aa_prio_rank) ~= 'table' then ctrl.auto_aa_prio_rank = {} end
+    rank = tonumber(rank)
+    ctrl.auto_aa_prio_rank[name] = (rank and rank > 0) and math.floor(rank) or nil
+end
+
+-- 'list' = the player's order, 'cost' = cheapest first.
+function AA.buyOrder()
+    return (ctrl.auto_aa_buy_order == 'cost') and 'cost' or 'list'
+end
+
+-- Which priority to buy. entries are { info, why } in list order, as
+-- priorityBlocker classified them. Returns the info to buy (or nil) and,
+-- when "save up for the top priority" holds the purchase back, the info of
+-- the priority being saved for.
+function AA.pickPriority(entries, mode, saveForTop)
+    if mode == 'cost' then
+        local best
+        for _, e in ipairs(entries) do
+            if e.why == nil then
+                local a = e.info
+                if not best or a.cost < best.cost or (a.cost == best.cost and a.name:lower() < best.name:lower()) then best = a end
+            end
+        end
+        return best
+    end
+    for _, e in ipairs(entries) do
+        if e.why == nil then return e.info end
+        if saveForTop and e.why == 'points' then return nil, e.info end
+    end
+    return nil
+end
+
+-- One line for the window saying what auto-spend is doing or waiting on.
+function AA.setStatus(text, kind)
+    AA.spendStatus = text
+    AA.spendStatusKind = kind or 'wait'
+end
 
 -- Remembers the latest verdict per priority for /ac aastatus, and prints a
 -- blocker once when it first applies (waiting states stay quiet).
@@ -1014,6 +1123,7 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
     end
 
     local rank, maxRank, cost, canTrain, pointsSpent, id, passive, aaType, minLevel = 0, 0, 0, false, 0, 0, false, 0, 0
+    local passiveKnown = false
     local isCharacterAA = not not isKnownCharAA
     local description = ''
 
@@ -1045,6 +1155,7 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
                 if minLevel == 0 and ma.MinLevel then minLevel = tonumber(ma.MinLevel() or 0) or 0 end
                 canTrain = (ma.CanTrain and ma.CanTrain() == true)
                 pointsSpent = tonumber(ma.PointsSpent and ma.PointsSpent() or 0) or 0
+                if ma.Passive ~= nil then passiveKnown = true end
                 passive = (ma.Passive and ma.Passive() == true)
                 aaType = tonumber(ma.Type and ma.Type() or 0) or 0
                 if ma.Description then
@@ -1128,6 +1239,7 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
             pointsSpent = pointsSpent,
             id = id,
             passive = passive,
+            passiveKnown = passiveKnown,
             type = aaType,
             fullyTrained = fullyTrained,
             category = category,
@@ -1464,6 +1576,133 @@ function AA.runPendingScan()
     end
 end
 
+-- ----------------------------------------------------------------------------
+-- Progression filters: class, AA tab, kind / tag, progress.
+-- Which class an AA belongs to comes from (first hit wins nothing; all are
+-- merged): core.DATA.aa_classes (name -> { 'Clr', ... }, room for the
+-- server's own export), the activated AAs per class in core.DATA.aas, the
+-- class-only list above, the AA window tab when it was a class name, and the
+-- archetype lists (a Priest AA counts for Clr, Dru, Shm and Pal).
+-- ----------------------------------------------------------------------------
+function AA.classIndex()
+    if AA._classIdx and AA._classIdxData == DATA then return AA._classIdx, AA._activatedIdx end
+    local idx, act = {}, {}
+    local function add(nm, cls)
+        if type(nm) ~= 'string' or type(cls) ~= 'string' then return end
+        idx[nm] = idx[nm] or {}
+        idx[nm][cls] = true
+    end
+    if DATA and type(DATA.aa_classes) == 'table' then
+        for nm, list in pairs(DATA.aa_classes) do
+            for _, cls in ipairs(type(list) == 'table' and list or {}) do add(nm, cls) end
+        end
+    end
+    if DATA and type(DATA.aas) == 'table' then
+        for cls, list in pairs(DATA.aas) do
+            for _, item in ipairs(list) do
+                local nm = type(item) == 'table' and item[1] or item
+                add(nm, cls)
+                if type(nm) == 'string' then act[nm] = true end
+            end
+        end
+    end
+    for cls, names in pairs(AA.CLASS_SPECIFIC_ABILITIES or {}) do
+        for _, nm in ipairs(names) do add(nm, cls) end
+    end
+    for nm, arch in pairs(AA.ARCHETYPE_RESTRICTIONS or {}) do
+        for cls in pairs(AA.ARCHETYPE_CLASSES[arch] or {}) do add(nm, cls) end
+    end
+    AA._classIdx, AA._activatedIdx, AA._classIdxData = idx, act, DATA
+    return idx, act
+end
+
+AA.CLASS_ABBRS = { War = true, Clr = true, Pal = true, Rng = true, SK = true, Dru = true, Mnk = true, Brd = true,
+    Rog = true, Shm = true, Nec = true, Wiz = true, Mag = true, Enc = true, Bst = true, Ber = true }
+
+function AA.itemClasses(item)
+    local idx = AA.classIndex()
+    local set = idx[item.name]
+    local cat = item.category
+    if type(cat) == 'string' and AA.CLASS_ABBRS[cat] then
+        local copy = {}
+        for c in pairs(set or {}) do copy[c] = true end
+        copy[cat] = true
+        return copy
+    end
+    return set
+end
+
+-- 'General' | 'Archetype' | 'Class' | 'Special' | nil (unknown)
+function AA.itemTab(item)
+    local cat = type(item.category) == 'string' and item.category:lower() or ''
+    if cat:find('general', 1, true) then return 'General' end
+    if cat:find('archetype', 1, true) then return 'Archetype' end
+    if cat:find('special', 1, true) then return 'Special' end
+    if cat:find('class', 1, true) or AA.CLASS_ABBRS[item.category or ''] then return 'Class' end
+    local t = tonumber(item.type) or 0
+    if t == 1 then return 'General' elseif t == 2 then return 'Archetype' elseif t == 3 then return 'Class' elseif t >= 4 then return 'Special' end
+    return nil
+end
+
+-- Keyword tags read from the name and description (a guide, not a rule).
+AA.TAG_WORDS = {
+    pet     = { '%f[%a]pets?%f[%A]', 'companion', 'familiar', 'warder', 'minion', 'swarm', 'servant' },
+    heal    = { 'heal' },
+    damage  = { 'damage', 'critical', '%f[%a]crit' },
+    defense = { 'mitigat', 'avoid', 'armor class', 'resist', 'hit points', 'parry', 'riposte', 'dodge', '%f[%a]block' },
+    mana    = { 'mana', 'endurance', 'regenerat' },
+}
+
+function AA.itemTags(item)
+    if item.tags then return item.tags end
+    local text = ((item.name or '') .. ' ' .. (item.description or '')):lower()
+    local tags = {}
+    for tag, words in pairs(AA.TAG_WORDS) do
+        for _, w in ipairs(words) do
+            if text:find(w) then tags[tag] = true; break end
+        end
+    end
+    local _, act = AA.classIndex()
+    if act[item.name] then
+        tags.activated = true
+    elseif item.passiveKnown then
+        if item.passive then tags.passive = true else tags.activated = true end
+    else
+        tags.passive = true
+    end
+    item.tags = tags
+    return tags
+end
+
+AA.CLASS_FILTERS = { '', 'unsorted' }   -- plus the character's classes in between (see drawFilters)
+AA.TAB_FILTERS  = { { 'all', 'Any tab' }, { 'General', 'General' }, { 'Archetype', 'Archetype' }, { 'Class', 'Class' }, { 'Special', 'Special' } }
+AA.KIND_FILTERS = { { 'all', 'Any kind' }, { 'activated', 'Activated' }, { 'passive', 'Passive' }, { 'pet', 'Pet' },
+    { 'heal', 'Healing' }, { 'damage', 'Damage' }, { 'defense', 'Defense' }, { 'mana', 'Mana / endurance' } }
+AA.STATUS_FILTERS = { { 'all', 'Any progress' }, { 'afford', 'Can buy now' }, { 'new', 'Not started' }, { 'partial', 'In progress' }, { 'maxed', 'Maxed' } }
+
+-- True when item passes the class / tab / kind / progress filters.
+function AA.passesFilters(item, f, unspent)
+    if f.class and f.class ~= '' then
+        local set = AA.itemClasses(item)
+        if f.class == 'unsorted' then
+            if set or AA.itemTab(item) ~= 'Class' then return false end
+        elseif not (set and set[f.class]) then
+            return false
+        end
+    end
+    if f.tab and f.tab ~= 'all' and AA.itemTab(item) ~= f.tab then return false end
+    if f.kind and f.kind ~= 'all' and not AA.itemTags(item)[f.kind] then return false end
+    local st = f.status
+    if st and st ~= 'all' then
+        local r = tonumber(item.rank) or 0
+        if st == 'maxed' and not item.fullyTrained then return false end
+        if st == 'new' and (r > 0 or item.fullyTrained) then return false end
+        if st == 'partial' and (r <= 0 or item.fullyTrained) then return false end
+        if st == 'afford' and (item.fullyTrained or (tonumber(item.cost) or 0) <= 0 or (tonumber(item.cost) or 0) > (unspent or 0)) then return false end
+    end
+    return true
+end
+
 function AA.getFilteredSortedAAs()
     if not AA.scannedAAs or #AA.scannedAAs == 0 then
         -- Runs from the window (draw thread): only ask for a scan, and at most
@@ -1484,6 +1723,11 @@ function AA.getFilteredSortedAAs()
     local hideMaxed = ctrl.auto_aa_hide_maxed or false
     local onlyPrio = ctrl.auto_aa_only_prioritized or false
     local priorities = ctrl.auto_aa_priorities or {}
+    local searchDesc = ctrl.auto_aa_f_desc == true
+    local f = { class = ctrl.auto_aa_f_class or '', tab = ctrl.auto_aa_f_tab or 'all',
+        kind = ctrl.auto_aa_f_kind or 'all', status = ctrl.auto_aa_f_status or 'all' }
+    local unspent = 0
+    pcall(function() unspent = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
 
     for _, item in ipairs(AA.scannedAAs or {}) do
         local match = true
@@ -1498,9 +1742,13 @@ function AA.getFilteredSortedAAs()
             match = false
         end
         if match and query and query ~= '' then
-            if not item.name:lower():find(query, 1, true) then
+            if not item.name:lower():find(query, 1, true)
+                and not (searchDesc and (item.description or ''):lower():find(query, 1, true)) then
                 match = false
             end
+        end
+        if match and not AA.passesFilters(item, f, unspent) then
+            match = false
         end
         if match then
             result[#result + 1] = item
@@ -2108,11 +2356,11 @@ function AA.processAATrainWorkflow()
 end
 
 function AA.checkAutoSpendAA(allowStop)
-    if not ctrl.auto_spend_aa then return false end
+    if not ctrl.auto_spend_aa then AA.setStatus('Auto-Spend is off.', 'off'); return false end
     if AA.pendingAATrain then return false end
 
     -- Strict anti-pause check: never spend AAs while casting or moving
-    if rt.isCasting() then return false end
+    if rt.isCasting() then AA.setStatus('Waiting: casting.'); return false end
     if not allowStop then
         local moving = false
         pcall(function()
@@ -2120,7 +2368,7 @@ function AA.checkAutoSpendAA(allowStop)
             if rt.isMoveActive and rt.isMoveActive() then moving = true return end
             if mq.TLO.Navigation and mq.TLO.Navigation.Active and mq.TLO.Navigation.Active() then moving = true return end
         end)
-        if moving then return false end
+        if moving then AA.setStatus('Waiting: moving.'); return false end
     end
 
     -- Strict out-of-combat enforcement: never spend AAs while engaged in combat to avoid pauses
@@ -2133,7 +2381,7 @@ function AA.checkAutoSpendAA(allowStop)
         if rt.anyXtarAlive and rt.anyXtarAlive(true) then inCombat = true return end
         if mq.TLO.Me.XTHaterCount and (mq.TLO.Me.XTHaterCount() or 0) > 0 then inCombat = true return end
     end)
-    if inCombat then return false end
+    if inCombat then AA.setStatus('Waiting: in combat.'); return false end
 
     local now = os.clock()
     if (now - (AA.lastAutoSpendAAAt or 0)) < 2.0 then return false end
@@ -2158,8 +2406,7 @@ function AA.checkAutoSpendAA(allowStop)
         local raw = mq.TLO.Me.AAPoints()
         unspent = tonumber(raw or 0) or 0
     end)
-    -- Enforce minimum of 5 AA points before evaluating auto-spending to eliminate constant pauses
-    if unspent < 5 then return false end
+    if unspent <= 0 then AA.setStatus('Waiting: no unspent AA points.'); return false end
 
     -- Clear train attempt cooldowns if unspent points changed (e.g. gained
     -- points or purchased), except for AAs held back by a window-row skip.
@@ -2184,26 +2431,31 @@ function AA.checkAutoSpendAA(allowStop)
     -- or an invalid stub - only priorities are bought: the cap spender
     -- below stays off so fireworks can never eat a pool a priority needs.
     local outstanding, outstandingWhy = nil, nil
-    if ctrl.auto_aa_priorities and next(ctrl.auto_aa_priorities) then
-        local candidates = {}
-        for nm, enabled in pairs(ctrl.auto_aa_priorities) do
-            if enabled then
-                local info = AA.purchaseInfo(nm)
-                local why = AA.priorityBlocker(info, unspent, myLevel, now)
-                AA.notePriorityStatus(info, why, unspent)
-                if why == nil then
-                    candidates[#candidates + 1] = info
-                elseif why ~= 'trained' and why ~= 'stub' and not outstanding then
-                    outstanding, outstandingWhy = nm, why
-                end
+    local prios = AA.prioList()
+    if #prios > 0 then
+        local entries = {}
+        for _, nm in ipairs(prios) do
+            local info = AA.purchaseInfo(nm)
+            local why = AA.priorityBlocker(info, unspent, myLevel, now)
+            AA.notePriorityStatus(info, why, unspent)
+            entries[#entries + 1] = { info = info, why = why }
+            if why ~= nil and why ~= 'trained' and why ~= 'stub' and why ~= 'target' and not outstanding then
+                outstanding, outstandingWhy = nm, why
             end
         end
 
-        if #candidates > 0 then
-            -- The Bank slider gates every automatic purchase: a priority is
-            -- bought only once the unspent pool has reached it (the cap
-            -- spender below never runs while a priority is waiting).
-            if unspent < AA.threshold() then return false end
+        local target, savingFor = AA.pickPriority(entries, AA.buyOrder(), ctrl.auto_aa_save_for_top)
+        if savingFor then
+            AA.setStatus(string.format('Saving up for "%s": %d of %d AA.', savingFor.name, unspent, savingFor.cost))
+            return false
+        end
+        if target then
+            -- The Bank slider gates priorities only when "Wait for the bank"
+            -- is on; /alt buy is instant, so there is no pause to batch up.
+            if ctrl.auto_aa_prio_use_bank and unspent < AA.threshold() then
+                AA.setStatus(string.format('Next: "%s". Waiting for the bank: %d of %d AA.', target.name, unspent, AA.threshold()))
+                return false
+            end
 
             -- Movement check: if moving and allowStop is true, cleanly stop movement before purchasing
             local moving = false
@@ -2213,24 +2465,19 @@ function AA.checkAutoSpendAA(allowStop)
                 if mq.TLO.Navigation and mq.TLO.Navigation.Active and mq.TLO.Navigation.Active() then moving = true return end
             end)
             if moving then
-                if not allowStop then return false end
+                if not allowStop then AA.setStatus('Waiting: moving.'); return false end
                 if rt.stopMoving then rt.stopMoving() end
             end
 
-            if ctrl.auto_aa_buy_order == 'list' then
-                table.sort(candidates, function(a, b) return a.name:lower() < b.name:lower() end)
-            else
-                table.sort(candidates, function(a, b)
-                    if a.cost ~= b.cost then return a.cost < b.cost end
-                    return a.name:lower() < b.name:lower()
-                end)
-            end
-            local target = candidates[1]
             AA.lastAutoSpendAAAt = now
+            AA.setStatus(string.format('Buying "%s" rank %d (%d AA).', target.name, target.rank + 1, target.cost), 'buy')
             print(string.format('\ag[MoriAC]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
                 target.isSpecial and 'Special tab ability' or 'prioritized ability',
                 target.name, target.rank, target.maxRank, target.cost, unspent))
             return AA.startAATrainWorkflow(target.name, allowStop)
+        end
+        if outstanding then
+            AA.setStatus(string.format('Next: "%s": %s.', outstanding, AA.BLOCKER_TEXT[outstandingWhy] or outstandingWhy))
         end
     end
 
@@ -2267,7 +2514,14 @@ function AA.checkAutoSpendAA(allowStop)
         return false
     end
     AA.capHoldLogged = nil
-    if capInfo.fullyTrained or (not capInfo.isSpecial and capInfo.invalid) or cost > unspent then return false end
+    if capInfo.fullyTrained or (not capInfo.isSpecial and capInfo.invalid) or cost > unspent then
+        if #prios > 0 then AA.setStatus('Every priority is bought. Nothing else to spend on.', 'done')
+        else AA.setStatus('No priorities checked. Tick the box next to an AA to buy it.', 'done') end
+        return false
+    end
+    if unspent < effectiveThreshold then
+        AA.setStatus(string.format('Cap spender "%s": waiting for the bank, %d of %d AA.', effectiveName, unspent, effectiveThreshold))
+    end
 
     if unspent >= effectiveThreshold and (now - lastCapAttempt) >= 30.0 and now >= capBackoff then
         -- Movement check: if moving and allowStop is true, cleanly stop movement before purchasing
@@ -2324,30 +2578,17 @@ function AA.manualSpendAA(targetName)
     -- Check prioritized abilities (same live-first classification as the
     -- automatic pass; the attempt spacing and backoffs were just cleared)
     local topPrioritized = nil
-    if ctrl.auto_aa_priorities and next(ctrl.auto_aa_priorities) then
-        local candidates = {}
+    local prios = AA.prioList()
+    if #prios > 0 then
         local myLevel = 0
         pcall(function() myLevel = tonumber(mq.TLO.Me.Level() or 0) or 0 end)
-        for nm, enabled in pairs(ctrl.auto_aa_priorities) do
-            if enabled then
-                local info = AA.purchaseInfo(nm)
-                if AA.priorityBlocker(info, unspent, myLevel, os.clock()) == nil then
-                    candidates[#candidates + 1] = info
-                end
-            end
+        local entries = {}
+        for _, nm in ipairs(prios) do
+            local info = AA.purchaseInfo(nm)
+            entries[#entries + 1] = { info = info, why = AA.priorityBlocker(info, unspent, myLevel, os.clock()) }
         end
-
-        if #candidates > 0 then
-            if ctrl.auto_aa_buy_order == 'list' then
-                table.sort(candidates, function(a, b) return a.name:lower() < b.name:lower() end)
-            else
-                table.sort(candidates, function(a, b)
-                    if a.cost ~= b.cost then return a.cost < b.cost end
-                    return a.name:lower() < b.name:lower()
-                end)
-            end
-            topPrioritized = candidates[1]
-        end
+        -- Spend Now never saves up: it buys the best priority it can afford.
+        topPrioritized = AA.pickPriority(entries, AA.buyOrder(), false)
     end
 
     if topPrioritized then
@@ -2358,7 +2599,7 @@ function AA.manualSpendAA(targetName)
 
     -- If Fireworks is configured cap spender and no other prios:
     local fallbackName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
-    if AA.isSpecialTabAA and AA.isSpecialTabAA(fallbackName) and (not ctrl.auto_aa_priorities or not next(ctrl.auto_aa_priorities)) then
+    if AA.isSpecialTabAA and AA.isSpecialTabAA(fallbackName) and #prios == 0 then
         return AA.startAATrainWorkflow(fallbackName)
     end
 
@@ -2527,6 +2768,186 @@ end
 -- Auto AA popout window (was a main-window tab)
 -- ----------------------------------------------------------------------------
 -- UI: Auto AA / Point Spender & AA Progression window
+-- One combo over a { {key, label}, ... } list; returns the picked key.
+function AA.keyCombo(id, cur, opts, width)
+    local idx, labels = 1, {}
+    for i, o in ipairs(opts) do
+        labels[i] = o[2]
+        if o[1] == cur then idx = i end
+    end
+    ImGui.SetNextItemWidth(core.px(width))
+    local n = ImGui.Combo(id, idx, labels)
+    if n ~= idx and opts[n] then return opts[n][1], true end
+    return cur, false
+end
+
+-- Row 3: class / tab / kind / progress filters.
+function AA.drawFilters()
+    local classOpts = { { '', 'All classes' } }
+    for _, c in ipairs(core.myClasses or {}) do classOpts[#classOpts + 1] = { c, c .. ' AAs' } end
+    classOpts[#classOpts + 1] = { 'unsorted', 'Class AAs, class unknown' }
+    local changed = false
+    local function pick(key, id, opts, width, tip)
+        local v, ch = AA.keyCombo(id, ctrl[key] or opts[1][1], opts, width)
+        if ch then ctrl[key] = v; changed = true end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', tip) end
+    end
+    pick('auto_aa_f_class', '##aaFClass', classOpts, 130,
+        'Show the AAs of one of your classes (archetype AAs that class can use count too).\n'
+        .. 'Class data is partial until the server export arrives: "class unknown" lists\n'
+        .. 'Class-tab AAs that are not matched to a class yet.')
+    ImGui.SameLine()
+    pick('auto_aa_f_tab', '##aaFTab', AA.TAB_FILTERS, 95, 'The AA window tab: General, Archetype, Class or Special.')
+    ImGui.SameLine()
+    pick('auto_aa_f_kind', '##aaFKind', AA.KIND_FILTERS, 120,
+        'Activated or passive, or a topic read from the name and description\n(Pet, Healing, Damage, Defense, Mana / endurance). Topics are keyword matches: a guide, not a rule.')
+    ImGui.SameLine()
+    pick('auto_aa_f_status', '##aaFStatus', AA.STATUS_FILTERS, 105, 'Filter by progress. "Can buy now" = not maxed and you have the points.')
+    ImGui.SameLine()
+    local d = ImGui.Checkbox('Search descriptions##aaFDesc', ctrl.auto_aa_f_desc == true)
+    if d ~= (ctrl.auto_aa_f_desc == true) then ctrl.auto_aa_f_desc = d; changed = true end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'The search box also matches the AA descriptions (e.g. "pet", "mana", "proc").') end
+    local any = (ctrl.auto_aa_f_class or '') ~= '' or (ctrl.auto_aa_f_tab or 'all') ~= 'all'
+        or (ctrl.auto_aa_f_kind or 'all') ~= 'all' or (ctrl.auto_aa_f_status or 'all') ~= 'all'
+    if any then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Reset filters##aaFReset') then
+            ctrl.auto_aa_f_class, ctrl.auto_aa_f_tab, ctrl.auto_aa_f_kind, ctrl.auto_aa_f_status = '', 'all', 'all', 'all'
+            changed = true
+        end
+    end
+    if changed then
+        AA.aaFilterDirty = true
+        core.saveLoadout(true)
+    end
+end
+
+AA.RANK_LABELS = {}
+function AA.rankLabels(maxRank)
+    maxRank = math.max(1, math.min(100, tonumber(maxRank) or 1))
+    local l = AA.RANK_LABELS[maxRank]
+    if not l then
+        l = { 'Max' }
+        for r = 1, maxRank do l[#l + 1] = tostring(r) end
+        AA.RANK_LABELS[maxRank] = l
+    end
+    return l
+end
+
+-- Priorities: the checked AAs in buy order, with Up / Down / Remove, an
+-- "up to rank" per AA, the buy-order options and what auto-spend is doing.
+function AA.drawPriorityPanel(unspentAA)
+    local prios = AA.prioList()
+    local flags = ImGuiTreeNodeFlags and ImGuiTreeNodeFlags.DefaultOpen or 0
+    if not ImGui.CollapsingHeader(string.format('Priorities (%d)###aaPrioHeader', #prios), flags) then return end
+
+    local changed = false
+    local order, ch = AA.keyCombo('##aaBuyOrder', AA.buyOrder(), { { 'list', 'Buy in list order' }, { 'cost', 'Buy cheapest first' } }, 150)
+    if ch then ctrl.auto_aa_buy_order = order; changed = true end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('%s', 'List order: the top AA you can afford is bought first; use the arrows to reorder.\nCheapest first: whatever costs least, ignoring the order.')
+    end
+    if AA.buyOrder() == 'list' then
+        ImGui.SameLine()
+        local sv = ImGui.Checkbox('Save up for the top one##aaSaveTop', ctrl.auto_aa_save_for_top == true)
+        if sv ~= (ctrl.auto_aa_save_for_top == true) then ctrl.auto_aa_save_for_top = sv; changed = true end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('%s', 'On: nothing lower in the list is bought while the top unfinished AA is only waiting for points.\nOff: buys the highest AA you can afford right now.')
+        end
+    end
+    ImGui.SameLine()
+    local ub = ImGui.Checkbox('Wait for the bank##aaPrioBank', ctrl.auto_aa_prio_use_bank == true)
+    if ub ~= (ctrl.auto_aa_prio_use_bank == true) then ctrl.auto_aa_prio_use_bank = ub; changed = true end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('%s', string.format('On: priorities wait until you have %d unspent AA (the Bank slider).\nOff: a priority is bought as soon as you can afford it. The cap spender always waits for the bank.', AA.threshold()))
+    end
+
+    local st = AA.spendStatus
+    if st then
+        local col = (AA.spendStatusKind == 'buy' or AA.spendStatusKind == 'done') and GOOD or (AA.spendStatusKind == 'off' and ERR or WARN)
+        ImGui.TextColored(col[1], col[2], col[3], col[4], st)
+    end
+
+    if #prios == 0 then
+        ImGui.TextDisabled('Nothing checked. Tick the box at the left of an AA below to add it here.')
+        if changed then core.saveLoadout(true) end
+        return
+    end
+
+    local rowH = core.px(24)
+    local h = math.min(#prios, 6) * rowH + core.px(30)
+    if ImGui.BeginChild('##aaPrioList', 0, h, true) then
+        local tflags = bit.bor(ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingStretchProp)
+        if ImGui.BeginTable('##aaPrioTable', 6, tflags) then
+            ImGui.TableSetupColumn('#', ImGuiTableColumnFlags.WidthFixed, core.px(22))
+            ImGui.TableSetupColumn('Ability', ImGuiTableColumnFlags.WidthStretch, 3)
+            ImGui.TableSetupColumn('Rank', ImGuiTableColumnFlags.WidthFixed, core.px(50))
+            ImGui.TableSetupColumn('Up to', ImGuiTableColumnFlags.WidthFixed, core.px(62))
+            ImGui.TableSetupColumn('Status', ImGuiTableColumnFlags.WidthStretch, 2)
+            ImGui.TableSetupColumn('##move', ImGuiTableColumnFlags.WidthFixed, core.px(70))
+            ImGui.TableHeadersRow()
+            local moveFrom, moveBy, removeName
+            for i, nm in ipairs(prios) do
+                ImGui.PushID('prio' .. i)
+                ImGui.TableNextRow()
+                local sc = AA.scannedAAMap and AA.scannedAAMap[nm]
+                local rank = sc and tonumber(sc.rank) or 0
+                local maxRank = sc and tonumber(sc.maxRank) or 0
+                ImGui.TableNextColumn()
+                ImGui.TextDisabled(tostring(i))
+                ImGui.TableNextColumn()
+                ImGui.Text(nm)
+                if sc and ImGui.IsItemHovered() then rt.showAATooltip(sc) end
+                ImGui.TableNextColumn()
+                ImGui.Text(maxRank > 0 and string.format('%d/%d', rank, maxRank) or tostring(rank))
+                ImGui.TableNextColumn()
+                if maxRank > 1 then
+                    local labels = AA.rankLabels(maxRank)
+                    local cur = AA.targetRank(nm) or 0
+                    if cur > maxRank then cur = 0 end
+                    ImGui.SetNextItemWidth(-1)
+                    local n = ImGui.Combo('##upto', cur + 1, labels)
+                    if n ~= cur + 1 then AA.setTargetRank(nm, n - 1); changed = true end
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Stop buying this AA at this rank (Max = every rank).') end
+                else
+                    ImGui.TextDisabled('-')
+                end
+                ImGui.TableNextColumn()
+                local ps = AA.prioStatus and AA.prioStatus[nm]
+                if ps and ps.why then
+                    local txt = AA.BLOCKER_TEXT[ps.why] or ps.why
+                    if ps.why == 'trained' or ps.why == 'target' then
+                        ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], txt)
+                    elseif ps.why == 'points' then
+                        ImGui.TextDisabled(string.format('needs %d AA', ps.cost or 0))
+                    else
+                        ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], txt)
+                    end
+                elseif ps then
+                    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format('can buy (%d AA)', ps.cost or 0))
+                else
+                    ImGui.TextDisabled(sc and sc.cost and sc.cost > 0 and string.format('%d AA next', sc.cost) or '')
+                end
+                ImGui.TableNextColumn()
+                if ImGui.SmallButton('^##up') and i > 1 then moveFrom, moveBy = nm, -1 end
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Move up') end
+                ImGui.SameLine()
+                if ImGui.SmallButton('v##dn') and i < #prios then moveFrom, moveBy = nm, 1 end
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Move down') end
+                ImGui.SameLine()
+                if ImGui.SmallButton('x##rm') then removeName = nm end
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Remove from the priorities') end
+                ImGui.PopID()
+            end
+            ImGui.EndTable()
+            if moveFrom and AA.movePrio(moveFrom, moveBy) then changed = true end
+            if removeName then AA.setPrio(removeName, false); changed = true end
+        end
+    end
+    ImGui.EndChild()
+    if changed then core.saveLoadout(true) end
+end
+
 function AA.drawWindow()
     if not ctrl.show_auto_aa then return end
     core.pushTheme()
@@ -2642,6 +3063,8 @@ function AA.drawWindow()
     ImGui.SameLine()
     if ImGui.Button('Clear Prios##autoAaClearPrioBtn') then
         ctrl.auto_aa_priorities = {}
+        ctrl.auto_aa_prio_order = {}
+        ctrl.auto_aa_prio_rank = {}
         AA.aaFilterDirty = true
         core.saveLoadout(true)
     end
@@ -2735,6 +3158,9 @@ function AA.drawWindow()
     ImGui.SameLine()
     ImGui.TextDisabled(string.format('(%d listed | %d prio)', #allItems, prioCount))
 
+    AA.drawFilters()
+    AA.drawPriorityPanel(unspentAA)
+
     -- 3. Scrollable Table (Dynamically Sized to Window)
     ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, 4, 3)
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, 4, 2)
@@ -2777,9 +3203,7 @@ function AA.drawWindow()
                 local isPrio = not not (ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[itm.name])
                 local newPrio = ImGui.Checkbox('##prioCheck', isPrio)
                 if newPrio ~= isPrio then
-                    if not ctrl.auto_aa_priorities then ctrl.auto_aa_priorities = {} end
-                    ctrl.auto_aa_priorities[itm.name] = newPrio and true or nil
-                    AA.aaFilterDirty = true
+                    AA.setPrio(itm.name, newPrio)
                     core.saveLoadout(true)
                 end
                 if ImGui.IsItemHovered() then
@@ -2988,8 +3412,18 @@ function AA.tick()
     -- The one place a scan actually runs (window refresh, purchases, the
     -- purchase event and the spent-points change all queue through here).
     AA.runPendingScan()
-    if ctrl.auto_spend_aa and AA.checkAutoSpendAA and not rt.isCasting() and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() then
-        AA.checkAutoSpendAA()
+    if ctrl.auto_spend_aa and AA.checkAutoSpendAA then
+        if rt.isCasting() then
+            AA.setStatus('Waiting: casting.')
+        elseif mq.TLO.Me.Combat() then
+            AA.setStatus('Waiting: auto-attack is on.')
+        elseif mq.TLO.Me.Moving() then
+            AA.setStatus('Waiting: moving.')
+        else
+            AA.checkAutoSpendAA()
+        end
+    elseif not ctrl.auto_spend_aa then
+        AA.setStatus('Auto-Spend is off.', 'off')
     end
     if AA.pendingFireworksSummon then
         AA.processPendingFireworksSummon()
@@ -3093,8 +3527,7 @@ function AA.onCommand(cmd, args)
     elseif cmd == 'aaprio' or cmd == 'prioritizeaa' then
         local aaName = table.concat(args, ' ', 2)
         if aaName and aaName ~= '' then
-            if not ctrl.auto_aa_priorities then ctrl.auto_aa_priorities = {} end
-            ctrl.auto_aa_priorities[aaName] = not ctrl.auto_aa_priorities[aaName]
+            AA.setPrio(aaName, not (ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[aaName]))
             AA.aaFilterDirty = true
             core.saveLoadout(true)
             print(string.format('\ag[MoriAC]\ax AA priority for "%s" set to %s.',

@@ -332,6 +332,15 @@ local function sanitizeModeConfig(c)
     if c.auto_aa_buy_order ~= 'cost' and c.auto_aa_buy_order ~= 'list' then
         c.auto_aa_buy_order = 'cost'
     end
+    if type(c.auto_aa_prio_order) ~= 'table' then c.auto_aa_prio_order = {} end
+    if type(c.auto_aa_prio_rank) ~= 'table' then c.auto_aa_prio_rank = {} end
+    if c.auto_aa_prio_use_bank == nil then c.auto_aa_prio_use_bank = false end
+    if c.auto_aa_save_for_top == nil then c.auto_aa_save_for_top = false end
+    if type(c.auto_aa_f_class) ~= 'string' then c.auto_aa_f_class = '' end
+    for _, k in ipairs({ 'auto_aa_f_tab', 'auto_aa_f_kind', 'auto_aa_f_status' }) do
+        if type(c[k]) ~= 'string' or c[k] == '' then c[k] = 'all' end
+    end
+    if c.auto_aa_f_desc == nil then c.auto_aa_f_desc = false end
     -- MQ2AAspend delegation is gone; drop the keys old loadouts still carry.
     c.auto_aa_delegate_aaspend = nil
     c.auto_aa_aaspend_mode = nil
@@ -387,6 +396,7 @@ local function defaultCtrl()
         melee_dist           = 14,
         ranged_dist          = 40,
         los_face_only        = false,
+        enrage_stop          = true,  -- stop melee auto-attack and back pets off while the target is enraged
         ma_name              = '',
         ma_id                = 0,
         custom_ma_list       = {},
@@ -587,6 +597,15 @@ local function defaultCtrl()
         auto_aa_hide_maxed       = false,
         auto_aa_only_prioritized = false,
         auto_aa_buy_order        = 'cost',
+        auto_aa_prio_order       = {},    -- checked priorities in the player's buy order
+        auto_aa_prio_rank        = {},    -- name -> stop at this rank (none = max)
+        auto_aa_prio_use_bank    = false, -- priorities wait for the bank threshold
+        auto_aa_save_for_top     = false, -- list order: save up for the top unfinished priority
+        auto_aa_f_class          = '',
+        auto_aa_f_tab            = 'all',
+        auto_aa_f_kind           = 'all',
+        auto_aa_f_status         = 'all',
+        auto_aa_f_desc           = false,
         downtime_buffing         = true,
         pause_on_zone            = true,
         auto_group               = false,
@@ -14385,6 +14404,19 @@ function UI.drawSettingsTab()
                 .. 'Spell alike. Off by default.')
         end
 
+        local enrVal = ImGui.Checkbox('Stop Attacking While The Target Is Enraged##enrageStop', ctrl.enrage_stop ~= false)
+        if enrVal ~= (ctrl.enrage_stop ~= false) then
+            ctrl.enrage_stop = enrVal
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('%s',
+                'An enraged mob ripostes every melee swing from its front.\n'
+                .. 'On: melee auto-attack goes off and pets are backed off until\n'
+                .. '"<mob> is no longer enraged." (or the mob dies), then both resume.\n'
+                .. 'Spells, bow auto-fire and other actions keep going. On by default.')
+        end
+
         accent(GOLD, 'Spell Failures & Lockouts:')
         UI.formLabel('Retries before lockout')
         local retriesVal = ImGui.SliderInt('##cmr', ctrl.cast_max_retries or 2, 1, 10)
@@ -20678,6 +20710,8 @@ end
 -- forgiveness, Master. That target is too far away.'").
 -- Puller (Lure): a summon cancels "stopped coming, go to it" so the leash walks us home.
 mq.event('MoriacSummoned', '#*#You have been summoned!#*#', function() runtime.lureSummonedAt = os.clock() end)
+mq.event('MoriacEnrageOn', '#1# has become ENRAGED.#*#', function(_, n) runtime.noteEnrage(n, true) end)
+mq.event('MoriacEnrageOff', '#1# is no longer enraged.#*#', function(_, n) runtime.noteEnrage(n, false) end)
 mq.event('TriuneTooFar1', 'Your target is too far away#*#', function() repositionCloser() end)
 mq.event('TriuneTooFar1b', 'You are too far away#*#', function() repositionCloser() end)
 mq.event('TriuneTooFar2', 'Your target is out of range, get closer#*#', function() repositionCloser() end)
@@ -20832,8 +20866,101 @@ function runtime.meleeAttackOn()
         runtime.revertAttackModeToMelee()
         return false
     end
+    if runtime.enrageHolds and runtime.enrageHolds() then return false end
     if not mq.TLO.Me.Combat() then mq.cmd('/attack on') end
     return true
+end
+
+-- ----------------------------------------------------------------------------
+-- Enrage: "<mob> has become ENRAGED." means the mob ripostes every melee
+-- swing from its front. While the current target is enraged (and
+-- ctrl.enrage_stop is on) melee auto-attack stays off and pets are pulled
+-- back; both resume on "<mob> is no longer enraged." or when the mob dies.
+-- The chat line only carries a name, so it is matched to the current target
+-- and the XTarget list at the time it arrives (spawn ids, not names, are
+-- remembered: a second "a gnoll" is not treated as enraged).
+-- ----------------------------------------------------------------------------
+runtime.enraged = {}          -- spawn id -> os.clock() when it enraged
+runtime.ENRAGE_MAX_SEC = 180  -- safety: forget an enrage whose end line was missed
+
+function runtime.enrageIdsForName(name)
+    local ids = {}
+    local want = tostring(name or ''):lower():gsub('^%s+', ''):gsub('%s+$', '')
+    if want == '' then return ids end
+    pcall(function()
+        local tid = mq.TLO.Target.ID() or 0
+        if tid > 0 and (mq.TLO.Target.CleanName() or ''):lower() == want then ids[#ids + 1] = tid end
+    end)
+    for _, row in ipairs(runtime.xtSnapshot().rows) do
+        if (row.name or ''):lower() == want then
+            local dup = false
+            for _, id in ipairs(ids) do if id == row.id then dup = true end end
+            if not dup then ids[#ids + 1] = row.id end
+        end
+    end
+    return ids
+end
+
+function runtime.noteEnrage(name, on)
+    local ids = runtime.enrageIdsForName(name)
+    for _, id in ipairs(ids) do
+        if on then runtime.enraged[id] = os.clock() else runtime.enraged[id] = nil end
+    end
+    if not on and #ids == 0 then
+        -- the mob may have left XTarget; end every enrage on that name
+        local want = tostring(name or ''):lower()
+        for id in pairs(runtime.enraged) do
+            local nm = ''
+            pcall(function() nm = (mq.TLO.Spawn(id).CleanName() or ''):lower() end)
+            if nm == want or nm == '' then runtime.enraged[id] = nil end
+        end
+    end
+end
+
+function runtime.isEnraged(id)
+    id = tonumber(id) or 0
+    local at = id > 0 and runtime.enraged[id]
+    if not at then return false end
+    if (os.clock() - at) > runtime.ENRAGE_MAX_SEC or not isSpawnAlive(id) then
+        runtime.enraged[id] = nil
+        return false
+    end
+    return true
+end
+
+-- True while melee must hold off the current target.
+function runtime.enrageHolds()
+    if ctrl.enrage_stop == false then return false end
+    local tid = 0
+    pcall(function() tid = mq.TLO.Target.ID() or 0 end)
+    return tid > 0 and runtime.isEnraged(tid)
+end
+
+-- Once per combat tick: turn melee auto-attack off on an enraged target
+-- (ranged auto-fire is not riposted and is left alone) and say so once.
+function runtime.enrageTick()
+    if not next(runtime.enraged) then
+        runtime.enrageAnnounced = nil
+        return
+    end
+    if not runtime.enrageHolds() then
+        if runtime.enrageAnnounced then
+            print('\ag[MoriAC]\ax Enrage is over: attacking again.')
+            runtime.enrageAnnounced = nil
+        end
+        return
+    end
+    local tid = mq.TLO.Target.ID() or 0
+    -- Ranged style fires the bow through /attack in the server's Ranged
+    -- mode; that is never riposted, so only melee is switched off.
+    if (ctrl.combat_style or 'Melee') == 'Melee' and runtime.serverAttackMode ~= 'Ranged' and mq.TLO.Me.Combat() then
+        mq.cmd('/attack off')
+    end
+    if runtime.enrageAnnounced ~= tid then
+        runtime.enrageAnnounced = tid
+        print(string.format('\ay[MoriAC]\ax %s is ENRAGED: melee off and pets backed off until it ends.',
+            tostring(mq.TLO.Target.CleanName() or 'Target')))
+    end
 end
 
 -- ----------------------------------------------------------------------------
@@ -23874,6 +24001,7 @@ local function combatTick()
     local targetIsEngaged = runtime.targetIsEngaged
 
     if not ctrl.running then return end
+    if runtime.enrageTick then runtime.enrageTick() end
     if mq.TLO.Me.Dead() then
         if not runtime.deathGuardFired then
             runtime.deathGuardFired = true
@@ -24937,7 +25065,19 @@ local function combatTick()
         end
         tid = mq.TLO.Target.ID() or 0
         local dueForRetry = (os.clock() - (petState.lastCmdAt or 0)) > 5.0
-        if (tid ~= petState.lastCmdTargetId or dueForRetry) and not isCasting() then
+        if ctrl.enrage_stop ~= false and runtime.isEnraged and runtime.isEnraged(tid) then
+            -- Enraged: pull every pet off; the attack is re-sent when it ends.
+            if petState.enrageBackoffId ~= tid and not isCasting() then
+                petState.enrageBackoffId = tid
+                mq.cmd('/pet back off')
+                if not petState.petHoldActive then
+                    mq.cmd('/say #petcmd hold all')
+                    petState.petHoldActive = true
+                end
+                petState.lastCmdTargetId = 0
+            end
+        elseif (tid ~= petState.lastCmdTargetId or dueForRetry) and not isCasting() then
+            petState.enrageBackoffId = nil
             local tgtHp = pctHP(tid) or 100
             -- Self-directed modes: character is leading combat directly, skip external MA aggro gate.
             -- Assist modes: require player/tank has started hitting AND HP threshold met.
