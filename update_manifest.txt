@@ -1,7 +1,7 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.27.0024
+version=2026.10.27.0155
 date=2026-10-27
-commit=21b98e3
+commit=c48e8a5
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
 file=lua/moriac.lua 1201433 443e1f03
@@ -31,8 +31,10 @@ file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
 file=lua/tac/triune_log.lua 15583 576465e8
-file=lua/tac/update_check.lua 48299 e66c53be
+file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-27
+note=
+note=- **One download to install: `MoriAC-full.zip`.** New players no longer need the Triune AutoCombat full zip. Each [MoriAC release](https://github.com/traylz2000/eq-autocombat-morituri/releases/latest) has one zip that holds MoriAC (`lua/`, `config/`) plus the zone navmeshes and game database (`resources/`). Extract it into the MacroQuest folder and you're done. Upstream Triune was archived on 2026-10-11, and the `resources/` files come unchanged from its final V3.2 release, used with gennro's permission. The install guide is now four steps. Anyone who already has `resources/` can still use the small download (`lua` and `config` only). The in-game updater is unchanged.
 note=
 note=- **Auto AA buys checked priorities again, in your order (`lua/tac/auto_aa.lua` 1.4.0).**
 note=  - Why it did nothing: priorities waited for the **Bank** threshold, and saved loadouts default that to 100 unspent AA. A checked Healing Gift sat there until you had 100 points. Priorities now buy as soon as you can afford them. **Wait for the bank** (in the Priorities panel) brings the old behaviour back. The fireworks cap spender still waits for the bank.

@@ -10,15 +10,14 @@ It is based on [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat), 
 
 Follow every step in order. It takes about 10 minutes.
 
-You will download **3 things**:
+You will download **2 things**:
 
 | # | What | Why |
 |---|---|---|
 | A | MacroQuest | The program that runs MoriAC |
-| B | Triune AutoCombat **full** zip | Maps and a game database MoriAC needs |
-| C | MoriAC (this page) | MoriAC itself |
+| B | **MoriAC-full.zip** (from this page) | MoriAC itself, plus the zone maps and game database it needs |
 
-They all go into **one folder**. These steps call it **your MacroQuest folder** and use `C:\MacroQuest` as the example.
+They both go into **one folder**. These steps call it **your MacroQuest folder** and use `C:\MacroQuest` as the example.
 
 ---
 
@@ -38,31 +37,22 @@ They all go into **one folder**. These steps call it **your MacroQuest folder** 
 4. Right-click the downloaded zip, choose **Extract All...**, and extract it into `C:\MacroQuest`.
 5. Check: `C:\MacroQuest\MacroQuest.exe` must now exist. If it is one folder deeper (for example `C:\MacroQuest\MacroQuest-rof2\MacroQuest.exe`), move everything inside that inner folder up into `C:\MacroQuest`.
 
-## Step 3: Download the Triune full zip (B)
+## Step 3: Download MoriAC (B)
 
-1. Go to https://github.com/gennro/TriuneAutocombat/releases/latest
-2. Under **Assets**, download **`TriuneAutocombat-full.zip`**. Use the one that says **full**. It is a big file.
+1. Go to https://github.com/traylz2000/eq-autocombat-morituri/releases/latest
+2. Under **Assets**, download **`MoriAC-full.zip`**. It is a big file (about 950 MB).
 3. Right-click it, choose **Extract All...**, and extract it into `C:\MacroQuest`.
 4. If Windows asks about replacing files, click **Replace the files in the destination**.
-5. Check: the folder `C:\MacroQuest\resources` must now exist.
-
-## Step 4: Download MoriAC (C)
-
-1. At the top of **this** page, click the green **`<> Code`** button, then **Download ZIP**.
-2. Right-click the downloaded `eq-autocombat-morituri-main.zip` and choose **Extract All...**. Extract it to your **Desktop**, not into MacroQuest.
-3. On the Desktop, open `eq-autocombat-morituri-main`, then open the **`autocombat`** folder inside it.
-4. You will see two folders: **`lua`** and **`config`**. Select both and **copy** them (Ctrl+C).
-5. Go to `C:\MacroQuest` and **paste** (Ctrl+V).
-6. If Windows asks about replacing files, click **Replace the files in the destination**.
-7. Check that both of these files now exist:
+5. Check that all of these exist:
+   - the folder `C:\MacroQuest\resources`
    - `C:\MacroQuest\lua\moriac.lua`
    - `C:\MacroQuest\config\moriac_data.lua`
 
-You can delete the Desktop folder now.
+**Common mistake:** Windows sometimes extracts into an extra folder, such as `C:\MacroQuest\MoriAC-full\lua`. If so, move everything inside `MoriAC-full` up into `C:\MacroQuest`.
 
-**Common mistake:** do not copy the whole `eq-autocombat-morituri-main` folder or the `autocombat` folder into MacroQuest. Copy only the `lua` and `config` folders that are **inside** `autocombat`.
+The zip may be a little older than the newest MoriAC. That's fine: MoriAC offers the update the first time it starts (see [Updating](#updating-to-a-newer-version)).
 
-## Step 5: Play
+## Step 4: Play
 
 1. Double-click `C:\MacroQuest\MacroQuest.exe`. A small MacroQuest icon appears in the system tray, the bottom-right corner of the taskbar near the clock.
 2. Start EverQuest the way you normally do and log in to Project Morituri.
@@ -100,10 +90,10 @@ The **Help** page in the MoriAC window lists every command.
 
 | Problem | Fix |
 |---|---|
-| Nothing happens when I type `/lua run moriac` | MacroQuest is not running. Start `MacroQuest.exe` (Step 5) **before** EverQuest. |
-| "Could not find script moriac" or similar | The files are in the wrong place. Redo Step 4 and check the two files at the end. |
+| Nothing happens when I type `/lua run moriac` | MacroQuest is not running. Start `MacroQuest.exe` (Step 4) **before** EverQuest. |
+| "Could not find script moriac" or similar | The files are in the wrong place. Redo Step 3 and check the files at the end. |
 | `MacroQuest.exe` vanished | Your antivirus deleted it. Add the exclusion from Step 1, then redo Step 2. |
-| The window says the spell lists are empty, or **moriac_data.lua not found** | `C:\MacroQuest\config\moriac_data.lua` is missing. Redo Step 4. |
+| The window says the spell lists are empty, or **moriac_data.lua not found** | `C:\MacroQuest\config\moriac_data.lua` is missing. Redo Step 3. |
 | My character won't move or pull | Look at the top of the MoriAC window. Anything missing is listed there with a button to fix it. If it says **navmesh**, redo Step 3. |
 | Only 2 or 3 of my classes show | Type `/ac redetect`. If still wrong, type `/ac classdump` and send the output to whoever is helping you. |
 
@@ -118,16 +108,28 @@ MoriAC updates itself. About 20 seconds after it starts, it checks this page for
 
 `/ac update` checks right away. Your settings are never touched.
 
-**Installed before 2026-10-26?** Your copy has the old update checker, which only says "404". Update by hand once: type `/lua stop moriac`, redo **Step 4**, then type `/lua run moriac`. After that, updates work as above. Updating by hand this way also always works if the in-game updater ever can't reach GitHub.
+**Installed before 2026-10-26?** Your copy has the old update checker, which only says "404". Update by hand once: type `/lua stop moriac`, do the [small download](#small-download-moriac-files-only) below, then type `/lua run moriac`. After that, updates work as above. Updating by hand this way also always works if the in-game updater ever can't reach GitHub.
+
+### Small download (MoriAC files only)
+
+If you already have the zone maps (`C:\MacroQuest\resources`), you don't need the big zip again:
+
+1. At the top of **this** page, click the green **`<> Code`** button, then **Download ZIP**.
+2. Right-click the downloaded `eq-autocombat-morituri-main.zip` and choose **Extract All...**. Extract it to your **Desktop**, not into MacroQuest.
+3. On the Desktop, open `eq-autocombat-morituri-main`, then open the **`autocombat`** folder inside it.
+4. Select the **`lua`** and **`config`** folders, **copy** them (Ctrl+C), go to `C:\MacroQuest` and **paste** (Ctrl+V). Click **Replace the files in the destination** if asked.
+5. Delete the Desktop folder.
+
+Copy only the `lua` and `config` folders that are **inside** `autocombat`, not the whole folder.
 
 ## Already using Triune or the old Morituri script?
 
-Do Steps 4 and 5 only. MoriAC copies your old settings automatically the first time it starts. Your old files are not changed. `/triune` still works as another name for `/ac`.
+You already have the zone maps. Do the [small download](#small-download-moriac-files-only) above, then Step 4. MoriAC copies your old settings automatically the first time it starts. Your old files are not changed. `/triune` still works as another name for `/ac`.
 
-> If you had your own `C:\MacroQuest\config\ingame.cfg`, Step 4 replaces it. That file is what starts MoriAC automatically when you log in. If you had other commands in it, add them back, and keep the line `/lua run moriac`.
+> If you had your own `C:\MacroQuest\config\ingame.cfg`, installing MoriAC replaces it. That file is what starts MoriAC automatically when you log in. If you had other commands in it, add them back, and keep the line `/lua run moriac`.
 
 ---
 
 More: [full user guide](autocombat/README.md) · [change log](autocombat/CHANGELOG.md)
 
-Credits: [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) by gennro and contributors, and the original Morituri port.
+Credits: [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) by gennro and contributors, and the original Morituri port. The zone navmeshes and game database in `MoriAC-full.zip` are from Triune AutoCombat V3.2, used with gennro's permission.

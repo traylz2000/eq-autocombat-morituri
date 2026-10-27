@@ -4,6 +4,8 @@
 
 ## 2026-10-27
 
+- **One download to install: `MoriAC-full.zip`.** New players no longer need the Triune AutoCombat full zip. Each [MoriAC release](https://github.com/traylz2000/eq-autocombat-morituri/releases/latest) has one zip that holds MoriAC (`lua/`, `config/`) plus the zone navmeshes and game database (`resources/`). Extract it into the MacroQuest folder and you're done. Upstream Triune was archived on 2026-10-11, and the `resources/` files come unchanged from its final V3.2 release, used with gennro's permission. The install guide is now four steps. Anyone who already has `resources/` can still use the small download (`lua` and `config` only). The in-game updater is unchanged.
+
 - **Auto AA buys checked priorities again, in your order (`lua/tac/auto_aa.lua` 1.4.0).**
   - Why it did nothing: priorities waited for the **Bank** threshold, and saved loadouts default that to 100 unspent AA. A checked Healing Gift sat there until you had 100 points. Priorities now buy as soon as you can afford them. **Wait for the bank** (in the Priorities panel) brings the old behaviour back. The fireworks cap spender still waits for the bank.
   - New **Priority** column next to each AA's name: type 1-9. Priority 1 is bought first, and ties go alphabetical. Leave it blank and the AA is never bought automatically. This replaces the old checkbox. Checked AAs from before start at 1.

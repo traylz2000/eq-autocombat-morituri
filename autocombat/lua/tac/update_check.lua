@@ -9,8 +9,8 @@
 --   a version stamp, the newest CHANGELOG section, and one line per shipped
 --   file with its size and CRC-32. A check downloads that manifest and
 --   compares it with the files on disk, so it never depends on GitHub
---   releases (there are none) and finds every changed file, not just a
---   version number.
+--   releases (those only hold the MoriAC-full.zip installer) and finds every
+--   changed file, not just a version number.
 --
 -- Installing
 --   "Update now" downloads only the files that differ, from the same commit

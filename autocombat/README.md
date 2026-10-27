@@ -13,15 +13,14 @@ MoriAC is a fork of [Triune AutoCombat](https://github.com/gennro/TriuneAutocomb
 Step-by-step instructions with a check after each step are on the [main project page](../README.md). Short version:
 
 1. Download the latest **RoF2** MacroQuest from [macroquest/macroquest/releases](https://github.com/macroquest/macroquest/releases) and extract it somewhere like `C:\MacroQuest`.
-2. **Zone navmeshes and the game database** come from the upstream [Triune AutoCombat full release](https://github.com/gennro/TriuneAutocombat/releases/latest) (`TriuneAutocombat-full.zip`). Extract it into the root of your MacroQuest folder once.
-3. Copy this repo's `autocombat/lua` and `autocombat/config` folders over your MacroQuest folder. Overwrite if asked. Your own settings are never touched.
-4. Start `MacroQuest.exe`, then log into Project Morituri.
+2. Download **`MoriAC-full.zip`** from the [latest release](https://github.com/traylz2000/eq-autocombat-morituri/releases/latest) and extract it into your MacroQuest folder. It holds MoriAC (`lua/`, `config/`) plus the zone navmeshes and game database (`resources/`). Overwrite if asked. Your own settings are never touched.
+3. Start `MacroQuest.exe`, then log into Project Morituri.
 
 MoriAC opens by itself when you log in. If you close it, type `/ac` or `/lua run moriac` (or the short form `/lua run mac`). Only one copy runs at a time: starting the other name while one is running just prints a note.
 
-**Updating.** You only do the copy in step 3 once. After that MoriAC checks GitHub when it starts and tells you when an update is out. Type `/ac update install` (or click **Update Now** in the popup), then `/ac restart` on each character. To check yourself, open **Setup -> Update** and click **Check and Install**, or type `/ac update get`. It downloads only the files that changed, checks each one, and keeps the old copy as `.bak`. Your settings and `config/ingame.cfg` are never touched.
+**Updating.** You only download the full zip once. After that MoriAC checks GitHub when it starts and tells you when an update is out. Type `/ac update install` (or click **Update Now** in the popup), then `/ac restart` on each character. To check yourself, open **Setup -> Update** and click **Check and Install**, or type `/ac update get`. It downloads only the files that changed, checks each one, and keeps the old copy as `.bak`. Your settings and `config/ingame.cfg` are never touched.
 
-**Coming from Triune or the earlier Morituri port?** Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
+**Coming from Triune or the earlier Morituri port?** You already have `resources/`, so instead of the big zip you can just copy this repo's `autocombat/lua` and `autocombat/config` folders over your MacroQuest folder. Your settings carry over. On first start MoriAC reads your `triune_loadout_*` and plugin settings files and saves them under `moriac_*` names. The old files are left in place.
 
 > Windows users: add your MacroQuest folder as an antivirus exception before running it.
 
@@ -168,8 +167,8 @@ All paths are inside your MacroQuest folder.
 | `lua/moriac.lua` | The bot itself. |
 | `config/moriac_data.lua` | Spell, discipline and AA data for Project Morituri. |
 | `lua/tac/*.lua` | The plugins listed above. Drop your own `.lua` plugin here and it loads. |
-| `resources/gamedb/` | The offline game database (in both release zips). |
-| `resources/MQ2Nav/` | Zone navmeshes (full release only). |
+| `resources/gamedb/` | The offline game database (in `MoriAC-full.zip`). |
+| `resources/MQ2Nav/` | Zone navmeshes (in `MoriAC-full.zip`). |
 
 ---
 
@@ -182,7 +181,7 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 ## Links
 
 - [MoriAC on GitHub](https://github.com/traylz2000/eq-autocombat-morituri)
-- [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) (upstream; navmeshes and game database)
+- [Triune AutoCombat](https://github.com/gennro/TriuneAutocombat) (upstream, archived; the navmeshes and game database in `MoriAC-full.zip` are from its final V3.2 release, used with gennro's permission)
 - [MacroQuest releases (RoF2)](https://github.com/macroquest/macroquest/releases)
 - [Change log](CHANGELOG.md) - every change in detail
 
