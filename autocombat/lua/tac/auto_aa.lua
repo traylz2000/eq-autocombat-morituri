@@ -1673,10 +1673,18 @@ AA.STATUS_FILTERS = { { 'all', 'Any progress' }, { 'afford', 'Can buy now' }, { 
 -- True when item passes the class / tab / kind / progress filters.
 function AA.passesFilters(item, f, unspent)
     if f.class and f.class ~= '' then
+        -- "What this class can use": AAs matched to it, plus every AA with
+        -- no class restriction (General, Special, unmatched Archetype).
+        -- Hidden: AAs matched only to other classes, and Class-tab AAs not
+        -- matched to any class yet (with four classes they may be another
+        -- class's; the "class unknown" choice lists those).
         local set = AA.itemClasses(item)
+        local tab = AA.itemTab(item)
         if f.class == 'unsorted' then
-            if set or AA.itemTab(item) ~= 'Class' then return false end
-        elseif not (set and set[f.class]) then
+            if set or tab ~= 'Class' then return false end
+        elseif set then
+            if not set[f.class] then return false end
+        elseif tab == 'Class' then
             return false
         end
     end
@@ -2774,7 +2782,7 @@ end
 -- Row 3: class / tab / kind / progress filters.
 function AA.drawFilters()
     local classOpts = { { '', 'All classes' } }
-    for _, c in ipairs(core.myClasses or {}) do classOpts[#classOpts + 1] = { c, c .. ' AAs' } end
+    for _, c in ipairs(core.myClasses or {}) do classOpts[#classOpts + 1] = { c, 'Usable by ' .. c } end
     classOpts[#classOpts + 1] = { 'unsorted', 'Class AAs, class unknown' }
     local changed = false
     local function pick(key, id, opts, width, tip)
@@ -2782,8 +2790,10 @@ function AA.drawFilters()
         if ch then ctrl[key] = v; changed = true end
         if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', tip) end
     end
-    pick('auto_aa_f_class', '##aaFClass', classOpts, 130,
-        'Show the AAs of one of your classes (archetype AAs that class can use count too).\n'
+    pick('auto_aa_f_class', '##aaFClass', classOpts, 140,
+        'Everything one of your classes can use: its own AAs, the archetype AAs it\n'
+        .. 'qualifies for, and the General / Special AAs every class gets.\n'
+        .. 'Pick the Class tab next to it for that class\'s own AAs only.\n'
         .. 'Class data is partial until the server export arrives: "class unknown" lists\n'
         .. 'Class-tab AAs that are not matched to a class yet.')
     ImGui.SameLine()
