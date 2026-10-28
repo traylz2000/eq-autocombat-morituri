@@ -1,11 +1,11 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.28.0113
+version=2026.10.28.0114
 date=2026-10-28
-commit=f89f60f
+commit=d430102
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1204622 43d83c07
+file=lua/moriac.lua 1204682 b2214fac
 file=lua/tac/alerts.lua 24590 4c48e914
 file=lua/tac/auto_aa.lua 162760 b397bf52
 file=lua/tac/auto_accept.lua 30602 0c1987dd

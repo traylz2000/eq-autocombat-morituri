@@ -23998,11 +23998,12 @@ end
 mq.event('MoriacFallen', '#1# has fallen to the ground.#*#', function(_, who)
     local me = ''
     pcall(function() me = mq.TLO.Me.CleanName() or '' end)
+    if not ctrl.running then return end
     if who and me ~= '' and who == me then runtime.fellAt = os.clock() end
 end)
 
 function runtime.standIfKnockedDown()
-    if ctrl.stand_knockdown == false then return end
+    if not ctrl.running or ctrl.stand_knockdown == false then return end
     if runtime.medBreakActive or runtime.pullHpRest then return end
     local now = os.clock()
     if (now - (runtime.ownFeignAt or -100)) < 15 then return end
