@@ -4,7 +4,7 @@
 
 ## 2026-10-28
 
-- **Gets back up after being knocked down.** Some Plane of Time mobs knock you down to sitting, and the client's walk-to-stand doesn't undo it, so MoriAC kept fighting (or trying to run) from the floor until you pressed the sit/stand key. Now, whenever you're sitting while a mob is on your XTarget, you're in combat, or MoriAC is moving you, it sends `/stand` (at most twice a second) and prints "Knocked down -- standing up." once. Med Break and the Puller's HP rest still sit on purpose and aren't affected.
+- **Gets back up after being knocked down.** Some Plane of Time mobs knock you to the ground ("<you> has fallen to the ground.", the same message as feign death). Walking doesn't undo it, and MoriAC paused while you were down because it treats feign death as on purpose, so you had to press the sit/stand key yourself. Now MoriAC spots the message or the stuck sit / feign state, and while a mob is on your XTarget (or you're in combat or moving) it sends `/stand`. It does this at most twice a second and prints "Knocked down -- standing up." once. MoriAC's own Feign Death casts are left alone for 15 seconds, and Med Break and the Puller's HP rest still sit on purpose. The setting is **Stand up when knocked down** under Setup -> Settings, next to the enrage option. It's on by default; turn it off if you feign death by hand mid-fight.
 
 ## 2026-10-27
 

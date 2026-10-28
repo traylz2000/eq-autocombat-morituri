@@ -398,6 +398,7 @@ local function defaultCtrl()
         ranged_dist          = 40,
         los_face_only        = false,
         enrage_stop          = true,  -- stop melee auto-attack and back pets off while the target is enraged
+        stand_knockdown      = true,  -- stand back up when a mob knocks us down / forces feign death mid-fight
         ma_name              = '',
         ma_id                = 0,
         custom_ma_list       = {},
@@ -14418,6 +14419,19 @@ function UI.drawSettingsTab()
                 .. 'Spells, bow auto-fire and other actions keep going. On by default.')
         end
 
+        local kdVal = ImGui.Checkbox('Stand Up When Knocked Down##standKnockdown', ctrl.stand_knockdown ~= false)
+        if kdVal ~= (ctrl.stand_knockdown ~= false) then
+            ctrl.stand_knockdown = kdVal
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('%s',
+                'Some mobs (Plane of Time) knock you to the ground: "<you> has fallen\n'
+                .. 'to the ground." On: while a mob is on XTarget, MoriAC sends /stand.\n'
+                .. 'Its own Feign Death casts are left alone. Turn this off if you feign\n'
+                .. 'death by hand mid-fight. On by default.')
+        end
+
         accent(GOLD, 'Spell Failures & Lockouts:')
         UI.formLabel('Retries before lockout')
         local retriesVal = ImGui.SliderInt('##cmr', ctrl.cast_max_retries or 2, 1, 10)
@@ -18607,6 +18621,7 @@ mq.event('TriunePetExists2', '#*#already have a pet#*#', function() onPetSummonR
 
 function runtime.castGem(i, g, id)
     local isFD = isFeignDeathAbility(g and g.spell)
+    if isFD then runtime.ownFeignAt = os.clock() end
     if not isFD and (isSitting() or isDucking()) then
         mq.cmd('/stand')
         mq.delay(50)
@@ -18769,6 +18784,7 @@ function runtime.fireAA(name, a, id)
     if type(name) == 'string' then name = name:match('^%s*(.-)%s*$') end
     if not name or name == '' then return false end
     local isFD = isFeignDeathAbility(name)
+    if isFD then runtime.ownFeignAt = os.clock() end
     if not isFD and (isSitting() or isDucking()) then
         mq.cmd('/stand')
     end
@@ -19207,6 +19223,7 @@ end
 runtime.fireSkill = function(name, a, id)
     if not name or name == '' then return false end
     local isFD = isFeignDeathAbility(name)
+    if isFD then runtime.ownFeignAt = os.clock() end
     if not isFD and (isSitting() or isDucking()) then
         mq.cmd('/stand')
     end
@@ -23971,19 +23988,32 @@ end
 -- ============================================================================
 -- Knockdown recovery
 -- ============================================================================
--- Some mobs (Plane of Time) knock the character down to sitting. The client's
--- move-to-stand doesn't undo it, and the stand checks elsewhere only run on the
--- engage path, so the bot fought (or tried to nav) from the floor. While a
--- hater is up or we're meant to be moving, send /stand -- the same as the
--- sit/stand hotkey. Med break and Puller HP rest sit on purpose and are skipped.
+-- Some Plane of Time mobs knock the character to the ground: chat shows
+-- "<me> has fallen to the ground." (the feign death message) and the client
+-- holds us sitting / feigned until the sit/stand key is pressed. Moving doesn't
+-- undo it, and the combat tick pauses while feigned, so the bot sat there.
+-- While a hater is up, in combat or moving, send /stand -- what the key does.
+-- Our own Feign Death (fired in the last 15 s), med break and Puller HP rest
+-- are left alone.
+mq.event('MoriacFallen', '#1# has fallen to the ground.#*#', function(_, who)
+    local me = ''
+    pcall(function() me = mq.TLO.Me.CleanName() or '' end)
+    if who and me ~= '' and who == me then runtime.fellAt = os.clock() end
+end)
+
 function runtime.standIfKnockedDown()
+    if ctrl.stand_knockdown == false then return end
     if runtime.medBreakActive or runtime.pullHpRest then return end
-    local sitting, state = false, ''
+    local now = os.clock()
+    if (now - (runtime.ownFeignAt or -100)) < 15 then return end
+    local sitting, feigning, state = false, false, ''
     pcall(function()
         sitting = mq.TLO.Me.Sitting() or false
+        feigning = mq.TLO.Me.Feigning() or false
         state = tostring(mq.TLO.Me.State() or '')
     end)
-    if not sitting and state ~= 'SIT' then
+    local fell = (now - (runtime.fellAt or -100)) < 3
+    if not (sitting or feigning or fell or state == 'SIT' or state == 'FEIGN') then
         runtime.knockdownSince = nil
         return
     end
@@ -23991,9 +24021,8 @@ function runtime.standIfKnockedDown()
     pcall(function()
         threat = mq.TLO.Me.Combat() or (mq.TLO.Me.XTHaterCount() or 0) > 0
     end)
-    if not threat then threat = runtime.anyXtarAlive(true) or isMoveActive() end
+    if not threat then threat = fell or runtime.anyXtarAlive(true) or isMoveActive() end
     if not threat or isCasting() then return end
-    local now = os.clock()
     if (now - (runtime.lastKnockdownStandAt or 0)) < 0.5 then return end
     runtime.lastKnockdownStandAt = now
     if not runtime.knockdownSince then
@@ -24060,6 +24089,7 @@ local function combatTick()
         runtime.deathGuardFired = false
         print('\ag[MoriAC]\ax character is alive again -- resuming.')
     end
+    if runtime.standIfKnockedDown then runtime.standIfKnockedDown() end
     local isFeigning = false
     pcall(function() isFeigning = mq.TLO.Me.Feigning() or false end)
     if isFeigning then
@@ -24138,7 +24168,6 @@ local function combatTick()
         end
         return
     end
-    if runtime.standIfKnockedDown then runtime.standIfKnockedDown() end
 
     updatePetTracking()
 
