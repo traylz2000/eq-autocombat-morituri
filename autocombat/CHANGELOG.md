@@ -2,6 +2,10 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-28
+
+- **Gets back up after being knocked down.** Some Plane of Time mobs knock you down to sitting, and the client's walk-to-stand doesn't undo it, so MoriAC kept fighting (or trying to run) from the floor until you pressed the sit/stand key. Now, whenever you're sitting while a mob is on your XTarget, you're in combat, or MoriAC is moving you, it sends `/stand` (at most twice a second) and prints "Knocked down -- standing up." once. Med Break and the Puller's HP rest still sit on purpose and aren't affected.
+
 ## 2026-10-27
 
 - **Enrage alerts are loud now (`lua/tac/alerts.lua` 1.1.0).** Enrage, Rampage and Summoned play a built-in alarm, three loud rising whoops, instead of the quiet `/beep` ding. Each trigger's **Sound** is now a picker: **Alarm (loud, built in)**, **Beep (quiet)** or **Sound file (.wav)**. The alarm is `config/moriac_alarm.wav` and plays through Windows' own sound player, so it doesn't hold up the game. If a sound can't be played, the alert beeps instead. Saved alerts switch over on their own: the default Enrage, Rampage and Summoned triggers move to the alarm, and any sound you picked yourself stays. Try it with `/ac alerts test 1`.

@@ -23968,6 +23968,41 @@ local function manualMovePolicy(engaged, approaching)
     return ctrl.manual_auto_nav and 'move' or 'wait'
 end
 
+-- ============================================================================
+-- Knockdown recovery
+-- ============================================================================
+-- Some mobs (Plane of Time) knock the character down to sitting. The client's
+-- move-to-stand doesn't undo it, and the stand checks elsewhere only run on the
+-- engage path, so the bot fought (or tried to nav) from the floor. While a
+-- hater is up or we're meant to be moving, send /stand -- the same as the
+-- sit/stand hotkey. Med break and Puller HP rest sit on purpose and are skipped.
+function runtime.standIfKnockedDown()
+    if runtime.medBreakActive or runtime.pullHpRest then return end
+    local sitting, state = false, ''
+    pcall(function()
+        sitting = mq.TLO.Me.Sitting() or false
+        state = tostring(mq.TLO.Me.State() or '')
+    end)
+    if not sitting and state ~= 'SIT' then
+        runtime.knockdownSince = nil
+        return
+    end
+    local threat = false
+    pcall(function()
+        threat = mq.TLO.Me.Combat() or (mq.TLO.Me.XTHaterCount() or 0) > 0
+    end)
+    if not threat then threat = runtime.anyXtarAlive(true) or isMoveActive() end
+    if not threat or isCasting() then return end
+    local now = os.clock()
+    if (now - (runtime.lastKnockdownStandAt or 0)) < 0.5 then return end
+    runtime.lastKnockdownStandAt = now
+    if not runtime.knockdownSince then
+        runtime.knockdownSince = now
+        print(string.format('\ay[MoriAC]\ax Knocked down (state %s) -- standing up.', state))
+    end
+    mq.cmd('/stand')
+end
+
 local function combatTick()
     runtime.wpBeginTick()
     local fullStop = runtime.fullStop
@@ -24103,6 +24138,7 @@ local function combatTick()
         end
         return
     end
+    if runtime.standIfKnockedDown then runtime.standIfKnockedDown() end
 
     updatePetTracking()
 
