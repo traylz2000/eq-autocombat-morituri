@@ -1,13 +1,13 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.28.0114
+version=2026.10.28.0116
 date=2026-10-28
-commit=d430102
+commit=9b1ed71
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
 file=lua/moriac.lua 1204682 b2214fac
 file=lua/tac/alerts.lua 24590 4c48e914
-file=lua/tac/auto_aa.lua 162760 b397bf52
+file=lua/tac/auto_aa.lua 163494 88097c8c
 file=lua/tac/auto_accept.lua 30602 0c1987dd
 file=lua/tac/boxnet.lua 81199 bcb3dfa5
 file=lua/tac/buffbot.lua 106761 8bf92ebd
@@ -34,6 +34,8 @@ file=lua/tac/timers.lua 13890 b6f7ca1a
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-28
+note=
+note=- **Editing an Auto AA priority no longer changes the AAs below it (`lua/tac/auto_aa.lua` 1.4.1).** Changing a Priority number gave every AA below it the same number. Clearing the box to type a new one removed that AA and every AA below it from the list. Each row's box was tied to its position in the list. When an edit re-sorted the list or removed a row, the next AA moved into the box you were still typing in and picked up the same edit. Boxes now stay with their AA. A cleared box only removes the AA's priority once you click away, so you can delete a number and type a new one.
 note=
 note=- **Gets back up after being knocked down.** Some Plane of Time mobs knock you to the ground ("<you> has fallen to the ground.", the same message as feign death). Walking doesn't undo it, and MoriAC paused while you were down because it treats feign death as on purpose, so you had to press the sit/stand key yourself. Now MoriAC spots the message or the stuck sit / feign state, and while a mob is on your XTarget (or you're in combat or moving) it sends `/stand`. It does this at most twice a second and prints "Knocked down -- standing up." once. MoriAC's own Feign Death casts are left alone for 15 seconds, and Med Break and the Puller's HP rest still sit on purpose. The setting is **Stand up when knocked down** under Setup -> Settings, next to the enrage option. It's on by default; turn it off if you feign death by hand mid-fight.
 note=

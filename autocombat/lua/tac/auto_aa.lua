@@ -25,7 +25,7 @@
 local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
-    version            = '1.4.0',
+    version            = '1.4.1',
     author             = 'MoriAC',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
@@ -2843,12 +2843,25 @@ function AA.prioInput(name, id)
     if ImGui.IsItemHovered() then
         ImGui.SetTooltip('%s', 'Priority 1-9: 1 is bought first, ties go alphabetical.\nLeave it blank and this AA is never bought automatically.')
     end
+    -- A blank box clears the priority only once it loses focus: clearing
+    -- while it was still being edited dropped the row mid-edit ("1" -> "" ->
+    -- "3"), and the AA that slid into its place was cleared by the same
+    -- still-empty box, and so on down the list.
+    AA.prioBlankEdit = AA.prioBlankEdit or {}
+    local active = ImGui.IsItemActive()
+    if type(txt) == 'string' and active then
+        AA.prioBlankEdit[name] = (not txt:match('%S')) or nil
+    end
+    if not active and AA.prioBlankEdit[name] then
+        AA.prioBlankEdit[name] = nil
+        if cur == nil then return false end
+        AA.setPrioNum(name, nil)
+        return true
+    end
     if type(txt) ~= 'string' then return false end
     local n = AA.parsePrioNum(txt)
-    if n == cur then return false end
-    -- an unfinished edit like "1" -> "" -> "3" passes through blank; only a
-    -- blank box clears, anything else that is not 1-9 is ignored
-    if n == nil and txt:match('%S') then return false end
+    -- blank (handled above on losing focus) or not 1-9: ignored
+    if n == nil or n == cur then return false end
     AA.setPrioNum(name, n)
     return true
 end
@@ -2904,8 +2917,8 @@ function AA.drawPriorityPanel(unspentAA)
             ImGui.TableSetupColumn('##rm', ImGuiTableColumnFlags.WidthFixed, core.px(24))
             ImGui.TableHeadersRow()
             local removeName
-            for i, nm in ipairs(prios) do
-                ImGui.PushID('prio' .. i)
+            for _, nm in ipairs(prios) do
+                ImGui.PushID('prio_' .. nm)
                 ImGui.TableNextRow()
                 local sc = AA.scannedAAMap and AA.scannedAAMap[nm]
                 local rank = sc and tonumber(sc.rank) or 0
@@ -3196,7 +3209,9 @@ function AA.drawWindow()
             -- rebuilt by every scan); only the rows the clipper shows draw.
             local function drawRow(i, itm)
                 ImGui.TableNextRow()
-                ImGui.PushID(i)
+                -- keyed by name, not row: a priority edit re-sorts the rows,
+                -- and an index ID handed the box being typed in to the next AA
+                ImGui.PushID('aa_' .. tostring(itm.name or i))
                 local ui = itm.ui
                 if not ui then
                     ui = {

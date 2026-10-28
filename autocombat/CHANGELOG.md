@@ -4,6 +4,8 @@
 
 ## 2026-10-28
 
+- **Editing an Auto AA priority no longer changes the AAs below it (`lua/tac/auto_aa.lua` 1.4.1).** Changing a Priority number gave every AA below it the same number. Clearing the box to type a new one removed that AA and every AA below it from the list. Each row's box was tied to its position in the list. When an edit re-sorted the list or removed a row, the next AA moved into the box you were still typing in and picked up the same edit. Boxes now stay with their AA. A cleared box only removes the AA's priority once you click away, so you can delete a number and type a new one.
+
 - **Gets back up after being knocked down.** Some Plane of Time mobs knock you to the ground ("<you> has fallen to the ground.", the same message as feign death). Walking doesn't undo it, and MoriAC paused while you were down because it treats feign death as on purpose, so you had to press the sit/stand key yourself. Now MoriAC spots the message or the stuck sit / feign state, and while a mob is on your XTarget (or you're in combat or moving) it sends `/stand`. It does this at most twice a second and prints "Knocked down -- standing up." once. MoriAC's own Feign Death casts are left alone for 15 seconds, and Med Break and the Puller's HP rest still sit on purpose. The setting is **Stand up when knocked down** under Setup -> Settings, next to the enrage option. It's on by default; turn it off if you feign death by hand mid-fight.
 
 ## 2026-10-27
