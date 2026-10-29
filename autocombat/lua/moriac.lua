@@ -5557,7 +5557,7 @@ function runtime.applyEntry(e)
             if type(g) == 'table' then
                 g.gem = tonumber(g.gem) or math.min(i, 12)
                 if g.gem < 1 then g.gem = 1 end
-                if g.gem > 12 then g.gem = 12 end
+                if g.gem > 13 then g.gem = 12 end -- 13 = Spell Bar 2 (runtime.BAR2_GEM)
                 table.insert(loadout.gems, g)
             end
         end
@@ -9397,6 +9397,15 @@ end
 
 function UI.computeGemStatusBadge(i, g)
     local gemSlot = tonumber(g.gem) or i
+    local b2 = (gemSlot >= runtime.BAR2_GEM or not isGemMatching(gemSlot, g.spell)) and runtime.bar2Slot(g.spell) or nil
+    if b2 and not runtime.bar2Ready(g.spell) then
+        local left = (runtime.bar2ReadyAt[g.spell] or 0) - os.clock()
+        return GOLD, string.format('[%.1fs]', left), string.format('Spell Bar 2 slot %d: recharging (%.1f seconds remaining)', b2, left)
+    elseif b2 then
+        return GOOD, '[B2]', string.format('Ready on Spell Bar 2, slot %d.', b2)
+    elseif gemSlot >= runtime.BAR2_GEM then
+        return WARN, '[NOT ON BAR 2]', string.format('"%s" is not on Spell Bar 2. Right-click a slot on that bar to put it there.', g.spell)
+    end
     if runtime.isSwitchingSpells and runtime.switchingSlot == gemSlot and runtime.switchingSpellName == g.spell then
         return WARN, '[MEM*]', string.format('Currently memorizing "%s" into Gem %d...', g.spell, gemSlot)
     end
@@ -9473,7 +9482,7 @@ UI.PCT_WHENS = {
 }
 UI.XT_OPTS = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
 UI.MAXCAST_OPTS = { 'Unlimited', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10' }
-UI.GEM_OPTS = { 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12' }
+UI.GEM_OPTS = { 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12', 'Bar 2' }
 runtime.actSel = runtime.actSel or {}
 
 -- Width / height left in the current window or child, whichever shape the
@@ -9904,7 +9913,7 @@ function UI.drawSpellTable(gems, h)
         if nv ~= on then UI.setEntryOn(g, 'spell', nv); runtime.saveLoadout(true) end
         local muted = UI.pushRowMuted(on)
         ImGui.TableNextColumn(); ImGui.Text(tostring(i))
-        ImGui.TableNextColumn(); ImGui.Text('G' .. tostring(tonumber(g.gem) or i))
+        ImGui.TableNextColumn(); ImGui.Text((tonumber(g.gem) or i) >= runtime.BAR2_GEM and 'B2' or ('G' .. tostring(tonumber(g.gem) or i)))
         ImGui.TableNextColumn()
         if g.spell and g.spell ~= '' then
             local bc, bt, btip = UI.getGemStatusBadge(i, g)
@@ -9973,8 +9982,10 @@ function UI.drawSpellDetail(gems, i)
 
     local cls = g.cls
     if UI.beginForm('##spellWhat') then
-        UI.formCell('Gem', 'Spell gem it is cast from. Several lines can share a gem; it is swapped in when needed.')
-        local curGem = math.max(1, math.min(12, tonumber(g.gem) or 1))
+        UI.formCell('Gem', 'Spell gem it is cast from. Several lines can share a gem; it is swapped in when needed.\n'
+            .. 'Bar 2: cast from the server\'s Spell Bar 2. Put the spell on that bar yourself (right-click a slot);\n'
+            .. 'MoriAC finds the slot and casts it with /bar2 cast. Bar 2 is never auto-memorized.')
+        local curGem = math.max(1, math.min(#UI.GEM_OPTS, tonumber(g.gem) or 1))
         local newGem = ImGui.Combo('##spGem', curGem, UI.GEM_OPTS)
         if newGem ~= curGem then g.gem = newGem; changed = true end
 
@@ -18619,6 +18630,80 @@ mq.event('TriuneNoMana', '#*#enough mana#*#', function() onFailureEvent('insuffi
 mq.event('TriunePetExists1', '#*#cannot have more than one pet#*#', function() onPetSummonRefused() end)
 mq.event('TriunePetExists2', '#*#already have a pet#*#', function() onPetSummonRefused() end)
 
+-- ============================================================================
+-- Spell Bar 2 (Morituri)
+-- ============================================================================
+-- The server's second spell bar is an add-on window (SpellBar2Wnd, buttons
+-- Slot1-12), not extra gems: Me.NumGems stays 12 and Me.Gem / SpellReady
+-- never see it. Each slot's tooltip names its spell and "/bar2 cast N" casts
+-- it. A line set to the "Bar 2" gem casts from whichever slot holds its spell;
+-- the player loads the bar with its right-click menu (no auto-mem). Its
+-- recast is not visible to MQ, so it is tracked here: a short hold on the
+-- click, then cast time + recast once the cast is seen starting.
+runtime.BAR2_GEM, runtime.BAR2_SLOTS = 13, 12
+runtime.bar2ReadyAt = {}
+
+-- slot -> spell name, read from the slot tooltips (cached for a second)
+function runtime.bar2Names()
+    local now = os.clock()
+    if runtime.bar2Cache and (now - runtime.bar2CacheAt) < 1.0 then return runtime.bar2Cache end
+    local names = {}
+    pcall(function()
+        local w = mq.TLO.Window('SpellBar2Wnd')
+        if not w() then return end
+        for s = 1, runtime.BAR2_SLOTS do
+            local tip = w.Child('Slot' .. s).Tooltip()
+            if tip and tip ~= '' and tip ~= 'NULL' then names[s] = tostring(tip) end
+        end
+    end)
+    runtime.bar2Cache, runtime.bar2CacheAt = names, now
+    return names
+end
+
+-- the Bar 2 slot holding spellName, or nil
+function runtime.bar2Slot(spellName)
+    if not spellName or spellName == '' then return nil end
+    for s, nm in pairs(runtime.bar2Names()) do
+        if isGemMatching(nm, spellName) then return s end
+    end
+    return nil
+end
+
+function runtime.bar2Ready(spellName)
+    return os.clock() >= (runtime.bar2ReadyAt[spellName] or 0)
+end
+
+function runtime.bar2Clicked(spellName, sp)
+    local castSec, recast = 0, 0
+    pcall(function() castSec = (tonumber(sp.CastTime()) or 0) / 1000 end)
+    recast = parseSpellRecastTime(sp)
+    local now = os.clock()
+    if castSec <= 0 then
+        -- instant: nothing to watch for, start the recast now
+        runtime.bar2ReadyAt[spellName] = now + math.max(recast, 1.5)
+    else
+        runtime.bar2ReadyAt[spellName] = now + 1.5
+        runtime.bar2Pending = { spell = spellName, castSec = castSec, recast = recast, at = now }
+    end
+end
+
+-- Called every tick: once the clicked Bar 2 spell shows as casting, its
+-- recast runs from the end of the cast. Not seen in 3 s: it never started
+-- (not ready, fizzled before the bar), so the short hold stands.
+function runtime.bar2NoteCasting()
+    local pend = runtime.bar2Pending
+    if not pend then return end
+    local now = os.clock()
+    local casting = nil
+    pcall(function() casting = mq.TLO.Me.Casting.Name() end)
+    if casting and isGemMatching(casting, pend.spell) then
+        runtime.bar2ReadyAt[pend.spell] = now + pend.castSec + math.max(pend.recast, 0)
+        runtime.bar2Pending = nil
+    elseif (now - pend.at) > 3.0 then
+        runtime.bar2Pending = nil
+    end
+end
+
 function runtime.castGem(i, g, id)
     local isFD = isFeignDeathAbility(g and g.spell)
     if isFD then runtime.ownFeignAt = os.clock() end
@@ -18647,6 +18732,11 @@ function runtime.castGem(i, g, id)
     pcall(function()
         isMemmed = isGemMatching(i, g.spell) or (mq.TLO.Me.Gem(g.spell)() ~= nil)
     end)
+    local bar2 = nil
+    if not isMemmed then
+        bar2 = runtime.bar2Slot(g.spell)
+        isMemmed = bar2 ~= nil
+    end
     if not isMemmed then return false end -- not memmed
     local spMana = tonumber(sp.Mana() or 0) or 0
     local curMana = tonumber(mq.TLO.Me.CurrentMana() or 0) or 0
@@ -18655,7 +18745,11 @@ function runtime.castGem(i, g, id)
     local minMana = tonumber(ctrl and ctrl.min_mana_pct) or 0
     local pctMana = tonumber(mq.TLO.Me.PctMana() or 100) or 100
     if not isHeal and not ctrl.burn and minMana > 0 and pctMana < minMana then return false end
-    if not mq.TLO.Me.SpellReady(g.spell)() then return false end
+    if bar2 then
+        if not runtime.bar2Ready(g.spell) then return false end
+    elseif not mq.TLO.Me.SpellReady(g.spell)() then
+        return false
+    end
 
     local dur = 0
     pcall(function() dur = tonumber(sp.Duration()) or 0 end)
@@ -18713,7 +18807,12 @@ function runtime.castGem(i, g, id)
             return false
         end
     end
-    mq.cmdf('/cast "%s"', g.spell)
+    if bar2 then
+        mq.cmdf('/bar2 cast %d', bar2)
+        runtime.bar2Clicked(g.spell, sp)
+    else
+        mq.cmdf('/cast "%s"', g.spell)
+    end
     runtime.lastCast[key] = os.clock()
     if runtime.cureFiredFor then runtime.cureFiredFor(g, id, g.spell) end
     if id and id > 0 and g and g.spell and g.spell ~= '' then
@@ -19470,6 +19569,10 @@ function runtime.processHealPriority()
                             isMemmed = true
                         end
                     end
+                    if wanted and not isMemmed then
+                        local b2 = runtime.bar2Slot(g.spell)
+                        if b2 then actualGem = runtime.BAR2_GEM - 1 + b2; isMemmed = true end
+                    end
                     if isMemmed then
                         if pctVal > 0 then
                             if id and isSpawnAlive(id) then
@@ -19480,7 +19583,11 @@ function runtime.processHealPriority()
                                         local spMana = (sp and sp() and tonumber(sp.Mana() or 0)) or 0
                                         local curMana = tonumber(mq.TLO.Me.CurrentMana() or 0) or 0
                                         local ready = false
-                                        pcall(function() ready = mq.TLO.Me.SpellReady(g.spell)() end)
+                                        if actualGem >= runtime.BAR2_GEM then
+                                            ready = runtime.bar2Ready(g.spell)
+                                        else
+                                            pcall(function() ready = mq.TLO.Me.SpellReady(g.spell)() end)
+                                        end
                                         -- mirror castGem's own refusals (per-gem 1.2s throttle,
                                         -- duration heal already on the target) so an entry
                                         -- castGem would reject can't outrank one it would cast
@@ -23830,7 +23937,9 @@ function runtime.processDowntimeBuffing()
                     local pctVal = tonumber(g.pct) or 100
                     if pctVal > 0 and (not g.burn_only or ctrl.burn) then
                         local targetGemSlot = tonumber(g.gem) or math.min(i, 12)
-                        local targetId = runtime.resolveTargetId(g.target, g.cls, g.when, g.spell, pctVal)
+                        -- Bar 2 lines can't be swapped in: only take them when the spell is on that bar
+                        local bar2Ok = targetGemSlot <= getNumGems() or runtime.bar2Slot(g.spell) ~= nil
+                        local targetId = bar2Ok and runtime.resolveTargetId(g.target, g.cls, g.when, g.spell, pctVal)
                         if targetId and targetId > 0 and runtime.conditionMet(g.when, pctVal, g.spell, targetId, g.cls, g.target, g) then
                             local lockedOut = castTracker and castTracker.isLockedOut(g.spell, targetId, g.kind)
                             local hasReagents = hasSpellReagents(g.spell)
@@ -23856,6 +23965,15 @@ function runtime.processDowntimeBuffing()
                 local s = nil
                 pcall(function() s = mq.TLO.Me.Gem(candidate.spell)() end)
                 if s and s > 0 then curSlot = s end
+            end
+            if not curSlot then
+                local b2 = runtime.bar2Slot(candidate.spell)
+                if b2 then
+                    if runtime.bar2Ready(candidate.spell) then
+                        runtime.castGem(runtime.BAR2_GEM - 1 + b2, candidate, candidateTargetId)
+                    end
+                    return
+                end
             end
 
             if curSlot then
@@ -24172,6 +24290,7 @@ local function combatTick()
 
     updatePetTracking()
 
+    runtime.bar2NoteCasting()
     local isCastingNow = isCastingOrStarting()
 
     if isCastingNow then
@@ -25427,6 +25546,10 @@ local function combatTick()
                             actualGem = otherSlot
                             isMemmed = true
                         end
+                    end
+                    if not isMemmed then
+                        local b2 = runtime.bar2Slot(g.spell)
+                        if b2 then actualGem = runtime.BAR2_GEM - 1 + b2; isMemmed = true end
                     end
 
                     if isMemmed then

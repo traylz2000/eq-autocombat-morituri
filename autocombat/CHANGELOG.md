@@ -2,6 +2,10 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-29
+
+- **Spells can be cast from the server's Spell Bar 2.** On the Spells page, a line's **Gem** now has a **Bar 2** choice after G1-G12. Put the spell on Spell Bar 2 yourself (right-click a slot and pick it). MoriAC reads each slot's tooltip to find which slot holds the spell, and casts it with `/bar2 cast N`, so it doesn't matter which slot you use. MacroQuest can't see Bar 2's cooldowns, so MoriAC times the recast itself: it waits 1.5 s after the click, then the cast time plus the spell's recast once the cast starts. The line's status shows **B2** when the spell is ready on Bar 2, a countdown while it's recharging, and **NOT ON BAR 2** if the spell isn't on the bar. Bar 2 is never auto-memorized, so the Mem buttons and downtime swaps leave it alone. Lines on G1-G12 work as before, and a spell set to a normal gem that you've also put on Bar 2 gets cast from Bar 2 when it isn't memorized on the normal bar.
+
 ## 2026-10-28
 
 - **Editing an Auto AA priority no longer changes the AAs below it (`lua/tac/auto_aa.lua` 1.4.1).** Changing a Priority number gave every AA below it the same number. Clearing the box to type a new one removed that AA and every AA below it from the list. Each row's box was tied to its position in the list. When an edit re-sorted the list or removed a row, the next AA moved into the box you were still typing in and picked up the same edit. Boxes now stay with their AA. A cleared box only removes the AA's priority once you click away, so you can delete a number and type a new one.
