@@ -1,11 +1,11 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.29.2211
+version=2026.10.29.2216
 date=2026-10-29
-commit=5739eeb
+commit=13dc81c
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1210381 5d86a7b9
+file=lua/moriac.lua 1211321 a212eb10
 file=lua/tac/alerts.lua 24590 4c48e914
 file=lua/tac/auto_aa.lua 163494 88097c8c
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -36,4 +36,5 @@ file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-29
 note=
 note=- **Spells can be cast from the server's Spell Bar 2.** On the Spells page, a line's **Gem** now has a **Bar 2** choice after G1-G12. Put the spell on Spell Bar 2 yourself (right-click a slot and pick it). MoriAC reads each slot's tooltip to find which slot holds the spell, and casts it with `/bar2 cast N`, so it doesn't matter which slot you use. MacroQuest can't see Bar 2's cooldowns, so MoriAC times the recast itself: it waits 1.5 s after the click, then the cast time plus the spell's recast once the cast starts. The line's status shows **B2** when the spell is ready on Bar 2, a countdown while it's recharging, and **NOT ON BAR 2** if the spell isn't on the bar. Bar 2 is never auto-memorized, so the Mem buttons and downtime swaps leave it alone. Lines on G1-G12 work as before, and a spell set to a normal gem that you've also put on Bar 2 gets cast from Bar 2 when it isn't memorized on the normal bar.
+note=  - **Import Bar** (and `/ac importbar`, and **Use my spell bar**) now reads Spell Bar 2 too. Its spells come in as **Bar 2** lines after the normal gems, in slot order. A spell that's also on the normal bar is only added once. Your old Bar 2 lines are replaced by what's on Bar 2. If Bar 2 is empty, they're kept.
 note=

@@ -5394,6 +5394,9 @@ function runtime.importCurrentGems(targetGemsTable)
     targetGemsTable = targetGemsTable or loadout.gems
     local newGems = {}
     local numG = getNumGems()
+    -- gems 1-12, then Spell Bar 2 (slot order) as "Bar 2" lines; a spell
+    -- already on the main bar isn't added twice
+    local found = {}
     for i = 1, numG do
         local nm
         pcall(function()
@@ -5402,32 +5405,52 @@ function runtime.importCurrentGems(targetGemsTable)
                 nm = g.Name()
             end
         end)
-        if nm and nm ~= '' and nm ~= 'NULL' then
-            local cls, bene, kind = spellClassInfo(nm)
-            local tgt, wn, pc = defaultsForKind(kind, bene)
-            table.insert(newGems, {
-                gem = i,
-                cls = cls,
-                spell = nm,
-                target = tgt,
-                when = wn,
-                pct = pc,
-                min_xtar = 1,
-                max_casts = 0,
-                burn_only = false,
-                keep_singing = (cls == 'Brd' and not bene) or nil,
-            })
+        if nm and nm ~= '' and nm ~= 'NULL' then found[#found + 1] = { gem = i, spell = nm } end
+    end
+    runtime.bar2Cache = nil
+    local bar2 = runtime.bar2Names()
+    local bar2Count = 0
+    for slot = 1, runtime.BAR2_SLOTS do
+        local nm = bar2[slot]
+        if nm then
+            local dup = false
+            for _, f in ipairs(found) do
+                if isGemMatching(f.spell, nm) then dup = true; break end
+            end
+            if not dup then
+                found[#found + 1] = { gem = runtime.BAR2_GEM, spell = nm }
+                bar2Count = bar2Count + 1
+            end
         end
+    end
+    for _, f in ipairs(found) do
+        local i, nm = f.gem, f.spell
+        local cls, bene, kind = spellClassInfo(nm)
+        local tgt, wn, pc = defaultsForKind(kind, bene)
+        table.insert(newGems, {
+            gem = i,
+            cls = cls,
+            spell = nm,
+            target = tgt,
+            when = wn,
+            pct = pc,
+            min_xtar = 1,
+            max_casts = 0,
+            burn_only = false,
+            keep_singing = (cls == 'Brd' and not bene) or nil,
+        })
     end
     -- Retain configured entries bound to gem slots beyond the physical bar.
     -- loadout.gems is a priority list (index ~= slot; several entries can share
     -- a slot), so filter on the entry's own `gem`, not its list position.
+    -- Bar 2 lines are replaced when Bar 2 had spells, kept when it was empty.
     if not targetGemsTable then
         targetGemsTable = {}
         loadout.gems = targetGemsTable
     end
     for _, e in ipairs(targetGemsTable) do
-        if type(e) == 'table' and (tonumber(e.gem) or 1) > numG then
+        local eg = type(e) == 'table' and (tonumber(e.gem) or 1) or 0
+        if eg > numG and not (eg == runtime.BAR2_GEM and bar2Count > 0) then
             table.insert(newGems, e)
         end
     end
@@ -5435,7 +5458,7 @@ function runtime.importCurrentGems(targetGemsTable)
     for idx, v in ipairs(newGems) do targetGemsTable[idx] = v end
     runtime.saveLoadout(true)
     if #newGems > 0 then
-        print(string.format('\ag[MoriAC]\ax Auto-populated %d spell(s) from current gem bar.', #newGems))
+        print(string.format('\ag[MoriAC]\ax Auto-populated %d spell(s) from current gem bar (%d from Spell Bar 2).', #newGems, bar2Count))
     else
         print('\ay[MoriAC]\ax No memorized spells found on current spell gem bar.')
     end
@@ -9817,7 +9840,7 @@ function UI.drawGemTabHeader(gemsTable)
     if ImGui.Button('Import Bar##importBarBtn') then
         runtime.importCurrentGems(gemsTable)
     end
-    if ImGui.IsItemHovered() then UI.setTooltip('Build spell lines from what is memorized on your spell bar right now.') end
+    if ImGui.IsItemHovered() then UI.setTooltip('Build spell lines from what is memorized on your spell bar right now, plus what is on Spell Bar 2.') end
     ImGui.SameLine()
     local pendingCount = 0
     for _ in pairs(runtime.pendingMem or {}) do pendingCount = pendingCount + 1 end
@@ -9875,7 +9898,7 @@ function UI.drawBarMismatchNotice(gems)
         runtime.importCurrentGems(gems)
         runtime.barMismatchCache = nil
     end
-    if ImGui.IsItemHovered() then UI.setTooltip('Replace the lines for gems 1-%d with what is memorized right now (lines for higher gems are kept).', getNumGems()) end
+    if ImGui.IsItemHovered() then UI.setTooltip('Replace the lines for gems 1-%d (and Bar 2, if it has spells) with what is on your bars right now.', getNumGems()) end
     ImGui.SameLine()
     if ImGui.SmallButton('Memorize these lines##barMem') then
         runtime.queueMemAll()

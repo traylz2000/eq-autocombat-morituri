@@ -5,6 +5,7 @@
 ## 2026-10-29
 
 - **Spells can be cast from the server's Spell Bar 2.** On the Spells page, a line's **Gem** now has a **Bar 2** choice after G1-G12. Put the spell on Spell Bar 2 yourself (right-click a slot and pick it). MoriAC reads each slot's tooltip to find which slot holds the spell, and casts it with `/bar2 cast N`, so it doesn't matter which slot you use. MacroQuest can't see Bar 2's cooldowns, so MoriAC times the recast itself: it waits 1.5 s after the click, then the cast time plus the spell's recast once the cast starts. The line's status shows **B2** when the spell is ready on Bar 2, a countdown while it's recharging, and **NOT ON BAR 2** if the spell isn't on the bar. Bar 2 is never auto-memorized, so the Mem buttons and downtime swaps leave it alone. Lines on G1-G12 work as before, and a spell set to a normal gem that you've also put on Bar 2 gets cast from Bar 2 when it isn't memorized on the normal bar.
+  - **Import Bar** (and `/ac importbar`, and **Use my spell bar**) now reads Spell Bar 2 too. Its spells come in as **Bar 2** lines after the normal gems, in slot order. A spell that's also on the normal bar is only added once. Your old Bar 2 lines are replaced by what's on Bar 2. If Bar 2 is empty, they're kept.
 
 ## 2026-10-28
 
