@@ -10007,7 +10007,7 @@ function UI.drawSpellDetail(gems, i)
     if UI.beginForm('##spellWhat') then
         UI.formCell('Gem', 'Spell gem it is cast from. Several lines can share a gem; it is swapped in when needed.\n'
             .. 'Bar 2: cast from the server\'s Spell Bar 2. Put the spell on that bar yourself (right-click a slot);\n'
-            .. 'MoriAC finds the slot and casts it with /bar2 cast. Bar 2 is never auto-memorized.')
+            .. 'MoriAC finds the slot and clicks it. Bar 2 is never auto-memorized.')
         local curGem = math.max(1, math.min(#UI.GEM_OPTS, tonumber(g.gem) or 1))
         local newGem = ImGui.Combo('##spGem', curGem, UI.GEM_OPTS)
         if newGem ~= curGem then g.gem = newGem; changed = true end
@@ -18658,7 +18658,7 @@ mq.event('TriunePetExists2', '#*#already have a pet#*#', function() onPetSummonR
 -- ============================================================================
 -- The server's second spell bar is an add-on window (SpellBar2Wnd, buttons
 -- Slot1-12), not extra gems: Me.NumGems stays 12 and Me.Gem / SpellReady
--- never see it. Each slot's tooltip names its spell and "/bar2 cast N" casts
+-- never see it. Each slot's tooltip names its spell; clicking the slot casts
 -- it. A line set to the "Bar 2" gem casts from whichever slot holds its spell;
 -- the player loads the bar with its right-click menu (no auto-mem). Its
 -- recast is not visible to MQ, so it is tracked here: a short hold on the
@@ -18831,7 +18831,9 @@ function runtime.castGem(i, g, id)
         end
     end
     if bar2 then
-        mq.cmdf('/bar2 cast %d', bar2)
+        -- not '/bar2 cast N': the add-on registers /bar2 after MQ reads the
+        -- client's command list, so MQ's DoCommand can't parse it
+        mq.cmdf('/notify SpellBar2Wnd Slot%d leftmouseup', bar2)
         runtime.bar2Clicked(g.spell, sp)
     else
         mq.cmdf('/cast "%s"', g.spell)
