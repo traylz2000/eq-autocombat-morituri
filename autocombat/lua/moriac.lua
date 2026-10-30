@@ -23499,17 +23499,19 @@ function runtime.pullerTick()
     elseif runtime.pullState == 'TO_CAMP' then
         local c = ctrl.camp_loc
         local bc = runtime.pullBreadcrumbs
+        -- Drop every crumb already near us and head for the next one on the
+        -- same tick. Retargeting only after nav reached each 12-unit crumb
+        -- let it go idle between crumbs: a stop-start run home.
+        if ctrl.nav_reverse_breadcrumbs and bc then
+            while #bc > 0 do
+                local wp = bc[#bc]
+                if distToLoc(wp.x, wp.y, wp.z) > 20 then break end
+                table.remove(bc, #bc)
+            end
+        end
         if ctrl.nav_reverse_breadcrumbs and bc and #bc > 0 then
             local nextWp = bc[#bc]
-            local d = distToLoc(nextWp.x, nextWp.y, nextWp.z)
-            if d <= 12 then
-                table.remove(bc, #bc)
-                if #bc == 0 and c then
-                    runtime.moveTowardLoc(c.x, c.y, c.z, 15)
-                end
-            else
-                runtime.moveTowardLoc(nextWp.x, nextWp.y, nextWp.z, 10)
-            end
+            runtime.moveTowardLoc(nextWp.x, nextWp.y, nextWp.z, 10)
         else
             if c and runtime.moveTowardLoc(c.x, c.y, c.z, 15) then runtime.pullState = 'FIGHTING' end
         end
@@ -25100,8 +25102,13 @@ local function combatTick()
             end
         end
     end
-    if not isPullStandBack then
-        local isDraggingToCamp = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState == 'TO_CAMP')
+    -- Camp/Lure heading out to tag: pullerTick owns movement and the tag.
+    -- Running this block too re-closed to the Combat Distance (ranged_dist,
+    -- or melee reach) the moment pullerTick stopped at the Engagement
+    -- Distance, so a bow puller crept in well past where it should shoot.
+    local isPullApproach = (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState == 'TO_MOB')
+    if not isPullStandBack and not isPullApproach then
+        local isDraggingToCamp =(ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState == 'TO_CAMP')
         if haveNPC and not isDraggingToCamp and autoAttackOk then
             local curDist = (tid > 0) and distToId(tid) or 999
             local maxReach
@@ -25383,6 +25390,12 @@ local function combatTick()
         local isBrdMe = false
         pcall(function() isBrdMe = (mq.TLO.Me.Class.ShortName() == 'BRD') end)
         canCastMove = isBrdMe or not isMoving
+        -- Camp/Lure dragging a mob home: no cast-time spells on the way. Any
+        -- brief nav gap let one start, and stopMovementForCast parked us.
+        if not isBrdMe and ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.submode == 'Lure')
+            and runtime.pullState == 'TO_CAMP' then
+            canCastMove = false
+        end
         eventsProcessed = true
     end
 

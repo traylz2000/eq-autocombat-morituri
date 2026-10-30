@@ -4,6 +4,8 @@
 
 ## 2026-10-30
 
+- **Puller (Camp / Lure) shoots from the Engagement Distance and runs straight home.** A Ranged (or Spell) pull stopped at the Engagement Distance, but the fight code then walked you in toward your Combat Distance (or melee range) before the tag landed, so you shot from much closer than set. With **Stand back** off this happened every pull. Now the puller alone moves you until the tag lands. The run back to camp was also slow and stop-start. Reverse breadcrumbs sent a new move to each point 12 units apart and waited to reach it. Movement stalled at each one, and a spell could start in that gap and stop you. The puller now skips every breadcrumb it's already near and heads for the next one straight away. It also doesn't start spells with a cast time while dragging a mob home (bard songs still play). AAs and instant abilities still fire.
+
 - **Spell Bar 2 casts now go through.** Casting from Bar 2 printed `DoCommand - Couldn't parse 'bar2 cast 1'` and nothing was cast. The Spell Bar 2 add-on adds `/bar2` after MacroQuest has read the game's command list, so MacroQuest doesn't know the command. It works when you type it, but not when a script sends it. MoriAC now clicks the slot on the Spell Bar 2 window instead (`/notify SpellBar2Wnd SlotN leftmouseup`). The window has to be open, which it already had to be for MoriAC to read the slots.
 
 ## 2026-10-29
