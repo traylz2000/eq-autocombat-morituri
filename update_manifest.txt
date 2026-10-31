@@ -1,11 +1,11 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0134
+version=2026.10.31.0342
 date=2026-10-31
-commit=9d3f3af
+commit=bbdffdc
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1215467 9e00da0b
+file=lua/moriac.lua 1215606 4ac4f61c
 file=lua/tac/alerts.lua 24590 4c48e914
 file=lua/tac/auto_aa.lua 163494 88097c8c
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -31,9 +31,12 @@ file=lua/tac/nmsloot.lua 81296 9d632aa1
 file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
+file=lua/tac/tradeskill.lua 33614 a7074437
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **New Tradeskills plugin (`lua/tac/tradeskill.lua`): make a recipe until you run out of materials.** Open a tradeskill container (forge, oven, loom, kit...) so the game tradeskill window shows, then open **Tradeskills** (`/ac ts`). It lists the recipes in the game window (your favourites, or whatever you search for there). Pick one, set **How many** (0 = until out of materials) and press **Make**. MoriAC selects the recipe in the game window and presses **Combine** over and over. The server takes the ingredients from your bags. Whatever lands on your cursor (the product, or salvage from a failed combine) goes into your bags before the next combine. It stops when the server says you're out of materials (and lists what's missing), or when you reach the count, combat starts, the window closes or your bags are full. It also stops when the recipe needs a different container, a skill you don't have or a recipe you haven't learned. **Stop once the recipe is trivial** ends the run when you can no longer skill up from it. Each run ends with a summary: made, failed, skill-ups. Pause MoriAC while crafting so it doesn't go pulling.
 note=
 note=- **The puller goes for the mob that's closest to walk to.** It used to take the first mob that passed its filters, which wasn't always the nearest. A mob on your floor 95 units away beat one on a slope 20 units away, because mobs more than 15 units above or below you were only looked at when nothing was on your floor. A mob behind a wall could beat one in the open that was a little further away. Now every mob that qualifies is compared by its walking distance (the nav path). A mob on another floor still loses unless it's clearly closer. In Camp and Lure, when you're more than 30 units from camp (a fight that drifted, a Lure that went out to the mob), mobs are ranked by how close they are to the camp. Camp and Lure also get the **Same-floor height** slider that Hunt already had, under **Camp & pull area**. Raise it on hilly ground. This applies to Hunt, Camp and Lure.
 note=

@@ -277,6 +277,7 @@ local function sanitizeModeConfig(c)
     if c.show_chat == nil then c.show_chat = false end
     if c.show_gamedb == nil then c.show_gamedb = false end
     if c.show_parcels == nil then c.show_parcels = false end
+    if c.show_tradeskill == nil then c.show_tradeskill = false end
     if c.show_nmsloot == nil then c.show_nmsloot = false end
     if c.show_gm_commands == nil then c.show_gm_commands = false end
     if type(c.ui_page) ~= 'string' then c.ui_page = 'overview' end
@@ -495,6 +496,7 @@ local function defaultCtrl()
         show_chat                = false,
         show_gamedb              = false,
         show_parcels             = false,
+        show_tradeskill          = false,
         show_nmsloot             = false,
         show_gm_commands         = false,
         cooldown_alpha           = 0.90,
@@ -8116,6 +8118,7 @@ function runtime.initPluginManager()
             'update_check.lua',
             'alerts.lua',
             'timers.lua',
+            'tradeskill.lua',
         }
         for _, f in ipairs(known) do
             if not fileSet[f:lower()] then

@@ -105,6 +105,7 @@ Everything below is built in. Open them from the **Windows** menu at the top of 
 | Buffbot | `/ac buffbot on` | A buff station: players `/tell` you for buffs, it casts them. Off unless you turn it on. |
 | Cursor Manager | `/ac cursorui` | Clears whatever is stuck on your cursor. |
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
+| Tradeskills | `/ac ts` | Makes a recipe over and over until you run out of materials (or a count you set). Open a forge, oven, loom or kit, pick the recipe from the game tradeskill window's list (search there for more), then **Make**. Results go into your bags before each combine. `/ac ts make <recipe> [count]`, `/ac ts stop`. |
 | GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
 | Floating damage | Setup -> Plugins | Big animated numbers for crits. |
 | Updater | `/ac update` | Checks GitHub for changed MoriAC files when it starts. `/ac update install` downloads and installs them (old copies kept as `.bak`); then `/ac restart`. |
