@@ -40,7 +40,7 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.0',
+    version            = '1.0.1',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
@@ -64,7 +64,10 @@ local POLL_SEC         = 0.5
 local SELECT_MS        = 600
 local ENABLE_WAIT_MS   = 1500
 local RESULT_MS        = 4000
-local CURSOR_MS        = 3000
+local CURSOR_MS        = 3000   -- give up when one item won't go for this long
+local CURSOR_STEP_MS   = 700    -- wait per /autoinventory
+local CURSOR_SETTLE_MS = 400    -- cursor must stay empty this long (queued items)
+local RESULT_ITEM_MS   = 1500   -- wait for the product to reach the cursor after a success
 local BETWEEN_MS       = 150
 local MAX_TIMEOUTS     = 3
 local MAX_COMBINES     = 2000
@@ -328,12 +331,31 @@ local function cursorHasItem()
 end
 
 -- Puts whatever is on the cursor away. False when it won't go (bags full).
+local function cursorName()
+    local n = ''
+    pcall(function() n = tostring(mq.TLO.Cursor.Name() or '') end)
+    return n
+end
+
+-- Puts everything on the cursor away. The server can queue several items
+-- (product plus salvage, multi-yield recipes, a result that came in while
+-- something was still held); the next one shows up a moment after the one
+-- before goes into the bags. So it's only done once the cursor has stayed
+-- empty for CURSOR_SETTLE_MS. False when an item won't go (bags full).
 local function clearCursor()
-    if not cursorHasItem() then return true end
     local deadline = os.clock() + CURSOR_MS / 1000
     while os.clock() < deadline do
-        pcall(mq.cmd, '/autoinventory')
-        if core.delay(500, function() return not cursorHasItem() end) then return true end
+        if cursorHasItem() then
+            local before = cursorName()
+            pcall(mq.cmd, '/autoinventory')
+            core.delay(CURSOR_STEP_MS, function() return not cursorHasItem() or cursorName() ~= before end)
+            -- each item that went away buys time for the next in the queue
+            if not cursorHasItem() or cursorName() ~= before then
+                deadline = math.max(deadline, os.clock() + CURSOR_MS / 1000)
+            end
+        elseif not core.delay(CURSOR_SETTLE_MS, cursorHasItem) then
+            return true
+        end
     end
     return not cursorHasItem()
 end
@@ -499,7 +521,7 @@ local function runMake()
                 state.succeeded = state.succeeded + 1
                 timeouts = 0
                 -- the result (and any salvage) lands on the cursor
-                core.delay(500, cursorHasItem)
+                core.delay(RESULT_ITEM_MS, cursorHasItem)
             elseif result == 'fail' then
                 state.failed = state.failed + 1
                 timeouts = 0
