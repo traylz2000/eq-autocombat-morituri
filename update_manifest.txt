@@ -1,11 +1,11 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.30.0408
-date=2026-10-30
-commit=e5b70fc
+version=2026.10.31.0134
+date=2026-10-31
+commit=9d3f3af
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1212471 ab9585e0
+file=lua/moriac.lua 1215467 9e00da0b
 file=lua/tac/alerts.lua 24590 4c48e914
 file=lua/tac/auto_aa.lua 163494 88097c8c
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -33,9 +33,7 @@ file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
-note=## 2026-10-30
+note=## 2026-10-31
 note=
-note=- **Puller (Camp / Lure) shoots from the Engagement Distance and runs straight home.** A Ranged (or Spell) pull stopped at the Engagement Distance, but the fight code then walked you in toward your Combat Distance (or melee range) before the tag landed, so you shot from much closer than set. With **Stand back** off this happened every pull. Now the puller alone moves you until the tag lands. The run back to camp was also slow and stop-start. Reverse breadcrumbs sent a new move to each point 12 units apart and waited to reach it. Movement stalled at each one, and a spell could start in that gap and stop you. The puller now skips every breadcrumb it's already near and heads for the next one straight away. It also doesn't start spells with a cast time while dragging a mob home (bard songs still play). AAs and instant abilities still fire.
-note=
-note=- **Spell Bar 2 casts now go through.** Casting from Bar 2 printed `DoCommand - Couldn't parse 'bar2 cast 1'` and nothing was cast. The Spell Bar 2 add-on adds `/bar2` after MacroQuest has read the game's command list, so MacroQuest doesn't know the command. It works when you type it, but not when a script sends it. MoriAC now clicks the slot on the Spell Bar 2 window instead (`/notify SpellBar2Wnd SlotN leftmouseup`). The window has to be open, which it already had to be for MoriAC to read the slots.
+note=- **The puller goes for the mob that's closest to walk to.** It used to take the first mob that passed its filters, which wasn't always the nearest. A mob on your floor 95 units away beat one on a slope 20 units away, because mobs more than 15 units above or below you were only looked at when nothing was on your floor. A mob behind a wall could beat one in the open that was a little further away. Now every mob that qualifies is compared by its walking distance (the nav path). A mob on another floor still loses unless it's clearly closer. In Camp and Lure, when you're more than 30 units from camp (a fight that drifted, a Lure that went out to the mob), mobs are ranked by how close they are to the camp. Camp and Lure also get the **Same-floor height** slider that Hunt already had, under **Camp & pull area**. Raise it on hilly ground. This applies to Hunt, Camp and Lure.
 note=

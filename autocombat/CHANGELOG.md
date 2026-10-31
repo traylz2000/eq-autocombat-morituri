@@ -2,6 +2,10 @@
 
 > **Morituri Auto Combat (MoriAC)** is a fork of Triune AutoCombat for Project Morituri. Entries above the upstream `2026-10-11` section are fork changes; everything below them is upstream history.
 
+## 2026-10-31
+
+- **The puller goes for the mob that's closest to walk to.** It used to take the first mob that passed its filters, which wasn't always the nearest. A mob on your floor 95 units away beat one on a slope 20 units away, because mobs more than 15 units above or below you were only looked at when nothing was on your floor. A mob behind a wall could beat one in the open that was a little further away. Now every mob that qualifies is compared by its walking distance (the nav path). A mob on another floor still loses unless it's clearly closer. In Camp and Lure, when you're more than 30 units from camp (a fight that drifted, a Lure that went out to the mob), mobs are ranked by how close they are to the camp. Camp and Lure also get the **Same-floor height** slider that Hunt already had, under **Camp & pull area**. Raise it on hilly ground. This applies to Hunt, Camp and Lure.
+
 ## 2026-10-30
 
 - **Puller (Camp / Lure) shoots from the Engagement Distance and runs straight home.** A Ranged (or Spell) pull stopped at the Engagement Distance, but the fight code then walked you in toward your Combat Distance (or melee range) before the tag landed, so you shot from much closer than set. With **Stand back** off this happened every pull. Now the puller alone moves you until the tag lands. The run back to camp was also slow and stop-start. Reverse breadcrumbs sent a new move to each point 12 units apart and waited to reach it. Movement stalled at each one, and a spell could start in that gap and stop you. The puller now skips every breadcrumb it's already near and heads for the next one straight away. It also doesn't start spells with a cast time while dragging a mob home (bard songs still play). AAs and instant abilities still fire.

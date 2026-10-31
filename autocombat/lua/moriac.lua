@@ -12155,13 +12155,13 @@ function UI.drawControlTab()
             ctrl.hunter_z_plane = ImGui.SliderInt('##huntZPlane', ctrl.hunter_z_plane or 15, 5, 50, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Tier 1 vertical search threshold. MoriAC prioritizes NPCs on the same floor or Z plane\nwithin this height difference before searching other floors.')
+                    'Mobs more than this far above or below you count as on another floor. They are only\npicked when they are clearly closer to walk to than a mob on your floor.')
             end
             UI.formLabel('Max height difference')
             ctrl.hunter_z = ImGui.SliderInt('##huntZ', ctrl.hunter_z or 75, 10, 300, '%d ft')
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Tier 2 vertical search limit. If no valid NPCs are found on your immediate floor,\nTriune expands search up to this maximum height difference across floors and ledges.')
+                    'Mobs further than this above or below you are never picked.')
             end
             ctrl.hunter_min_level, ctrl.hunter_max_level = UI.levelRange('NPC levels', 'huntLvl',
                 ctrl.hunter_min_level or 1, ctrl.hunter_max_level or 100)
@@ -12272,6 +12272,16 @@ function UI.drawControlTab()
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Maximum horizontal distance in units from camp to search for pullable NPCs.')
+            end
+            UI.formLabel('Same-floor height')
+            local campZp, campZpChanged = ImGui.SliderInt('##pullCampZPlane', ctrl.camp_z_plane or 15, 5, 50, '%d ft')
+            if campZpChanged then
+                ctrl.camp_z_plane = campZp
+                runtime.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip(
+                    'Mobs more than this far above or below you count as on another floor. They are only\npicked when they are clearly closer to walk to than a mob on your floor. Raise it on hilly ground.')
             end
             UI.formLabel('Max height difference')
             ctrl.camp_z = ImGui.SliderInt('##pullCampZ', ctrl.camp_z or 75, 10, 300, '%d ft')
@@ -22953,7 +22963,7 @@ function runtime.anchorRoamTick()
 end
 
 -- Finds a mob for Hunter/Puller to engage on their own initiative: something
--- already on your aggro list, or the nearest targetable NPC within your search
+-- already on your aggro list, or the targetable NPC closest to walk to within your search
 -- radius. Skips anything on the ignore list, and (Hunter's own request) anything
 -- more than `hunter_z` units above/below you, so it won't chase something on
 -- another floor or ledge. Never used for Assist or a target you pick yourself.
@@ -22963,6 +22973,12 @@ end
 -- "targetable radius N" filter, which silently returned zero candidates and left
 -- Hunter standing still. NearestSpawn(i, ...) returning a falsy spawn () is what
 -- actually marks "no more candidates."
+runtime.ROAM_PICK = {
+    OFF_FLOOR_MULT = 1.5, -- score of a mob off our floor: walk x 1.5 + 20, so a
+    OFF_FLOOR_ADD  = 20,  -- slope mob 20 away (50) beats a same-floor one 95 away
+    CAMP_OFFSET    = 30,  -- Camp/Lure: further than this from camp, rank from the camp
+    MAX_MEASURED   = 15,  -- PathLength queries per scan before taking the best so far
+}
 function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fresh)
     local wp = runtime.wpNode and runtime.wpNode()
     if wp and wp.kind == 'Travel' then return nil, true end
@@ -23016,20 +23032,49 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
         return ok, v
     end
 
-    local function scanSpawns(maxZ)
+    -- How a candidate is ranked: walking distance (the navmesh path length)
+    -- from us, or in Camp/Lure from the camp once we're away from it (a
+    -- fight that drifted off, a Lure that went out to the mob). Mobs off our
+    -- floor (more than the same-floor height above or below) pay a penalty,
+    -- so a mob on another floor only wins when it's clearly closer to walk
+    -- to. This used to take the first mob that passed the filters: a mob on
+    -- our floor 95 away beat one on a slope 20 away, and a mob behind a wall
+    -- beat one in the open that was a few units further as the crow flies.
+    local C = runtime.ROAM_PICK
+    local floorZ = isCampMode and (ctrl.camp_z_plane or 15) or (ctrl.hunter_z_plane or 15)
+    local tier1Z = math.min(floorZ, searchMaxZ or 75)
+    local maxZ = searchMaxZ or (isCampMode and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75))
+    if maxZ < tier1Z then maxZ = tier1Z end
+    local myX, myY, myZ = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
+    local fromCamp = nil
+    if isCampMode and anchorLoc then
+        local cx, cy = anchorLoc.x or anchorLoc[2] or 0, anchorLoc.y or anchorLoc[1] or 0
+        local off = math.sqrt((myX - cx) ^ 2 + (myY - cy) ^ 2)
+        if off > C.CAMP_OFFSET then fromCamp = { x = cx, y = cy, off = off } end
+    end
+
+    local function scanSpawns()
         local radius = searchRadius or 100
         -- Nothing inside the anchor circle is farther from us than the anchor
         -- plus its radius: tighten the query so the 100-candidate cap below is
         -- spent on mobs we may actually take, not on the ones ringing us
         -- outside the circle.
         if huntAnchor then
-            local md = runtime.anchorDist(mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0) or 0
+            local md = runtime.anchorDist(myX, myY) or 0
             radius = math.min(radius, math.ceil(md + huntRadius))
         end
         local p = string.format('npc radius %d zradius %d targetable', radius, maxZ)
+        local bestId, bestScore, measured = nil, nil, 0
         for i = 1, 100 do
             local s = mq.TLO.NearestSpawn(i, p)
             if not s() then break end
+            -- NearestSpawn runs nearest-first and a walk is never shorter
+            -- than the straight line, so once this one is farther than the
+            -- best score (less how far we stand from camp) nothing after it
+            -- can win.
+            local straight = s.Distance() or 0
+            if bestScore and (straight - (fromCamp and fromCamp.off or 0)) >= bestScore then break end
+            if measured >= C.MAX_MEASURED then break end
 
             local sid = s.ID() or 0
             if sid > 0 and not runtime.isBoxClaimedTarget(sid, claimed) then
@@ -23053,6 +23098,8 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
                             if isHostileTarget(sid) then
                                 if runtime.verifyTargetCon(sid) then
                                     local sz = s.Z() or 0
+                                    local dist = s.Distance3D() or 999
+                                    local walk = dist
                                     local inHaz = runtime.isCoordInActiveHazard(sx, sy, sz)
                                     -- Only melee has to walk into the hazard; ranged/spell can hit it from outside.
                                     local isMeleeStyle = (ctrl and ctrl.combat_style or 'Melee') == 'Melee'
@@ -23060,7 +23107,6 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
                                     if pathOk and navLoaded() and not playerOffMesh then
                                             local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
                                             if meshOk and meshLoaded then
-                                                local dist = s.Distance3D() or 999
                                                 local closeReach = desiredRange(sid) or 14
                                                 if dist > closeReach or not hasLoS(sid) then
                                                     local ok, hasPath = pathExists(sid)
@@ -23073,16 +23119,28 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
                                                     elseif ok and hasPath then
                                                         local pathLen = 0
                                                         pcall(function() pathLen = mq.TLO.Navigation.PathLength('id ' .. sid)() or 0 end)
+                                                        measured = measured + 1
                                                         local maxRatio = ctrl.nav_max_path_ratio or 2.5
                                                         if pathLen > 0 and dist > 20 and (pathLen / dist) > maxRatio then
                                                             pathOk = false
+                                                        elseif pathLen > walk then
+                                                            walk = pathLen
                                                         end
                                                     end
                                                 end
                                             end
                                         end
                                         if pathOk then
-                                        return sid
+                                        local score = walk
+                                        if fromCamp then
+                                            score = math.sqrt((sx - fromCamp.x) ^ 2 + (sy - fromCamp.y) ^ 2)
+                                        end
+                                        if math.abs(sz - myZ) > tier1Z then
+                                            score = score * C.OFF_FLOOR_MULT + C.OFF_FLOOR_ADD
+                                        end
+                                        if not bestScore or score < bestScore then
+                                            bestId, bestScore = sid, score
+                                        end
                                     end
                                 end
                             end
@@ -23091,22 +23149,11 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fr
                 end
             end
         end
-        return nil
+        return bestId
     end
 
-    -- Two-Tier Z-Plane Target Acquisition:
-    -- Tier 1: Look for NPCs within the player's immediate Z plane (same floor/elevation)
-    local floorZ = isCampMode and (ctrl.camp_z_plane or 15) or (ctrl.hunter_z_plane or 15)
-    local tier1Z = math.min(floorZ, searchMaxZ or 75)
-    local targetId = scanSpawns(tier1Z)
+    local targetId = scanSpawns()
     if targetId then runtime.noteMeshPathOk(); return targetId end
-
-    -- Tier 2: Expand to full maxZ range if no target on immediate floor
-    local maxZ = searchMaxZ or (isCampMode and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75))
-    if maxZ > tier1Z then
-        targetId = scanSpawns(maxZ)
-        if targetId then runtime.noteMeshPathOk(); return targetId end
-    end
 
     if noPath.count > 0 then
         -- Every otherwise-valid NPC was rejected for no-path. When known-good
