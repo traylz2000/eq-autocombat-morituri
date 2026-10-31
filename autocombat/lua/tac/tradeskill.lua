@@ -40,7 +40,7 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.5',
+    version            = '1.0.6',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
@@ -78,8 +78,12 @@ local MAX_LOG          = 60
 -- Server result lines -> result kinds. Order matters only for readability;
 -- each pattern is its own event.
 local RESULT_EVENTS = {
-    { 'TacTsSuccess',   'You have fashioned the items together to create something new!#*#', 'success' },
-    { 'TacTsFail',      'You lacked the skills to fashion the items together.#*#', 'fail' },
+    -- 339 is sent with the recipe name (MessageString(..., TRADESKILL_SUCCEED,
+    -- spec->name)), so the client's line carries more than the bare "...new!":
+    -- match only its start. (A groupmate's line reads "X has successfully
+    -- fashioned Y!", which this never matches.)
+    { 'TacTsSuccess',   'You have fashioned the items together#*#', 'success' },
+    { 'TacTsFail',      'You lacked the skills to fashion the items together#*#', 'fail' },
     { 'TacTsMissing',   "Sorry, but you don't have everything you need for this recipe#*#", 'missing' },
     { 'TacTsNoCombine', 'You cannot combine these items in this container type!#*#', 'nocombine' },
     { 'TacTsLore',      'Combine would result in a LORE item#*#', 'lore' },
@@ -394,6 +398,13 @@ waitCombineReady = function()
     return false
 end
 
+-- How many of `name` you carry (bags + cursor), -1 when unknown.
+local function itemCount(name)
+    local n = -1
+    pcall(function() n = tonumber(mq.TLO.FindItemCount('=' .. name)()) or -1 end)
+    return n
+end
+
 local function inCombatNow()
     local rt = core and core.runtime
     if rt and rt.isCombat then
@@ -503,6 +514,7 @@ local function runMake()
     state.lastSkill, state.trivialSeen = nil, false
     state.missing = {}
     state.stopRequested = false
+    state.warnedNoLine = false
     local timeouts = 0
     local selectFails = 0
     local lastClickAt = nil
@@ -561,9 +573,12 @@ local function runMake()
             --   /notify TradeskillWnd CombineButton leftmouseup
             --   /pause .2  /autoinventory  /pause .3  /autoinventory  (/pause .3  /autoinventory)
             -- (the Window TLO's LeftMouseUp() did not press this button)
+            local haveBefore = itemCount(job.name)
+            local madeSeen = false
             pcall(mq.cmd, string.format('/notify %s %s leftmouseup', TS_WND, state.controls.combine))
             for _, ms in ipairs(AUTOINV_STEPS_MS) do
                 wait(ms)
+                if cursorName():lower() == job.name:lower() then madeSeen = true end
                 pcall(mq.cmd, '/autoinventory')
             end
             -- the result line usually arrived during those; give it the rest of RESULT_MS
@@ -571,6 +586,16 @@ local function runMake()
             if state.lastResult == nil and left > 0 then wait(left, function() return state.lastResult ~= nil end) end
             local answerIn = os.clock() - lastClickAt
             local result = state.lastResult
+            -- Backstop for a result line worded differently on this client:
+            -- the product on the cursor, or more of it in the bags, is a
+            -- combine that took.
+            if result == nil and (madeSeen or itemCount(job.name) > haveBefore) then
+                result = 'success'
+                if not state.warnedNoLine then
+                    state.warnedNoLine = true
+                    addLog('No success line seen; counting the product in your bags instead', 'warn')
+                end
+            end
             if state.debug then
                 addLog(string.format('ready %.2f s, answer %.2f s, %s', readyIn, answerIn, tostring(result or 'none')), 'info')
             end
@@ -941,5 +966,6 @@ plugin._onResult = onResult
 plugin._onMissingItem = onMissingItem
 plugin._onSkillUp = onSkillUp
 plugin._onTrivial = onTrivial
+plugin._RESULT_EVENTS = RESULT_EVENTS
 
 return plugin

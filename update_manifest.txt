@@ -1,7 +1,7 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0416
+version=2026.10.31.0425
 date=2026-10-31
-commit=e2c0684
+commit=e933f26
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
@@ -31,10 +31,12 @@ file=lua/tac/nmsloot.lua 81296 9d632aa1
 file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
-file=lua/tac/tradeskill.lua 38510 3c50247e
+file=lua/tac/tradeskill.lua 39758 7f66551d
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **Tradeskills no longer says "Combine did not take" after a good combine (`lua/tac/tradeskill.lua` 1.0.6).** The combines were working, but successes weren't recognised. The server sends the success line with the recipe name filled in, so the line on your client doesn't end in the bare "...something new!" that MoriAC looked for. Every success was counted as a click that didn't take, failures reset that count, and a few successes in a row ended the run early. Now any line starting "You have fashioned the items together" is a success (a groupmate's "X has successfully fashioned Y!" doesn't count). As a backup, the product turning up on your cursor or in your bags also counts, so a reworded line can't stall a run again.
 note=
 note=- **Tradeskills combines the way your own social macro does (`lua/tac/tradeskill.lua` 1.0.5).** It now presses Combine with `/notify TradeskillWnd CombineButton leftmouseup`, the command a working social uses. The Window `LeftMouseUp()` call it used before didn't press this button. Then it sends `/autoinventory` 0.2 s, 0.5 s and 0.8 s after the click: the social's two plus a third that the in-game socials don't have room for. After that it reads the result line, waits until Combine can be clicked again plus your **Wait between combines** setting, and clicks again. A click that gets no answer is tried again, and the slider is no longer raised by itself. It still stops when you're out of materials, at the count, in combat or when your bags are full.
 note=
