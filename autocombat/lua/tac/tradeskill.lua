@@ -40,7 +40,7 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.4',
+    version            = '1.0.5',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
@@ -65,12 +65,11 @@ local SELECT_MS        = 600
 local ENABLE_WAIT_MS   = 8000   -- Combine greys out ~2.5-3 s after each combine
 local STABLE_MS        = 300    -- ...and must stay clickable this long before a click
 local RESULT_MS        = 3000   -- no reply by then: the click didn't take
-local GAP_STEP         = 1.0    -- each click that didn't take adds this to settings.combineGap
+local AUTOINV_STEPS_MS = { 200, 300, 300 }  -- /autoinventory this long after Combine, then after each other
 local GAP_MAX          = 6.0
 local CURSOR_MS        = 3000   -- give up when one item won't go for this long
 local CURSOR_STEP_MS   = 700    -- wait per /autoinventory
 local CURSOR_SETTLE_MS = 200    -- cursor must stay empty this long (queued items)
-local RESULT_ITEM_MS   = 1500   -- wait for the product to reach the cursor after a success
 local BETWEEN_MS       = 50
 local MAX_TIMEOUTS     = 6
 local MAX_COMBINES     = 2000
@@ -130,7 +129,7 @@ local state = {
 
 local settings = {
     count        = 0,        -- successful combines to make; 0 = until out of materials
-    combineGap   = 0,        -- seconds from one Combine click to the next (learned on dead clicks)
+    combineGap   = 0,        -- seconds from one Combine click to the next (the slider)
     stopAtTrivial = false,   -- stop once the server says the recipe is trivial
     chatSummary  = true,
     lastRecipe   = '',
@@ -558,15 +557,19 @@ local function runMake()
             local readyIn = os.clock() - t0
             state.lastResult = nil
             lastClickAt = os.clock()
-            pcall(function() mq.TLO.Window(combinePath()).LeftMouseUp() end)
-            -- The product can reach the cursor before the result line does:
-            -- whichever comes first ends the wait, and an item is put away
-            -- the moment it shows up rather than on the next pass.
-            wait(RESULT_MS, function() return state.lastResult ~= nil or cursorHasItem() end)
+            -- The player's working social, plus one more /autoinventory:
+            --   /notify TradeskillWnd CombineButton leftmouseup
+            --   /pause .2  /autoinventory  /pause .3  /autoinventory  (/pause .3  /autoinventory)
+            -- (the Window TLO's LeftMouseUp() did not press this button)
+            pcall(mq.cmd, string.format('/notify %s %s leftmouseup', TS_WND, state.controls.combine))
+            for _, ms in ipairs(AUTOINV_STEPS_MS) do
+                wait(ms)
+                pcall(mq.cmd, '/autoinventory')
+            end
+            -- the result line usually arrived during those; give it the rest of RESULT_MS
+            local left = RESULT_MS - (os.clock() - lastClickAt) * 1000
+            if state.lastResult == nil and left > 0 then wait(left, function() return state.lastResult ~= nil end) end
             local answerIn = os.clock() - lastClickAt
-            local gotItem = cursorHasItem()
-            if gotItem and not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
-            if gotItem and state.lastResult == nil then wait(1000, function() return state.lastResult ~= nil end) end
             local result = state.lastResult
             if state.debug then
                 addLog(string.format('ready %.2f s, answer %.2f s, %s', readyIn, answerIn, tostring(result or 'none')), 'info')
@@ -575,27 +578,19 @@ local function runMake()
             if result == 'success' then
                 state.succeeded = state.succeeded + 1
                 timeouts = 0
-                -- the result (and any salvage) lands on the cursor
-                if not gotItem and wait(RESULT_ITEM_MS, cursorHasItem) and not clearCursor() then
-                    return finishRun('could not put the result away (bags full?)', 'warn')
-                end
             elseif result == 'fail' then
                 state.failed = state.failed + 1
                 timeouts = 0
-                if not gotItem and wait(300, cursorHasItem) and not clearCursor() then
-                    return finishRun('could not put the salvage away (bags full?)', 'warn')
-                end
             elseif result and STOP_TEXT[result] then
                 return finishRun(STOP_TEXT[result], result == 'missing' and 'info' or 'warn')
             else
-                -- The click didn't take (the button wasn't really ready):
-                -- leave more time between clicks and try again.
+                -- The click didn't take: try again once the button is ready.
                 timeouts = timeouts + 1
+                addLog('Combine did not take - trying again (raise Wait between combines if this keeps happening)', 'warn')
                 if timeouts >= MAX_TIMEOUTS then return finishRun('the server stopped answering', 'warn') end
-                settings.combineGap = math.min(GAP_MAX, gap + GAP_STEP)
-                addLog(string.format('Combine did not take - waiting %.1f s between combines now', settings.combineGap), 'warn')
-                if core.saveLoadout then core.saveLoadout(true) end
             end
+            -- anything still arriving (multi-yield, salvage) goes away too
+            if not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
             wait(BETWEEN_MS)
         end
     end
@@ -741,7 +736,7 @@ local function drawSettingsBody()
         settings.combineGap = g
         core.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then core.setTooltip('Least time from one Combine click to the next. 0 = as soon as the button is clickable.\nGoes up by itself when a click does not take; lower it again if it gets too slow.') end
+    if ImGui.IsItemHovered() then core.setTooltip('Least time from one Combine click to the next. 0 = as soon as the button is clickable again.\nRaise it if combines get skipped.') end
 
     local v = ImGui.Checkbox('Stop once the recipe is trivial##tsTrivial', settings.stopAtTrivial == true)
     if v ~= (settings.stopAtTrivial == true) then settings.stopAtTrivial = v; core.saveLoadout(true) end
