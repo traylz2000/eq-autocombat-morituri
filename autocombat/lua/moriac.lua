@@ -353,6 +353,11 @@ local function sanitizeModeConfig(c)
     end
     local lw = tonumber(c.lure_wait_sec)
     c.lure_wait_sec = lw and math.max(3, math.min(60, math.floor(lw))) or 10
+    local nd = tonumber(c.pull_no_damage_sec)
+    c.pull_no_damage_sec = nd and math.max(0, math.min(60, math.floor(nd))) or 10
+    if c.pull_clear_camp ~= 'Solo' and c.pull_clear_camp ~= 'Always' and c.pull_clear_camp ~= 'Off' then
+        c.pull_clear_camp = 'Solo'
+    end
     local rd = tonumber(c.ranged_dist)
     if not rd then
         c.ranged_dist = 40
@@ -392,6 +397,8 @@ local function defaultCtrl()
         pull_engage_dist     = 100,
         pull_stand_back      = false,
         lure_wait_sec        = 10,    -- Puller (Lure): stop waiting once the mob has not come closer for this long
+        pull_no_damage_sec   = 10,    -- Puller: a mob still at 100% after this long under attack is skipped (0 = off)
+        pull_clear_camp      = 'Solo', -- Puller (Camp/Lure): kill every mob at camp before the next pull: Solo / Always / Off
         xtar_nav_dist        = 150,
         ignore_distant_xtargets = true,
         combat_style         = 'Melee',
@@ -2629,6 +2636,16 @@ function runtime.stopMovementForCast(cls, spell)
 end
 
 
+runtime.noDamageIds = {}
+runtime.NO_DAMAGE = { SKIP_SEC = 600, REACH_PAD = 10, MAX_STEP = 0.5 }
+function runtime.isNoDamageSkip(id)
+    local at = id and runtime.noDamageIds[id]
+    if not at then return false end
+    if (os.clock() - at) < runtime.NO_DAMAGE.SKIP_SEC then return true end
+    runtime.noDamageIds[id] = nil
+    return false
+end
+
 -- Spawn ids MQ2Nav has told us have no path to. Cleared after 60s in case terrain
 -- state changes (a door opens, etc). findRoamTarget skips these when picking a
 -- fresh target; Hunter/Puller drop their current target the moment it lands here
@@ -2644,6 +2661,9 @@ function runtime.markUnreachable(id)
 end
 
 local function isUnreachable(id)
+    -- Skipped for taking no damage (runtime.pullNoDamageTick): longer-lived
+    -- than a no-path mark and never cleared by the "it's close, fight it" paths.
+    if runtime.isNoDamageSkip and runtime.isNoDamageSkip(id) then return true end
     local t = pursuit.unreachableIds[id]
     if not t then return false end
     if (os.clock() - t) > 60 then
@@ -12146,7 +12166,33 @@ function UI.drawControlTab()
                 .. 'Automatically stands to fight if attacked (0 = disabled / pull at any HP).')
         end
 
+        UI.formLabel('Skip if unhurt after')
+        local ndSec = ctrl.pull_no_damage_sec or 10
+        ctrl.pull_no_damage_sec = ImGui.SliderInt('##pullNoDamageSec', ndSec, 0, 60, ndSec == 0 and 'never' or '%d s')
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('%s',
+                'A mob still at 100% HP after this many seconds of your attacks is skipped for 10 minutes\n'
+                .. 'and the puller moves on (immune to your hits, or hit from a spot that never lands).\n'
+                .. 'Only that one mob is skipped, not every mob with its name. 0 = never skip.')
+        end
 
+        if ctrl.submode == 'Camp' or ctrl.submode == 'Lure' then
+            UI.formLabel('Clear camp first')
+            local clearOpts = { 'Solo', 'Always', 'Off' }
+            local clearIdx = 1
+            for i, o in ipairs(clearOpts) do
+                if o == (ctrl.pull_clear_camp or 'Solo') then clearIdx = i; break end
+            end
+            ctrl.pull_clear_camp = clearOpts[ImGui.Combo('##pullClearCamp', clearIdx, clearOpts)] or 'Solo'
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s',
+                    'Kill every mob on your XTarget before going out for the next pull, even one marked\n'
+                    .. 'unreachable or outside the height filter. A mob further out holds the pull up to 20 s.\n'
+                    .. '- Solo: only when you are not in a group (nobody else to tank it)\n'
+                    .. '- Always: in a group too\n'
+                    .. '- Off: the next pull can start while a mob the puller can\'t reach is still up')
+            end
+        end
     end
     if ctrl.mode == 'Puller' and ctrl.submode == 'Hunt' and UI.pageSection('pullHunt', 'Hunting area', true) then
         do
@@ -23235,6 +23281,128 @@ function runtime.checkCloserTarget(curTargetId, searchRadius, searchMaxZ, minLev
     return nil
 end
 
+-- Puller: a mob we have been attacking for ctrl.pull_no_damage_sec that is
+-- still at 100% HP (immune to our hits, bugged, hit from a spot that never
+-- lands) is skipped for NO_DAMAGE.SKIP_SEC so the puller moves on instead of
+-- swinging at it forever. Only time spent attacking it from reach counts --
+-- not the run home with it at our heels -- and it adds up across re-targets,
+-- so a "cannot see" drop and pick-up doesn't restart the clock. This is a
+-- per-spawn skip, not the name ignore list: one bugged mob doesn't blacklist
+-- every mob with its name.
+function runtime.pullNoDamageTick()
+    local limit = tonumber(ctrl.pull_no_damage_sec) or 10
+    if ctrl.mode ~= 'Puller' or limit <= 0 then runtime.noDamageTrack = nil; return end
+    local now = os.clock()
+    local tr = runtime.noDamageTrack
+    if not tr then tr = { at = now, n = 0, mobs = {} }; runtime.noDamageTrack = tr end
+    local step = math.min(now - tr.at, runtime.NO_DAMAGE.MAX_STEP)
+    tr.at = now
+    if (ctrl.submode == 'Camp' or ctrl.submode == 'Lure') and runtime.pullState ~= 'FIGHTING' then return end
+    local tid, hp, name = 0, 100, nil
+    pcall(function()
+        local t = mq.TLO.Target
+        if t() then tid = t.ID() or 0; hp = t.PctHPs() or 100; name = t.CleanName() end
+    end)
+    if tid <= 0 or not isHostileTarget(tid) then return end
+    local m = tr.mobs[tid]
+    if not m then
+        if tr.n >= 50 then tr.mobs = {}; tr.n = 0 end
+        m = { attacked = 0 }
+        tr.mobs[tid] = m; tr.n = tr.n + 1
+    end
+    if m.hurt then return end
+    if hp < 100 then m.hurt = true; return end
+    local attacking = false
+    pcall(function() attacking = (mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire()) == true end)
+    if not attacking then attacking = isCasting() end
+    if not attacking or distToId(tid) > desiredRange(tid) + runtime.NO_DAMAGE.REACH_PAD then return end
+    m.attacked = m.attacked + step
+    if m.attacked < limit then return end
+    tr.mobs[tid] = nil
+    runtime.noDamageIds[tid] = now
+    print(string.format(
+        '\ay[MoriAC]\ax Puller: #%d (%s) is still at 100%% after %ds of attacks -- skipping it for %d min.',
+        tid, tostring(name), limit, math.floor(runtime.NO_DAMAGE.SKIP_SEC / 60)))
+    pcall(function() if mq.TLO.Me.Combat() then mq.cmd('/attack off') end end)
+    stopMoving()
+    clearTarget()
+    pursuit.id = 0
+    pursuit.lastNavTargetId = 0
+    if runtime.pullTargetId == tid or runtime.pullState == 'FIGHTING' then
+        runtime.pullTargetId = 0
+        runtime.pullState = 'IDLE'
+    end
+end
+
+-- Puller (Camp/Lure): nothing leaves camp while a mob is still on us.
+-- firstNPCXtarget passes over XTargets marked unreachable (a "cannot see"
+-- retry loop, the 15 s approach watchdog), outside the height filter or past
+-- the chase range, so a mob standing in camp could be left hitting us while
+-- the puller ran out for the next one. ctrl.pull_clear_camp: 'Solo' (the
+-- default: only with no group, so nobody else is there to tank it),
+-- 'Always' or 'Off'. A mob within CLOSE is fought, its unreachable mark
+-- dropped; one further out holds the next pull for WAIT_SEC in case it walks
+-- in. Mobs skipped for taking no damage and ignore-list names don't count.
+runtime.CAMP_HOLD = { CLOSE = 40, WAIT_SEC = 20 }
+function runtime.campClearHold()
+    local mode = ctrl.pull_clear_camp or 'Solo'
+    if mode == 'Off' then return false end
+    if mode == 'Solo' then
+        local members = 0
+        pcall(function() members = tonumber(mq.TLO.Group.Members()) or 0 end)
+        if members > 0 then return false end
+    end
+    local bestId, bestDist, bestName = nil, nil, nil
+    pcall(function()
+        local slots = tonumber(mq.TLO.Me.XTargetSlots()) or 13
+        for i = 1, math.min(slots, 20) do
+            local xt = mq.TLO.Me.XTarget(i)
+            if xt and xt() then
+                local id = tonumber(xt.ID()) or 0
+                if id > 0 and isHostileTarget(id) and not runtime.isNoDamageSkip(id)
+                    and not isIgnored(xt.CleanName()) then
+                    local d = distToId(id)
+                    if not bestDist or d < bestDist then
+                        bestId, bestDist, bestName = id, d, xt.CleanName()
+                    end
+                end
+            end
+        end
+    end)
+    if not bestId then runtime.campHold = nil; return false end
+    local h = runtime.campHold
+    if not h or h.id ~= bestId then
+        h = { id = bestId, since = os.clock() }
+        runtime.campHold = h
+    end
+    if bestDist <= runtime.CAMP_HOLD.CLOSE then
+        pursuit.unreachableIds[bestId] = nil
+        if runtime.setTarget(bestId) then
+            if not h.fought then
+                h.fought = true
+                print(string.format('\ay[MoriAC]\ax Puller: #%d (%s) is still at camp -- killing it before the next pull.',
+                    bestId, tostring(bestName)))
+            end
+            runtime.pullTargetId = bestId
+            runtime.pullState = 'FIGHTING'
+        end
+        return true
+    end
+    if (os.clock() - h.since) < runtime.CAMP_HOLD.WAIT_SEC then
+        if not h.told then
+            h.told = true
+            print(string.format('\ay[MoriAC]\ax Puller: #%d (%s) is on XTarget %d away -- holding the next pull up to %ds for it.',
+                bestId, tostring(bestName), math.floor(bestDist), runtime.CAMP_HOLD.WAIT_SEC))
+        end
+        return true
+    end
+    if not h.gaveUp then
+        h.gaveUp = true
+        print(string.format('\ay[MoriAC]\ax Puller: #%d (%s) never came in -- pulling again.', bestId, tostring(bestName)))
+    end
+    return false
+end
+
 function runtime.checkPullHpRest()
     if ctrl.mode ~= 'Puller' then
         if runtime.pullHpRest then
@@ -23357,6 +23525,7 @@ function runtime.pullerTick()
             runtime.pullState = 'FIGHTING'
             return
         end
+        if runtime.campClearHold() then return end
         if mq.TLO.Me.Combat() then return end -- already fighting something; don't pull yet
 
         -- If current target is right next to camp (within 25 units), fight it directly
@@ -23783,6 +23952,9 @@ runtime.onZoned = function()
     runtime.npcSpellLastCast = {}
     runtime.aaEffectUntil = {}
     pursuit.unreachableIds = {}
+    runtime.noDamageIds = {}
+    runtime.noDamageTrack = nil
+    runtime.campHold = nil
     pursuit.id = 0
     pursuit.wanderLoc = nil
     pursuit.hasRetargeted = false
@@ -24598,6 +24770,7 @@ local function combatTick()
             moveTowardLoc(ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, 15)
         end
     elseif ctrl.mode == 'Puller' then
+        runtime.pullNoDamageTick()
         if ctrl.submode == 'Camp' or ctrl.submode == 'Lure' then
             if runtime.combatHold() then
                 stopMoving()

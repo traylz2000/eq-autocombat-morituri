@@ -1,11 +1,11 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0441
+version=2026.10.31.1249
 date=2026-10-31
-commit=5b86009
+commit=69570c0
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
-file=lua/moriac.lua 1216079 e1a49a04
+file=lua/moriac.lua 1224604 d1690dd2
 file=lua/tac/alerts.lua 24590 4c48e914
 file=lua/tac/auto_aa.lua 163494 88097c8c
 file=lua/tac/auto_accept.lua 30602 0c1987dd
@@ -35,6 +35,10 @@ file=lua/tac/tradeskill.lua 40899 ab8cb26d
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **The puller kills everything at camp before the next pull when you're solo.** A mob standing next to you could be left hitting you while the puller ran out for another. The step that picks up mobs already on your extended target skips any it has marked unreachable (after a few "You cannot see your target" retries, or 15 s without reaching it), any outside the height filter and any past the chase range. Now in Camp and Lure, before going out, MoriAC checks your extended target. A mob within 40 units is targeted and fought, even one marked unreachable. A mob further out holds the next pull for up to 20 s in case it walks in. **Clear camp first** on the **Pulling** card sets when this applies: **Solo** (the default: only when you're not in a group, so nobody else is there to tank), **Always**, or **Off**. Mobs on your ignore list don't count.
+note=
+note=- **The puller skips a mob it can't hurt.** A mob still at 100% HP after 10 s of your attacks (immune to your hits, or hit from a spot that never lands) is now skipped for 10 minutes, and the puller moves on. Only time spent attacking it from reach counts, not the run home with it chasing you. Only that one mob is skipped, not every mob with its name, so it isn't added to your ignore list. Set the time with **Skip if unhurt after** on the **Pulling** card (0 = never). This applies to Hunt, Camp and Lure.
 note=
 note=- **Tradeskills no longer stops with "Combat started" at a quiet forge (`lua/tac/tradeskill.lua` 1.0.7).** It used MoriAC's full combat check. That counts the whole group's haters (a groupmate fighting across the zone), auto-attack left on, the game's combat state and an engaged target, so a player at a forge could get "Made 0 ... - Combat Started" on the first click. Now a run stops only when a live NPC on your own extended target is within 150 units, and the message names it, e.g. "combat started: a minotaur is on your XTarget, 40 away". **Make** also won't start while such a mob is there, and says why in chat and in the Tradeskills log.
 note=
