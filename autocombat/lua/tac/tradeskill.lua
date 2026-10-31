@@ -40,11 +40,11 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.2',
+    version            = '1.0.3',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
-    tickInterval       = 0.1,
+    tickInterval       = 0.01,  -- a turn every main-loop pass (the make loop waits on the game)
     runOutOfCombatOnly = false,
     hasThread          = true,
     window             = { label = 'Tradeskills', tooltip = 'Toggles the Tradeskills window (tradeskill plugin).', flag = 'show_tradeskill', key = 'tradeskill', desc = 'Make a recipe until you run out of materials', headerButton = false, order = 96 },
@@ -66,9 +66,9 @@ local ENABLE_WAIT_MS   = 1500
 local RESULT_MS        = 4000
 local CURSOR_MS        = 3000   -- give up when one item won't go for this long
 local CURSOR_STEP_MS   = 700    -- wait per /autoinventory
-local CURSOR_SETTLE_MS = 250    -- cursor must stay empty this long (queued items)
+local CURSOR_SETTLE_MS = 200    -- cursor must stay empty this long (queued items)
 local RESULT_ITEM_MS   = 1500   -- wait for the product to reach the cursor after a success
-local BETWEEN_MS       = 150
+local BETWEEN_MS       = 50
 local MAX_TIMEOUTS     = 3
 local MAX_COMBINES     = 2000
 local MAX_LOG          = 60
@@ -331,6 +331,22 @@ local function cursorHasItem()
 end
 
 -- Puts whatever is on the cursor away. False when it won't go (bags full).
+-- Every wait in a run goes through here. MoriAC's main loop sleeps 150 ms
+-- a pass and a wait is only re-checked once a pass, so each check renews a
+-- short-pass window (core.fastLoop); it lapses a second after the run ends.
+local function fastLoop()
+    if core.fastLoop then pcall(core.fastLoop, 1) end
+end
+
+local function wait(ms, cond)
+    fastLoop()
+    return core.delay(ms, function()
+        fastLoop()
+        if cond then return cond() == true end
+        return false
+    end)
+end
+
 local function cursorName()
     local n = ''
     pcall(function() n = tostring(mq.TLO.Cursor.Name() or '') end)
@@ -350,12 +366,12 @@ local function clearCursor()
         if cursorHasItem() then
             local before = cursorName()
             pcall(mq.cmd, '/autoinventory')
-            core.delay(CURSOR_STEP_MS, function() return not cursorHasItem() or cursorName() ~= before end)
+            wait(CURSOR_STEP_MS, function() return not cursorHasItem() or cursorName() ~= before end)
             -- each item that went away buys time for the next in the queue
             if not cursorHasItem() or cursorName() ~= before then
                 deadline = math.max(deadline, os.clock() + CURSOR_MS / 1000)
             end
-        elseif not core.delay(CURSOR_SETTLE_MS, cursorHasItem) then
+        elseif not wait(CURSOR_SETTLE_MS, cursorHasItem) then
             return true
         end
     end
@@ -498,16 +514,16 @@ local function runMake()
         if listInt('GetCurSel') ~= row then
             pcall(function() mq.TLO.Window(listPath()).Select(row) end)
         end
-        local selected = core.delay(SELECT_MS, function() return listInt('GetCurSel') == row end)
+        local selected = wait(SELECT_MS, function() return listInt('GetCurSel') == row end)
         if not selected then
             selectFails = selectFails + 1
             if selectFails >= 5 then return finishRun('could not select the recipe in the list', 'warn') end
-            core.delay(100)
+            wait(100)
         else
             selectFails = 0
             -- Selecting asks the server for the recipe's details; the client
             -- enables Combine once they arrive.
-            if not core.delay(ENABLE_WAIT_MS, combineEnabled) then
+            if not wait(ENABLE_WAIT_MS, combineEnabled) then
                 return finishRun('the Combine button stayed greyed out (out of materials?)', 'warn')
             end
 
@@ -519,23 +535,23 @@ local function runMake()
             -- The product can reach the cursor before the result line does:
             -- whichever comes first ends the wait, and an item is put away
             -- the moment it shows up rather than on the next pass.
-            core.delay(RESULT_MS, function() return state.lastResult ~= nil or cursorHasItem() end)
+            wait(RESULT_MS, function() return state.lastResult ~= nil or cursorHasItem() end)
             local gotItem = cursorHasItem()
             if gotItem and not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
-            if state.lastResult == nil then core.delay(RESULT_MS, function() return state.lastResult ~= nil end) end
+            if state.lastResult == nil then wait(RESULT_MS, function() return state.lastResult ~= nil end) end
             local result = state.lastResult
 
             if result == 'success' then
                 state.succeeded = state.succeeded + 1
                 timeouts = 0
                 -- the result (and any salvage) lands on the cursor
-                if not gotItem and core.delay(RESULT_ITEM_MS, cursorHasItem) and not clearCursor() then
+                if not gotItem and wait(RESULT_ITEM_MS, cursorHasItem) and not clearCursor() then
                     return finishRun('could not put the result away (bags full?)', 'warn')
                 end
             elseif result == 'fail' then
                 state.failed = state.failed + 1
                 timeouts = 0
-                if not gotItem and core.delay(300, cursorHasItem) and not clearCursor() then
+                if not gotItem and wait(300, cursorHasItem) and not clearCursor() then
                     return finishRun('could not put the salvage away (bags full?)', 'warn')
                 end
             elseif result and STOP_TEXT[result] then
@@ -545,7 +561,7 @@ local function runMake()
                 addLog('No answer from the server for that combine', 'warn')
                 if timeouts >= MAX_TIMEOUTS then return finishRun('the server stopped answering', 'warn') end
             end
-            core.delay(BETWEEN_MS)
+            wait(BETWEEN_MS)
         end
     end
     return finishRun('hit the per-run combine cap')

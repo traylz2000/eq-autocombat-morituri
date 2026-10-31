@@ -7486,6 +7486,8 @@ function runtime.initPluginManager()
             -- game's Spell Display window. Use this instead of Spell().Inspect().
             inspectSpell          = function(spell) return pm.inspectSpell(spell) end,
             delay                 = function(ms, cond) return pm.delay(ms, cond) end,
+            -- short main-loop passes for the next `sec` seconds (call again to extend)
+            fastLoop              = function(sec) runtime.fastLoopUntil = os.clock() + math.min(5, tonumber(sec) or 1) end,
             -- Queue work to run on the main script coroutine next tick. Any
             -- plugin button that fires an ability / casts / targets (anything
             -- that may mq.delay) must go through this instead of calling the
@@ -26958,7 +26960,10 @@ local function runMainLoop()
         runtime.loopPassAvgMs = runtime.loopPassAvgMs and (runtime.loopPassAvgMs * 0.9 + passMs * 0.1) or passMs
         if passMs > (runtime.loopPassMaxMs or 0) then runtime.loopPassMaxMs = passMs end
 
-        mq.delay(memmed and 200 or 150)
+        -- A plugin running a click loop (Tradeskills) asks for short passes
+        -- through core.fastLoop: its waits are only re-checked once a pass.
+        local fastLoop = runtime.fastLoopUntil and os.clock() < runtime.fastLoopUntil
+        mq.delay(fastLoop and 10 or (memmed and 200 or 150))
     end
 end
 
