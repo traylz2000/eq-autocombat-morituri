@@ -40,7 +40,7 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.6',
+    version            = '1.0.7',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
@@ -72,6 +72,7 @@ local CURSOR_STEP_MS   = 700    -- wait per /autoinventory
 local CURSOR_SETTLE_MS = 200    -- cursor must stay empty this long (queued items)
 local BETWEEN_MS       = 50
 local MAX_TIMEOUTS     = 6
+local THREAT_RANGE     = 150    -- a live NPC on your XTarget this close stops a run
 local MAX_COMBINES     = 2000
 local MAX_LOG          = 60
 
@@ -405,15 +406,30 @@ local function itemCount(name)
     return n
 end
 
-local function inCombatNow()
-    local rt = core and core.runtime
-    if rt and rt.isCombat then
-        local ok, v = pcall(rt.isCombat)
-        if ok and v == true then return true end
-    end
-    local haters = 0
-    pcall(function() haters = tonumber(mq.TLO.Me.XTHaterCount()) or 0 end)
-    return haters > 0
+-- Something is about to hit you: a live NPC on your extended target within
+-- THREAT_RANGE. Returns a short reason, or nil. Deliberately narrower than
+-- the core's isCombat(), which also counts the whole group's haters, a
+-- leftover auto-attack, the game's combat state and an engaged target --
+-- any of which stopped a crafter standing safely at a forge.
+local function threatNow()
+    local reason = nil
+    pcall(function()
+        local slots = tonumber(mq.TLO.Me.XTargetSlots()) or 13
+        for i = 1, math.min(slots, 20) do
+            local xt = mq.TLO.Me.XTarget(i)
+            if xt and xt() and (tonumber(xt.ID()) or 0) > 0 then
+                local typ = tostring(xt.Type() or '')
+                local dead = false
+                pcall(function() dead = xt.Dead() == true end)
+                local d = tonumber(xt.Distance()) or 9999
+                if typ == 'NPC' and not dead and d <= THREAT_RANGE then
+                    reason = string.format('%s is on your XTarget, %d away', tostring(xt.CleanName() or 'a mob'), math.floor(d))
+                    return
+                end
+            end
+        end
+    end)
+    return reason
 end
 
 local function poll(force)
@@ -522,7 +538,8 @@ local function runMake()
     for _ = 1, MAX_COMBINES do
         if state.stopRequested then return finishRun('stopped', 'warn') end
         if not tsWindowOpen() then return finishRun('the tradeskill window closed', 'warn') end
-        if inCombatNow() then return finishRun('combat started', 'warn') end
+        local threat = threatNow()
+        if threat then return finishRun('combat started: ' .. threat, 'warn') end
         if job.count > 0 and state.succeeded >= job.count then return finishRun('done') end
         if settings.stopAtTrivial and state.trivialSeen then return finishRun('the recipe is trivial for you now') end
         if not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
@@ -641,6 +658,12 @@ function plugin.start(name, count)
     end
     if not findRecipeRow(state.recipes, name) then
         say('"%s" is not in the tradeskill window list. Search for it in the game window first.', name)
+        return false
+    end
+    local threat = threatNow()
+    if threat then
+        say('Not starting: %s.', threat)
+        addLog('Not starting: ' .. threat, 'warn')
         return false
     end
     count = math.max(0, math.floor(tonumber(count) or 0))

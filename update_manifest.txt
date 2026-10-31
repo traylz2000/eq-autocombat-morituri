@@ -1,7 +1,7 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0425
+version=2026.10.31.0441
 date=2026-10-31
-commit=e933f26
+commit=5b86009
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
@@ -31,10 +31,12 @@ file=lua/tac/nmsloot.lua 81296 9d632aa1
 file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
-file=lua/tac/tradeskill.lua 39758 7f66551d
+file=lua/tac/tradeskill.lua 40899 ab8cb26d
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **Tradeskills no longer stops with "Combat started" at a quiet forge (`lua/tac/tradeskill.lua` 1.0.7).** It used MoriAC's full combat check. That counts the whole group's haters (a groupmate fighting across the zone), auto-attack left on, the game's combat state and an engaged target, so a player at a forge could get "Made 0 ... - Combat Started" on the first click. Now a run stops only when a live NPC on your own extended target is within 150 units, and the message names it, e.g. "combat started: a minotaur is on your XTarget, 40 away". **Make** also won't start while such a mob is there, and says why in chat and in the Tradeskills log.
 note=
 note=- **Tradeskills no longer says "Combine did not take" after a good combine (`lua/tac/tradeskill.lua` 1.0.6).** The combines were working, but successes weren't recognised. The server sends the success line with the recipe name filled in, so the line on your client doesn't end in the bare "...something new!" that MoriAC looked for. Every success was counted as a click that didn't take, failures reset that count, and a few successes in a row ended the run early. Now any line starting "You have fashioned the items together" is a success (a groupmate's "X has successfully fashioned Y!" doesn't count). As a backup, the product turning up on your cursor or in your bags also counts, so a reworded line can't stall a run again.
 note=
