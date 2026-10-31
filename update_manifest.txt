@@ -1,7 +1,7 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0401
+version=2026.10.31.0407
 date=2026-10-31
-commit=a6a25ba
+commit=c685103
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
@@ -31,10 +31,12 @@ file=lua/tac/nmsloot.lua 81296 9d632aa1
 file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
-file=lua/tac/tradeskill.lua 36261 8d25c9d5
+file=lua/tac/tradeskill.lua 38979 7bc93d22
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **Tradeskills waits out the greyed-out Combine button (`lua/tac/tradeskill.lua` 1.0.4).** Combine greys out for about 2.5-3 s after each combine while the recipe refreshes. MoriAC could click it before it was ready. The click did nothing, it waited 8 s for an answer, and three of those ended the run with "No answer from the server for that combine". Now it waits (up to 8 s) until Combine is clickable and still clickable 0.3 s later. A click that gets no answer within 3 s is tried again instead of counting toward stopping. Each one also adds 1 s to the new **Wait between combines** setting (up to 6 s), which covers a client that never shows the button as grey. You can set it yourself; 0 means click as soon as the button is ready. A run only stops after 6 dead clicks in a row. With **Debug info** on (right-click the window), the log shows how long each combine waited for the button and for the answer.
 note=
 note=- **Tradeskills runs at full speed (`lua/tac/tradeskill.lua` 1.0.3).** The real cause of the slow combines: every wait in a run (for the result, for the cursor to empty, for the row to select) was only checked once per pass of MoriAC's main loop. Each pass sleeps 150 ms, and the plugin only got a turn every 0.1 s, so each step cost 150-250 ms whatever the timers said. During a run the main loop now does short 10 ms passes and the plugin gets a turn every pass. This goes back to normal a second after the run ends. The fixed waits are also shorter: 0.05 s between combines, and 0.2 s to make sure nothing else is queued on the cursor. Plugins can ask for short passes through the new `core.fastLoop(sec)`.
 note=
