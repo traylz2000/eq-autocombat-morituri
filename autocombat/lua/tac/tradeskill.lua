@@ -40,7 +40,7 @@
 local plugin = {
     id                 = 'tradeskill',
     name               = 'Tradeskills',
-    version            = '1.0.1',
+    version            = '1.0.2',
     author             = 'MoriAC',
     description        = 'Pick a recipe in the game tradeskill window and make it until you run out of materials.',
     defaultEnabled     = true,
@@ -66,7 +66,7 @@ local ENABLE_WAIT_MS   = 1500
 local RESULT_MS        = 4000
 local CURSOR_MS        = 3000   -- give up when one item won't go for this long
 local CURSOR_STEP_MS   = 700    -- wait per /autoinventory
-local CURSOR_SETTLE_MS = 400    -- cursor must stay empty this long (queued items)
+local CURSOR_SETTLE_MS = 250    -- cursor must stay empty this long (queued items)
 local RESULT_ITEM_MS   = 1500   -- wait for the product to reach the cursor after a success
 local BETWEEN_MS       = 150
 local MAX_TIMEOUTS     = 3
@@ -343,6 +343,8 @@ end
 -- before goes into the bags. So it's only done once the cursor has stayed
 -- empty for CURSOR_SETTLE_MS. False when an item won't go (bags full).
 local function clearCursor()
+    -- nothing held: nothing can be queued behind it either, go straight on
+    if not cursorHasItem() then return true end
     local deadline = os.clock() + CURSOR_MS / 1000
     while os.clock() < deadline do
         if cursorHasItem() then
@@ -514,18 +516,28 @@ local function runMake()
             if not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
             state.lastResult = nil
             pcall(function() mq.TLO.Window(combinePath()).LeftMouseUp() end)
-            core.delay(RESULT_MS, function() return state.lastResult ~= nil end)
+            -- The product can reach the cursor before the result line does:
+            -- whichever comes first ends the wait, and an item is put away
+            -- the moment it shows up rather than on the next pass.
+            core.delay(RESULT_MS, function() return state.lastResult ~= nil or cursorHasItem() end)
+            local gotItem = cursorHasItem()
+            if gotItem and not clearCursor() then return finishRun('could not put the result away (bags full?)', 'warn') end
+            if state.lastResult == nil then core.delay(RESULT_MS, function() return state.lastResult ~= nil end) end
             local result = state.lastResult
 
             if result == 'success' then
                 state.succeeded = state.succeeded + 1
                 timeouts = 0
                 -- the result (and any salvage) lands on the cursor
-                core.delay(RESULT_ITEM_MS, cursorHasItem)
+                if not gotItem and core.delay(RESULT_ITEM_MS, cursorHasItem) and not clearCursor() then
+                    return finishRun('could not put the result away (bags full?)', 'warn')
+                end
             elseif result == 'fail' then
                 state.failed = state.failed + 1
                 timeouts = 0
-                core.delay(300, cursorHasItem)
+                if not gotItem and core.delay(300, cursorHasItem) and not clearCursor() then
+                    return finishRun('could not put the salvage away (bags full?)', 'warn')
+                end
             elseif result and STOP_TEXT[result] then
                 return finishRun(STOP_TEXT[result], result == 'missing' and 'info' or 'warn')
             else

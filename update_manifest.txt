@@ -1,7 +1,7 @@
 # MoriAC update manifest, written by dev/publish.sh. Read by lua/tac/update_check.lua.
-version=2026.10.31.0349
+version=2026.10.31.0355
 date=2026-10-31
-commit=fbd315c
+commit=1280d56
 file=config/moriac_alarm.wav 52962 7ab5ae2a
 file=config/moriac_data.lua 134672 978ddc7a
 file=lua/mac.lua 310 089d668c
@@ -31,10 +31,12 @@ file=lua/tac/nmsloot.lua 81296 9d632aa1
 file=lua/tac/parcels.lua 37934 47140588
 file=lua/tac/spellbook.lua 47912 09b0ef7d
 file=lua/tac/timers.lua 13890 b6f7ca1a
-file=lua/tac/tradeskill.lua 34794 ec4519b1
+file=lua/tac/tradeskill.lua 35759 6e77366e
 file=lua/tac/triune_log.lua 15583 576465e8
 file=lua/tac/update_check.lua 48330 7ad20a59
 note=## 2026-10-31
+note=
+note=- **Tradeskills puts results away right after Combine (`lua/tac/tradeskill.lua` 1.0.2).** There was too long a pause between combines. The product waited on the cursor until the next pass of the loop, and the check that nothing else is queued on the cursor waited 0.4 s even when nothing had been there, twice per combine. Now an item goes into your bags the moment it reaches the cursor, even if that's before the result line. The queue check only runs after something was put away, and it's 0.25 s.
 note=
 note=- **Tradeskills clears the cursor before every combine (`lua/tac/tradeskill.lua` 1.0.1).** It pressed Combine again while results were still coming onto the cursor. A combine can put several items there (the product plus salvage, or several results), and the next one shows up a moment after the one before goes into your bags. The plugin did one auto-inventory, saw an empty cursor for an instant and combined again, so items piled up and the run fell apart. Now it keeps putting items away until the cursor has stayed empty for 0.4 s, and waits up to 1.5 s for the product to arrive after a success. It only stops for full bags when one item won't go into your bags for 3 s.
 note=
